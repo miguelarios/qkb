@@ -99,6 +99,42 @@ def test_update_metadata_if_changed_writes_when_metadata_changed(conn, provider)
     assert fts_title == "Traefik Cert Renewal (updated)"
 
 
+def test_metadata_hash_distinguishes_ambiguous_tag_splits():
+    """Delimiter discipline: a tag list of ["a,b"] must not hash the same as
+    ["a", "b"] - otherwise a genuine tag-list edit is silently missed."""
+    from qkb.ingest.storage import metadata_hash
+
+    one = make_note(tags=["a,b"])
+    two = make_note(tags=["a", "b"])
+    assert metadata_hash(one) != metadata_hash(two)
+
+
+def test_metadata_hash_distinguishes_ambiguous_extra_metadata_splits():
+    """Same discipline for extra_metadata key=value pairs joined together."""
+    from qkb.ingest.storage import metadata_hash
+
+    one = make_note(extra_metadata={"k": "a,b"})
+    two = make_note(extra_metadata={"k": "a", "b": ""})
+    assert metadata_hash(one) != metadata_hash(two)
+
+
+def test_update_metadata_if_changed_applies_ambiguous_tag_edit(conn, provider):
+    """End-to-end: editing tags from ["a", "b"] to ["a,b"] (a real change that a
+    naive comma-join would mask) must be detected and written."""
+    note = make_note(tags=["a", "b"])
+    ingest_one(conn, provider, note)
+    s = Storage(conn)
+    edited = make_note(tags=["a,b"])
+
+    changed = s.update_metadata_if_changed(edited, content_hash(edited.body))
+
+    assert changed is True
+    tags = {
+        r["tag"] for r in conn.execute("SELECT tag FROM tags WHERE document_id = ?", (note.id,))
+    }
+    assert tags == {"a,b"}
+
+
 def test_context_descriptions_and_stats(conn, provider):
     ingest_one(conn, provider, make_note())
     s = Storage(conn)

@@ -10,6 +10,7 @@ from typing import TypeVar
 
 import frontmatter
 
+from qkb.ingest.storage import _METADATA_HASH_KEY as RESERVED_METADATA_KEY
 from qkb.models import ParsedNote
 
 log = logging.getLogger(__name__)
@@ -126,8 +127,16 @@ def parse_note(path: Path, vault_root: Path, fm_map: dict[str, list[str]]) -> Pa
         tags = []
 
     consumed = {alias for key in fm_map.values() for alias in key}
+    if RESERVED_METADATA_KEY in meta:
+        # This key is reserved by Storage for its metadata-change hash row. A note
+        # carrying it in frontmatter would collide on the metadata (document_id,
+        # key) PK at write time; strip it here so the storage layer's own filter
+        # is never even exercised. (Storage filters too, belt-and-suspenders.)
+        log.warning("%s: dropping reserved frontmatter key %r", path, RESERVED_METADATA_KEY)
     extra = {
-        k: _stringify(v) for k, v in meta.items() if k not in consumed and v not in (None, "", [])
+        k: _stringify(v)
+        for k, v in meta.items()
+        if k not in consumed and k != RESERVED_METADATA_KEY and v not in (None, "", [])
     }
 
     title_raw = _get(meta, fm_map["title"])

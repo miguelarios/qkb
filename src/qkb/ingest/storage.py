@@ -26,16 +26,34 @@ def content_hash(body: str) -> str:
 # metadata as "changed" (one legitimate write that populates the hash), and
 # every ingest after that is a true no-op. The leading/trailing dunders make an
 # accidental collision with a real frontmatter `extra_metadata` key vanishingly
-# unlikely.
+# unlikely - and a crafted collision is handled: the parser strips this key and
+# `_write_tags_and_metadata` filters it, so it can never be written as user
+# metadata alongside the reserved-hash row (which would violate the PK).
 _METADATA_HASH_KEY = "__qkb_meta_hash__"
 
 
-def metadata_hash(note: ParsedNote) -> str:
-    """Stable hash over the frontmatter-derived fields `update_metadata_if_changed`
-    is responsible for keeping in sync: title, type, context, source,
-    effective_date, created_at, tags, and extra_metadata. Deliberately excludes
-    body/file_path (covered by `content_hash`) so a body-only change is not
-    mistaken for a metadata change and vice versa.
+# Delimiters for metadata_hash serialization. Distinct ASCII control characters
+# (unlikely to appear in real frontmatter values) at each nesting level, so no
+# choice of field/list/pair boundary is ambiguous: e.g. tags ["a,b"] and
+# ["a","b"] must not collide (they would if list items were comma-joined). US =
+# field separator, RS = list-item separator, GS = key/value separator.
+_FIELD_SEP = "\x1f"
+_ITEM_SEP = "\x1e"
+_KV_SEP = "\x1d"
+
+
+def metadata_hash(note: ParsedNote, vault_name: str = "Notes") -> str:
+    """Stable hash over every non-body column `update_metadata_if_changed` is
+    responsible for keeping in sync when the body is unchanged: title, type,
+    context, source, effective_date, created_at, tags, extra_metadata, AND
+    file_path + vault_name.
+
+    file_path/vault_name are folded in deliberately: a pure rename (same id,
+    body, and frontmatter) changes neither `content_hash` nor the other
+    frontmatter fields, so without them the fast path would skip the write and
+    leave `documents.file_path` pointing at a now-nonexistent path forever,
+    breaking raw-content reads and obsidian:// links. Body is excluded (covered
+    by `content_hash`) so a body-only change isn't mistaken for a metadata one.
     """
     parts = [
         note.title or "",
@@ -44,10 +62,12 @@ def metadata_hash(note: ParsedNote) -> str:
         note.source or "",
         note.effective_date,
         note.created_at,
-        ",".join(sorted(note.tags)),
-        ",".join(f"{k}={v}" for k, v in sorted(note.extra_metadata.items())),
+        note.file_path,
+        vault_name,
+        _ITEM_SEP.join(sorted(note.tags)),
+        _ITEM_SEP.join(f"{k}{_KV_SEP}{v}" for k, v in sorted(note.extra_metadata.items())),
     ]
-    return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()
+    return hashlib.sha256(_FIELD_SEP.join(parts).encode()).hexdigest()
 
 
 class Storage:
@@ -124,7 +144,13 @@ class Storage:
             [(note.id, t) for t in dict.fromkeys(note.tags)],
         )
         self.conn.execute("DELETE FROM metadata WHERE document_id = ?", (note.id,))
-        rows = [(note.id, k, v) for k, v in note.extra_metadata.items()]
+        # Drop any user frontmatter key colliding with our reserved hash key: it
+        # and the reserved-hash row would share the (document_id, key) PK, and
+        # one executemany with both would raise IntegrityError, aborting the
+        # ENTIRE ingest run (pipeline.py only wraps parse_note in try/except, not
+        # the storage write) - a full-vault DoS from a single crafted note. The
+        # parser also strips it defensively; this is the belt-and-suspenders half.
+        rows = [(note.id, k, v) for k, v in note.extra_metadata.items() if k != _METADATA_HASH_KEY]
         rows.append((note.id, _METADATA_HASH_KEY, mhash))
         self.conn.executemany(
             "INSERT INTO metadata (document_id, key, value) VALUES (?,?,?)",
@@ -142,7 +168,7 @@ class Storage:
             self._delete_chunks(note.id)
             self._write_doc_row(note, chash)
             self._write_fts_row(note)
-            self._write_tags_and_metadata(note, metadata_hash(note))
+            self._write_tags_and_metadata(note, metadata_hash(note, self.vault_name))
             for chunk, vec in zip(chunks, embeddings, strict=True):
                 cur = self.conn.execute(
                     "INSERT INTO chunks (document_id, chunk_index, chunk_text, token_count) "
@@ -168,7 +194,7 @@ class Storage:
         difference between ~0 writes and one full-body FTS re-tokenization per
         document per cron run.
         """
-        mhash = metadata_hash(note)
+        mhash = metadata_hash(note, self.vault_name)
         if self.get_metadata_hash(note.id) == mhash:
             return False
         with self.conn:

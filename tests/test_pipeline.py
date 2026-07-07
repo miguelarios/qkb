@@ -302,6 +302,52 @@ def test_body_change_still_triggers_full_reindex(conn, provider, cfg, vault):
     assert "Edited body!" in row["body"]
 
 
+def test_pure_rename_refreshes_file_path(conn, provider, cfg, vault):
+    """Regression (finding 10 fix follow-up): renaming a note on disk with the
+    same id, body, and frontmatter (explicit title so it doesn't fall back to
+    the filename stem) must refresh documents.file_path - otherwise raw-content
+    reads and obsidian:// links point at a now-nonexistent path forever."""
+    write_note(vault, "old-name.md", ID1, extra="title: Stable Title\n")
+    ingest_vault(conn, cfg, provider)
+    assert (
+        conn.execute("SELECT file_path FROM documents WHERE id = ?", (ID1,)).fetchone()["file_path"]
+        == "old-name.md"
+    )
+
+    # Rename the file: same id, same body, same frontmatter (incl. explicit title).
+    (vault / "old-name.md").rename(vault / "new-name.md")
+    stats = ingest_vault(conn, cfg, provider)
+
+    assert stats.unchanged == 1  # body unchanged, still the fast path
+    row = conn.execute("SELECT file_path FROM documents WHERE id = ?", (ID1,)).fetchone()
+    assert row["file_path"] == "new-name.md"
+
+
+def test_reserved_metadata_key_in_frontmatter_does_not_crash(conn, provider, cfg, vault):
+    """A note whose frontmatter contains the reserved __qkb_meta_hash__ key must
+    not crash the whole ingest run (UNIQUE constraint on (document_id, key)).
+    The reserved key must not be surfaced as user metadata."""
+    write_note(vault, "evil.md", ID1, extra="__qkb_meta_hash__: evil\n")
+
+    stats = ingest_vault(conn, cfg, provider)  # must not raise
+
+    assert stats.indexed == 1
+    assert (
+        conn.execute("SELECT COUNT(*) c FROM documents WHERE id = ?", (ID1,)).fetchone()["c"] == 1
+    )
+    # the reserved key must not be exposed as if it were user-provided metadata
+    from qkb.ingest.storage import _METADATA_HASH_KEY
+
+    user_meta = {
+        r["key"]: r["value"]
+        for r in conn.execute(
+            "SELECT key, value FROM metadata WHERE document_id = ? AND key != ?",
+            (ID1, _METADATA_HASH_KEY),
+        )
+    }
+    assert "__qkb_meta_hash__" not in user_meta
+
+
 def test_interrupted_full_reembed_does_not_commit_new_model(conn, provider, cfg, vault):
     """Finding 3: an interrupted --full (fails partway through the document loop) must
     NOT commit the new model into embedding_config — the guard must still fire on the
