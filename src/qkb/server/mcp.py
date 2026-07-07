@@ -22,9 +22,21 @@ def build_server(cfg: Config | None = None) -> FastMCP:
     # Review finding 9: the previous implementation built a fresh
     # OllamaProvider (and thus a fresh keep-alive httpx.Client, never closed)
     # and re-opened SQLite (full DDL executescript + sqlite-vec extension
-    # load) on *every* tool call. The stdio server is single-threaded and
-    # long-lived, so build the connection and the embedding provider once
-    # here and let every tool call below share them.
+    # load) on *every* tool call. The server is long-lived, so build the
+    # connection and the embedding provider once here and let every tool call
+    # below share them.
+    #
+    # Sharing them safely does NOT depend on the process being
+    # single-threaded - it depends on every tool body below being a
+    # SYNCHRONOUS function (`def`, no `await`). FastMCP awaits each tool call
+    # to completion before the event loop can start the next one, so two
+    # synchronous tool bodies can never interleave their statements against
+    # `conn`/`provider`, even under concurrent requests. If a tool body were
+    # changed to `async def` (or gained an internal `await`), the event loop
+    # could switch to another call mid-body, and interleaved statements on
+    # the shared sqlite3.Connection (not thread/task-safe for concurrent use)
+    # or provider would corrupt state - that would require per-call
+    # connections or a lock around the shared ones instead.
     conn = connect(cfg.db_path, cfg.embedding_dim)
     provider = get_provider(cfg)
 

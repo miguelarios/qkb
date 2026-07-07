@@ -110,12 +110,26 @@ def test_metadata_hash_distinguishes_ambiguous_tag_splits():
 
 
 def test_metadata_hash_distinguishes_ambiguous_extra_metadata_splits():
-    """Same discipline for extra_metadata key=value pairs joined together."""
+    """Same discipline for extra_metadata key=value pairs joined together.
+
+    {"a": "b,c=d"} and {"a": "b", "c": "d"} are a genuinely-colliding pair
+    under a naive comma/equals join ("a=b,c=d" either way - asserted below)
+    - so this test would FAIL if metadata_hash regressed to that naive
+    scheme. The real implementation uses distinct US/RS/GS control-char
+    separators instead of "," and "=", so it must still tell them apart.
+    """
     from qkb.ingest.storage import metadata_hash
 
-    one = make_note(extra_metadata={"k": "a,b"})
-    two = make_note(extra_metadata={"k": "a", "b": ""})
+    one = make_note(extra_metadata={"a": "b,c=d"})
+    two = make_note(extra_metadata={"a": "b", "c": "d"})
     assert metadata_hash(one) != metadata_hash(two)
+
+    # Sanity check on the premise: confirm these two truly collide under a
+    # naive comma/equals join, so the assertion above is a real regression
+    # guard and not just two arbitrary distinct dicts.
+    naive_one = ",".join(f"{k}={v}" for k, v in sorted(one.extra_metadata.items()))
+    naive_two = ",".join(f"{k}={v}" for k, v in sorted(two.extra_metadata.items()))
+    assert naive_one == naive_two
 
 
 def test_update_metadata_if_changed_applies_ambiguous_tag_edit(conn, provider):
@@ -133,6 +147,28 @@ def test_update_metadata_if_changed_applies_ambiguous_tag_edit(conn, provider):
         r["tag"] for r in conn.execute("SELECT tag FROM tags WHERE document_id = ?", (note.id,))
     }
     assert tags == {"a,b"}
+
+
+def test_upsert_filters_reserved_metadata_key_directly(conn, provider):
+    """Independent of the parser: even if a ParsedNote's extra_metadata somehow
+    contains the reserved __qkb_meta_hash__ key (bypassing the parser's own
+    strip - see test_pipeline.test_reserved_metadata_key_in_frontmatter_does_not_crash
+    for that path), Storage.upsert's own `if k != _METADATA_HASH_KEY` filter
+    must independently prevent the IntegrityError this would otherwise cause
+    (both rows sharing the (document_id, key) primary key), and the stored
+    hash row must hold the real computed metadata_hash - not the injected
+    value."""
+    from qkb.ingest.storage import _METADATA_HASH_KEY, metadata_hash
+
+    note = make_note(extra_metadata={_METADATA_HASH_KEY: "injected-fake-hash"})
+    ingest_one(conn, provider, note)  # must not raise IntegrityError
+
+    stored = conn.execute(
+        "SELECT value FROM metadata WHERE document_id = ? AND key = ?",
+        (note.id, _METADATA_HASH_KEY),
+    ).fetchone()["value"]
+    assert stored == metadata_hash(note)
+    assert stored != "injected-fake-hash"
 
 
 def test_context_descriptions_and_stats(conn, provider):

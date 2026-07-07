@@ -38,7 +38,7 @@ def get_document(
     include_siblings: bool = True,
 ) -> dict:
     rows = conn.execute(
-        "SELECT id FROM documents WHERE id LIKE ? ESCAPE '\\'",
+        f"SELECT id FROM documents WHERE id LIKE ? ESCAPE '{_LIKE_ESCAPE}'",
         (_escape_like_prefix(id_or_prefix),),
     ).fetchall()
     if not rows:

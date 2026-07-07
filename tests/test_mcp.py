@@ -1,6 +1,9 @@
 import asyncio
 import json
+import sqlite3
 from unittest.mock import patch
+
+import pytest
 
 from qkb.config import Config
 from qkb.db import connect
@@ -129,6 +132,51 @@ def test_provider_constructed_once_and_reused_across_calls(tmp_path):
         call(server, "qkb", query="traefik")
         call(server, "qkb", query="traefik")
         assert spy.call_count == 1  # built once in build_server, reused for every tool call
+
+
+def test_lifespan_closes_provider_and_connection(tmp_path):
+    """Review finding 3 (mcp.py): the lifespan teardown must close both the
+    shared embedding provider and the shared sqlite connection built once in
+    build_server - not per tool call. Drives FastMCP's lifespan context
+    manager directly (via the low-level Server it wraps) since there's no
+    higher-level test hook for it."""
+    cfg = make_cfg(tmp_path)
+    write_note(cfg.vault_path, "a.md", ID1, body="Renewing traefik certificates.")
+    conn = connect(cfg.db_path, cfg.embedding_dim)
+    ingest_vault(conn, cfg, FakeProvider(8))
+    conn.close()
+
+    closed = {"provider": False}
+
+    class ClosingFakeProvider(FakeProvider):
+        def close(self) -> None:
+            closed["provider"] = True
+
+    captured: dict[str, sqlite3.Connection] = {}
+
+    def spy_connect(*args, **kwargs):
+        c = connect(*args, **kwargs)
+        captured["conn"] = c
+        return c
+
+    with (
+        patch(
+            "qkb.server.mcp.get_provider",
+            side_effect=lambda c: ClosingFakeProvider(c.embedding_dim),
+        ),
+        patch("qkb.server.mcp.connect", side_effect=spy_connect),
+    ):
+        server = build_server(cfg)
+
+        async def _drive_lifespan() -> None:
+            async with server._mcp_server.lifespan(server._mcp_server):
+                pass
+
+        asyncio.run(_drive_lifespan())
+
+    assert closed["provider"] is True
+    with pytest.raises(sqlite3.ProgrammingError):
+        captured["conn"].execute("SELECT 1")
 
 
 def test_connection_built_once_no_per_call_bootstrap(tmp_path):
