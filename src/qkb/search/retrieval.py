@@ -7,6 +7,28 @@ from pathlib import Path
 
 from qkb.search.results import context_description, hydrate
 
+_LIKE_ESCAPE = "\\"
+
+
+class DocumentFileMissing(FileNotFoundError):
+    """Raised when a document's on-disk file is gone since the last ingest.
+
+    Subclasses FileNotFoundError so callers that only expect the builtin
+    still catch it, while giving CLI/MCP a specific type to match on for a
+    friendly message.
+    """
+
+
+def _escape_like_prefix(raw: str) -> str:
+    """Escape LIKE metacharacters so `raw` matches only literally, then
+    append the trailing wildcard for prefix matching."""
+    escaped = (
+        raw.replace(_LIKE_ESCAPE, _LIKE_ESCAPE * 2)
+        .replace("%", _LIKE_ESCAPE + "%")
+        .replace("_", _LIKE_ESCAPE + "_")
+    )
+    return escaped + "%"
+
 
 def get_document(
     conn: sqlite3.Connection,
@@ -16,7 +38,8 @@ def get_document(
     include_siblings: bool = True,
 ) -> dict:
     rows = conn.execute(
-        "SELECT id FROM documents WHERE id LIKE ? || '%'", (id_or_prefix,)
+        "SELECT id FROM documents WHERE id LIKE ? ESCAPE '\\'",
+        (_escape_like_prefix(id_or_prefix),),
     ).fetchall()
     if not rows:
         raise KeyError(f"no document with id (prefix) {id_or_prefix!r}")
@@ -29,7 +52,14 @@ def get_document(
     if include_raw:
         if vault_path is None:
             raise ValueError("include_raw requires vault_path")
-        text = (vault_path / doc["file_path"]).read_text()
+        file_path = vault_path / doc["file_path"]
+        try:
+            text = file_path.read_text(encoding="utf-8")
+        except FileNotFoundError as e:
+            raise DocumentFileMissing(
+                f"file moved or deleted since last ingest: {doc['file_path']!r} "
+                f"(document {doc['document_id']!r}) — re-run `qkb ingest`"
+            ) from e
         desc = context_description(conn, doc["context"])
         if desc:
             text = f"<!-- Context: {desc} -->\n\n{text}"
