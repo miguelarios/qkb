@@ -46,6 +46,38 @@ def test_env_wins_over_toml(tmp_path):
     assert cfg.embedding_dim == 512
 
 
+def test_embedding_templates_default_none():
+    cfg = load_config(config_path=Path("/nonexistent/qkb.toml"), env={})
+    assert cfg.embedding_doc_template is None
+    assert cfg.embedding_query_template is None
+
+
+def test_embedding_templates_from_toml(tmp_path):
+    f = tmp_path / "config.toml"
+    f.write_text(
+        """
+[embedding]
+doc_template = "passage: {t}"
+query_template = "query: {t}"
+"""
+    )
+    cfg = load_config(config_path=f, env={})
+    assert cfg.embedding_doc_template == "passage: {t}"
+    assert cfg.embedding_query_template == "query: {t}"
+
+
+def test_embedding_templates_env_override(tmp_path):
+    cfg = load_config(
+        config_path=Path("/nonexistent/qkb.toml"),
+        env={
+            "QKB_EMBEDDING_DOC_TEMPLATE": "doc: {t}",
+            "QKB_EMBEDDING_QUERY_TEMPLATE": "query: {t}",
+        },
+    )
+    assert cfg.embedding_doc_template == "doc: {t}"
+    assert cfg.embedding_query_template == "query: {t}"
+
+
 def test_dead_api_base_and_api_key_fields_removed():
     """8c: api_base/api_key were read by nothing (no provider used them); they
     were removed from Config along with their TOML/env mappings."""

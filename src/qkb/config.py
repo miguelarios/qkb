@@ -31,6 +31,8 @@ class Config:
     embedding_model: str = "embeddinggemma"
     embedding_dim: int = 768
     ollama_host: str = "http://localhost:11434"
+    embedding_doc_template: str | None = None
+    embedding_query_template: str | None = None
     chunk_target_tokens: int = 500
     chunk_overlap_percent: int = 15
     default_limit: int = 10
@@ -52,6 +54,8 @@ _TOML_MAP = [
     ("embedding", "model", "embedding_model", str),
     ("embedding", "dimension", "embedding_dim", int),
     ("embedding", "ollama_host", "ollama_host", str),
+    ("embedding", "doc_template", "embedding_doc_template", str),
+    ("embedding", "query_template", "embedding_query_template", str),
     ("chunking", "target_tokens", "chunk_target_tokens", int),
     ("chunking", "overlap_percent", "chunk_overlap_percent", int),
     ("search", "default_limit", "default_limit", int),
@@ -70,6 +74,8 @@ _ENV_MAP = {
     "QKB_EMBEDDING_MODEL": ("embedding_model", str),
     "QKB_EMBEDDING_DIM": ("embedding_dim", int),
     "QKB_OLLAMA_HOST": ("ollama_host", str),
+    "QKB_EMBEDDING_DOC_TEMPLATE": ("embedding_doc_template", str),
+    "QKB_EMBEDDING_QUERY_TEMPLATE": ("embedding_query_template", str),
 }
 
 

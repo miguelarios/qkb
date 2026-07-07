@@ -16,11 +16,33 @@ def _formats(model: str) -> tuple[str, str]:
     return "{t}", "{t}"
 
 
+def _validated_template(name: str, template: str | None) -> str | None:
+    if template is None:
+        return None
+    if "{t}" not in template:
+        raise ValueError(f"{name} must contain a {{t}} placeholder, got {template!r}")
+    return template
+
+
 class OllamaProvider:
-    def __init__(self, host: str, model: str, dimension: int):
+    def __init__(
+        self,
+        host: str,
+        model: str,
+        dimension: int,
+        doc_template: str | None = None,
+        query_template: str | None = None,
+    ):
+        """`doc_template`/`query_template` are explicit `{t}`-placeholder prompt
+        templates (e.g. from [embedding] doc_template/query_template config).
+        When either is unset, the per-model `_formats(model)` heuristic is used
+        for that slot — so a custom model tag (that the heuristic doesn't
+        recognize) can still get correct task-prefixed prompts via config."""
         self._model = model
         self._dim = dimension
-        self._doc_fmt, self._query_fmt = _formats(model)
+        default_doc_fmt, default_query_fmt = _formats(model)
+        self._doc_fmt = _validated_template("doc_template", doc_template) or default_doc_fmt
+        self._query_fmt = _validated_template("query_template", query_template) or default_query_fmt
         self._client = httpx.Client(base_url=host, timeout=120.0)
 
     @property

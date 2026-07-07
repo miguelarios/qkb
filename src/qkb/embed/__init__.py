@@ -8,7 +8,13 @@ from qkb.embed.ollama import OllamaProvider
 
 def get_provider(cfg: Config) -> EmbeddingProvider:
     if cfg.embedding_provider == "ollama":
-        return OllamaProvider(cfg.ollama_host, cfg.embedding_model, cfg.embedding_dim)
+        return OllamaProvider(
+            cfg.ollama_host,
+            cfg.embedding_model,
+            cfg.embedding_dim,
+            doc_template=cfg.embedding_doc_template,
+            query_template=cfg.embedding_query_template,
+        )
     if cfg.embedding_provider == "fake":
         return FakeProvider(cfg.embedding_dim)
     raise ValueError(f"unknown embedding provider: {cfg.embedding_provider!r}")
