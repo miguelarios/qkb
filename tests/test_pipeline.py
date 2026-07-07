@@ -164,6 +164,48 @@ def test_parse_exception_on_present_file_does_not_deindex(conn, provider, cfg, v
     )
 
 
+def test_opted_in_note_becoming_date_unparseable_is_protected(conn, provider, cfg, vault, caplog):
+    """Finding 2 (follow-up): a previously-indexed, still-opted-in note whose only
+    date field becomes unparseable this run (frontmatter still valid YAML) must
+    NOT be de-indexed. parse_note now RAISES NoteDataError for this case, which the
+    pipeline's except branch catches and protects via file_path."""
+    write_note(vault, "a.md", ID1)
+    write_note(vault, "b.md", ID2)
+    ingest_vault(conn, cfg, provider)
+
+    # a.md: still opted in (context present), valid YAML, but its only date is a
+    # Templater placeholder that doesn't parse -> parse_note raises NoteDataError.
+    (vault / "a.md").write_text(
+        f"---\nid: {ID1}\ncontext: homelab\ncreated: <% tp.date.now() %>\n---\n\nstill here\n"
+    )
+
+    with caplog.at_level(logging.WARNING):
+        stats = ingest_vault(conn, cfg, provider)
+
+    assert stats.deindexed == 0
+    assert stats.skipped >= 1
+    # a.md's prior rows survive and remain searchable
+    assert (
+        conn.execute("SELECT COUNT(*) c FROM documents WHERE id = ?", (ID1,)).fetchone()["c"] == 1
+    )
+    assert (
+        conn.execute("SELECT COUNT(*) c FROM documents_fts WHERE doc_id = ?", (ID1,)).fetchone()[
+            "c"
+        ]
+        == 1
+    )
+
+    # But a genuine opt-out (remove context AND source) still de-indexes.
+    (vault / "a.md").write_text(
+        f"---\nid: {ID1}\ncreated: 2026-01-01T00:00:00-06:00\n---\n\nno longer indexable\n"
+    )
+    stats2 = ingest_vault(conn, cfg, provider)
+    assert stats2.deindexed == 1
+    assert (
+        conn.execute("SELECT COUNT(*) c FROM documents WHERE id = ?", (ID1,)).fetchone()["c"] == 0
+    )
+
+
 def test_duplicate_frontmatter_id_skips_second_and_no_ping_pong(conn, provider, cfg, vault, caplog):
     """Finding 4: two files sharing the same frontmatter id must not silently
     overwrite each other - the first (sorted) file wins, the duplicate is

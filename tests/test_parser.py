@@ -1,8 +1,15 @@
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from qkb.config import DEFAULT_FRONTMATTER
-from qkb.ingest.parser import normalize_context, parse_date_lenient, parse_note
+from qkb.ingest.parser import (
+    NoteDataError,
+    normalize_context,
+    parse_date_lenient,
+    parse_note,
+)
 
 FM = {k: list(v) for k, v in DEFAULT_FRONTMATTER.items()}
 
@@ -67,6 +74,42 @@ def test_blank_context_is_not_indexable(tmp_path):
         tmp_path,
         "c.md",
         "id: f47ac10b-58cc-4372-a567-0e02b2c3d403\ncontext:\ncreated: 2026-01-01T00:00:00-06:00",
+    )
+    assert parse_note(p, tmp_path, FM) is None
+
+
+def test_opted_in_note_without_id_raises(tmp_path):
+    """Finding 2 (follow-up): an OPTED-IN note (has context) that is unindexable
+    because it has no id must RAISE, not return None - so the pipeline protects a
+    previously-indexed entry instead of de-indexing it."""
+    p = note(
+        tmp_path,
+        "no-id.md",
+        "context: homelab\ncreated: 2026-01-01T00:00:00-06:00",
+    )
+    with pytest.raises(NoteDataError):
+        parse_note(p, tmp_path, FM)
+
+
+def test_opted_in_note_without_parseable_date_raises(tmp_path):
+    """Finding 2 (follow-up): an OPTED-IN note with no parseable date (and no
+    valid alias) must RAISE, not return None."""
+    p = note(
+        tmp_path,
+        "no-date.md",
+        "id: f47ac10b-58cc-4372-a567-0e02b2c3d40a\ncontext: homelab\ndate: <% tp.date.now() %>",
+    )
+    with pytest.raises(NoteDataError):
+        parse_note(p, tmp_path, FM)
+
+
+def test_true_optout_still_returns_none(tmp_path):
+    """Regression: a TRUE opt-out (no context AND no source) still returns None -
+    a legitimate de-index, not a data error."""
+    p = note(
+        tmp_path,
+        "optout.md",
+        "id: f47ac10b-58cc-4372-a567-0e02b2c3d40b\ncreated: 2026-01-01T00:00:00-06:00",
     )
     assert parse_note(p, tmp_path, FM) is None
 

@@ -17,6 +17,18 @@ log = logging.getLogger(__name__)
 CORE_KEYS = {"id", "type", "title", "context", "source", "date", "created", "tags"}
 
 
+class NoteDataError(Exception):
+    """An opted-in note (has `context` or `source`) cannot be indexed because of
+    a data error - a missing `id`, or no parseable date.
+
+    Raised instead of returning None so the ingest pipeline's `except Exception`
+    branch treats it like any other transient parse failure: the note is logged,
+    counted as `skipped`, and (if it was previously indexed) protected from the
+    deletion sweep via its stored file_path. A None return is reserved for a
+    TRUE opt-out (no context AND no source), which is a legitimate de-index.
+    """
+
+
 def parse_date_lenient(value: object) -> dt.date | None:
     if isinstance(value, dt.datetime):
         return value.date()
@@ -81,19 +93,21 @@ def parse_note(path: Path, vault_root: Path, fm_map: dict[str, list[str]]) -> Pa
     source_raw = _get(meta, fm_map["source"])
     source = str(source_raw).strip() if source_raw is not None and str(source_raw).strip() else None
     if context is None and source is None:
-        return None  # opt-in contract: not indexable
+        return None  # true opt-out (no context AND no source): a legitimate de-index
 
+    # From here the note is OPTED IN. If it's unindexable due to a data error
+    # (missing id, or no parseable date) we RAISE rather than return None, so the
+    # pipeline protects a previously-indexed entry instead of de-indexing it on a
+    # transient/graceful failure (finding 2). Only a true opt-out returns None.
     note_id = _get(meta, fm_map["id"])
     if note_id is None:
-        log.warning("skipping %s: indexable but has no id", path)
-        return None
+        raise NoteDataError(f"{path}: opted-in note has no id")
 
     created_hit = _get_parsed(meta, fm_map["created"], parse_date_lenient)
     date_hit = _get_parsed(meta, fm_map["date"], parse_date_lenient)
     effective = (date_hit[1] if date_hit else None) or (created_hit[1] if created_hit else None)
     if effective is None:
-        log.warning("skipping %s: no parseable date", path)
-        return None
+        raise NoteDataError(f"{path}: opted-in note has no parseable date")
     if created_hit is None:
         created_at = effective.isoformat()
     else:
