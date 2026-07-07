@@ -72,3 +72,85 @@ def test_filters_applied(conn, provider):
         conn, "certificates", Filters(context="cooking"), limit=5, candidates=10, provider=provider
     )
     assert all(r[0] == ID_B for r in results)
+
+
+def test_filter_restricts_candidates_before_knn(conn, provider):
+    """Finding 5: a filtered vector search must not run KNN globally first and
+    filter afterward, or a filter-passing match outside the global top-k is
+    silently dropped (DESIGN.md §8.5 promises pre-restriction).
+
+    FakeProvider gives identical text identical vectors -> distance 0. Seed
+    many out-of-context decoy docs whose body is the exact query text (so they
+    dominate the global top-k), plus one in-context target doc with unrelated
+    text (nonzero distance, ranked far outside the global top-k). candidates
+    is small enough that the old `k = candidates * 4` global search never
+    reaches the target doc.
+    """
+    query = "certificate renewal steps for the reverse proxy"
+    candidates = 3  # old code: k = candidates * 4 = 12
+    n_decoys = 20  # >> 12, so the target is pushed well outside the old global top-k
+    for i in range(n_decoys):
+        ingest_one(
+            conn,
+            provider,
+            make_note(
+                id=f"decoy-{i:04d}",
+                title=f"Decoy {i}",
+                context="cooking",
+                file_path=f"03-Resources/Decoy{i}.md",
+                body=query,  # identical text -> distance 0, globally nearest
+            ),
+        )
+    ingest_one(
+        conn,
+        provider,
+        make_note(
+            id="target-0001",
+            title="Traefik Renewal Target",
+            context="homelab-traefik",
+            file_path="02-Areas/Homelab/Target.md",
+            body="Unrelated maintenance notes about disk usage on the NAS.",
+        ),
+    )
+
+    unfiltered = search_vector(
+        conn, query, Filters(), limit=5, candidates=candidates, provider=provider
+    )
+    assert unfiltered, "sanity: unfiltered search should still find the global nearest decoys"
+    assert all(r[0].startswith("decoy-") for r in unfiltered)
+
+    filtered = search_vector(
+        conn,
+        query,
+        Filters(context="homelab-traefik"),
+        limit=5,
+        candidates=candidates,
+        provider=provider,
+    )
+    assert filtered, (
+        "filtered search must find the in-context doc even though it's outside the global top-k"
+    )
+    assert all(r[0] == "target-0001" for r in filtered)
+
+
+def test_limit_above_candidates_not_truncated(conn, provider):
+    """Finding 6: candidate k must scale with the requested limit, not just
+    `candidates` — otherwise a large --limit is silently capped."""
+    n_docs = 8
+    for i in range(n_docs):
+        ingest_one(
+            conn,
+            provider,
+            make_note(
+                id=f"doc-{i:04d}",
+                title=f"Doc {i}",
+                context="homelab-traefik",
+                file_path=f"02-Areas/Homelab/Doc{i}.md",
+                body=f"Distinct content about topic number {i} for the search index.",
+            ),
+        )
+    candidates = 3  # deliberately smaller than both n_docs and limit
+    results = search_vector(
+        conn, "topic", Filters(), limit=15, candidates=candidates, provider=provider
+    )
+    assert len(results) == n_docs  # not capped at `candidates`

@@ -41,11 +41,17 @@ def search(
     if provider is None:
         raise ValueError(f"tier {tier!r} requires an embedding provider")
     if tier == "vector":
-        rows = search_vector(conn, query, filters, limit, cfg.vec_candidates, provider)
+        vec_n = max(limit, cfg.vec_candidates)
+        rows = search_vector(conn, query, filters, limit, vec_n, provider)
         return [(d, s, text) for d, s, text in rows]
     if tier == "hybrid":
-        bm = search_bm25(conn, query, filters, cfg.fts_candidates, cfg.fts_weights)
-        vec = search_vector(conn, query, filters, cfg.vec_candidates, cfg.vec_candidates, provider)
+        # Requesting `limit` above the default candidate pool must still
+        # reach `limit` results on each leg, or the fixed pool size silently
+        # truncates a large --limit (review finding 6).
+        bm_n = max(limit, cfg.fts_candidates)
+        vec_n = max(limit, cfg.vec_candidates)
+        bm = search_bm25(conn, query, filters, bm_n, cfg.fts_weights)
+        vec = search_vector(conn, query, filters, vec_n, vec_n, provider)
         merged = rrf_merge([[(d, s) for d, s, _ in bm], [(d, s) for d, s, _ in vec]], k=cfg.rrf_k)
         chunk_text = {d: t for d, _, t in vec}
         snippet = {d: s for d, _, s in bm}

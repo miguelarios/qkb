@@ -69,3 +69,27 @@ def test_hybrid_attaches_matched_text(conn, provider):
     doc_ids = [r[0] for r in results]
     assert ID_A in doc_ids
     assert all(isinstance(r[2], str) and r[2] for r in results)
+
+
+def test_hybrid_limit_above_candidate_pool_not_truncated(conn, provider):
+    """Finding 6: a large --limit must not be silently capped at the fixed
+    fts_candidates/vec_candidates pool size for either leg of the hybrid tier."""
+    cfg = make_cfg()
+    cfg.fts_candidates = 3
+    cfg.vec_candidates = 3
+    n_docs = 8
+    for i in range(n_docs):
+        ingest_one(
+            conn,
+            provider,
+            make_note(
+                id=f"hydoc-{i:04d}",
+                title=f"Hybrid Doc {i}",
+                context="homelab-traefik",
+                file_path=f"02-Areas/Homelab/HyDoc{i}.md",
+                body=f"proxy configuration notes number {i} for the certificate renewal task",
+            ),
+        )
+    results = search(conn, cfg, provider, "proxy certificate", Filters(), limit=15, tier="hybrid")
+    assert len(results) > cfg.vec_candidates
+    assert len(results) == n_docs
