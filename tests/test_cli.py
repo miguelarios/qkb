@@ -64,6 +64,26 @@ def test_get_and_contexts_and_status(tmp_path):
     assert json.loads(r.output)["documents"] == 1
 
 
+def test_context_describe_normalizes_label(tmp_path):
+    """8a: `context describe` must normalize the label through the same
+    normalize_context() used everywhere else, not a hand-rolled strip().lower()."""
+    vault, env = make_env(tmp_path)
+    write_note(vault, "a.md", ID1)
+    run(["ingest"], env)
+
+    r = run(["context", "describe", "  Homelab  ", "Home server notes"], env)
+    assert r.exit_code == 0
+    r = run(["contexts", "--json"], env)
+    rows = json.loads(r.output)
+    assert rows[0]["context"] == "homelab" and rows[0]["description"] == "Home server notes"
+
+
+def test_context_describe_empty_label_errors(tmp_path):
+    vault, env = make_env(tmp_path)
+    r = run(["context", "describe", "   ", "desc"], env)
+    assert r.exit_code != 0
+
+
 def test_get_and_status_reject_removed_json_flag(tmp_path):
     vault, env = make_env(tmp_path)
     write_note(vault, "a.md", ID1)

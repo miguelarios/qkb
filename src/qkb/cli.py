@@ -12,6 +12,7 @@ from rich.table import Table
 from qkb.config import Config, load_config
 from qkb.db import connect
 from qkb.embed import get_provider
+from qkb.ingest.parser import normalize_context
 from qkb.ingest.pipeline import ingest_vault
 from qkb.ingest.storage import Storage
 from qkb.search.filters import Filters
@@ -224,11 +225,14 @@ def context() -> None:
 @click.argument("description", required=False)
 @click.option("--remove", is_flag=True)
 def describe(label, description, remove):
+    context = normalize_context(label)
+    if context is None:
+        raise click.UsageError("label must not be empty")
     storage = Storage(_conn(_cfg()))
     if remove:
-        storage.set_context_description(label.strip().lower(), None)
+        storage.set_context_description(context, None)
     elif description:
-        storage.set_context_description(label.strip().lower(), description)
+        storage.set_context_description(context, description)
     else:
         raise click.UsageError("provide a description or --remove")
 
