@@ -33,7 +33,7 @@ Knowledge captured in the vault — meeting transcripts, AI-generated notes, art
 
 ## Audience: Who are we building for?
 
-Two first-class consumers, equal priority: **Miguel at the terminal** (fast, filterable search that beats opening Obsidian) and **LLM agents via MCP** (Claude Code/Desktop answering questions from vault content, with document retrieval by stable UUID). Explicitly not building for: multi-user setups, non-Obsidian sources, or web UI consumers in this phase — though the public package means other Obsidian users with a compatible frontmatter setup can adopt it.
+Two first-class consumers, equal priority: **the vault owner at the terminal** (fast, filterable search that beats opening Obsidian) and **LLM agents via MCP** (Claude Code/Desktop answering questions from vault content, with document retrieval by stable UUID). Explicitly not building for: multi-user setups, non-Obsidian sources, or web UI consumers in this phase — though the public package means other Obsidian users with a compatible frontmatter setup can adopt it.
 
 ## What: Roughly, what does it look like?
 

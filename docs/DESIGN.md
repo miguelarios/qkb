@@ -116,7 +116,10 @@ Embedding and LLM dependencies are runtime-selected via the provider abstraction
 |----------|--------|--------|---------|
 | `id` | Any UUID-producing method (plugin, macro, script — see ADR-003) | UUID v4 | `31d5dce7-b7d7-4d8d-8292-414d2c5340b6` |
 | `type` | Linter default | Open string, default `note` | `transcript`, `ai-notes`, `jd`, `article` |
-| `date created` | Linter YAML Timestamp rule | `YYYY-MM-DD` | `2026-03-15` |
+| `created` | Linter YAML Timestamp rule | ISO 8601 datetime with offset | `2026-03-15T13:50:19-06:00` |
+| `title` | Linter/template | Free text; falls back to filename if absent | `Project Kickoff Transcript` |
+
+Legacy key: a small number of older notes use `date created` instead of `created` (both hold ISO 8601 datetimes). The parser accepts `created` first, then `date created`, so no vault migration is required.
 
 ### Indexing properties (presence of either triggers ingestion)
 
@@ -124,6 +127,8 @@ Embedding and LLM dependencies are runtime-selected via the provider abstraction
 |----------|---------|---------------|
 | `context` | Topical grouping slug | `family-health`, `homelab-traefik`, `acme-corp-pm-role` |
 | `source` | Sibling-joining key | `2026-03-15-project-kickoff`, `https://blog.example.com/post` |
+
+An empty value does not trigger indexing: notes with `context:` or `source:` present but blank (observed in real vaults, e.g. left by templates) are treated as if the property were absent.
 
 ### Optional enrichment
 
@@ -141,22 +146,34 @@ QMD organizes by *collections* (directories) and *user-added context description
 
 ## 5. Date Handling
 
-The pipeline stores a single `effective_date` per document in SQLite. Resolution order:
+The pipeline stores two timestamps per document: `created_at` (full ISO 8601 datetime from frontmatter, preserving time and offset) and `effective_date` (a `YYYY-MM-DD` date used for filtering). Resolution order for `effective_date`:
 
 ```
-1. frontmatter["date"]          — explicit event date (optional, user- or pipeline-set)
-2. frontmatter["date created"]  — linter-stamped file creation date (always present)
+1. frontmatter["date"]     — explicit event date (optional, user- or pipeline-set)
+2. frontmatter["created"]  — linter-stamped ISO datetime (or legacy "date created")
 ```
 
-`date created` reflects when the file was created in Obsidian. Most of the time, this is also when the event happened. But for pipeline-generated transcripts, the file might be created a day after the meeting or appointment. In that case, the pipeline stamps a `date` field with the actual event date, and the ingestion script uses that instead.
+`created` reflects when the file was created in Obsidian. Most of the time, this is also when the event happened. But for pipeline-generated transcripts, the file might be created a day after the meeting or appointment. In that case, the pipeline stamps a `date` field with the actual event date, and the ingestion script uses that instead.
+
+Real-vault caveats the parser must handle (all observed in the wild):
+
+- `created` is an ISO 8601 datetime with timezone offset (`2026-01-08T13:50:19-06:00`) — the date part is extracted for `effective_date`.
+- `date` values may be invalid: unexpanded Templater artifacts (`<% tp.date.now() %>`) or empty strings. Invalid `date` values are ignored with a warning, falling back to `created`.
+- YAML may parse dates as `datetime.date`/`datetime.datetime` objects rather than strings — both are normalized.
 
 ```python
-def resolve_date(frontmatter: dict) -> str:
-    """Priority: date > date created. Both YYYY-MM-DD."""
-    return frontmatter.get("date") or frontmatter["date created"]
-```
+def resolve_effective_date(frontmatter: dict) -> str:
+    """Priority: date > created > date created. Returns YYYY-MM-DD.
 
-The Obsidian Linter guarantees `date created` is always present, so this never returns `None`.
+    Invalid or missing values fall through to the next source;
+    a document with no parseable date at all is skipped with a warning.
+    """
+    for key in ("date", "created", "date created"):
+        parsed = parse_date_lenient(frontmatter.get(key))  # str | date | datetime -> date | None
+        if parsed:
+            return parsed.isoformat()
+    raise SkipDocument("no parseable date")
+```
 
 ---
 
@@ -174,11 +191,11 @@ CREATE TABLE documents (
     type           TEXT NOT NULL,            -- 'transcript', 'ai-notes', 'article', etc.
     context        TEXT,                     -- nullable topical grouping slug
     source         TEXT,                     -- nullable sibling-joining key
-    effective_date TEXT NOT NULL,            -- resolved from date > date created
-    date_created   TEXT NOT NULL,            -- always present (linter-stamped)
+    effective_date TEXT NOT NULL,            -- YYYY-MM-DD, resolved: date > created (§5)
+    created_at     TEXT NOT NULL,            -- full ISO 8601 datetime from frontmatter 'created'
     file_path      TEXT NOT NULL,            -- relative path from vault root
     content_hash   TEXT NOT NULL,            -- SHA-256 of markdown body
-    title          TEXT,                     -- filename without extension
+    title          TEXT,                     -- frontmatter 'title', fallback: filename without extension
     vault_name     TEXT NOT NULL DEFAULT 'Notes',  -- for constructing obsidian:// URIs at query time
     indexed_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
@@ -752,10 +769,12 @@ QUERY_EXPANSION_ENABLED = False
 # Frontmatter keys
 FM_ID = "id"
 FM_TYPE = "type"
+FM_TITLE = "title"
 FM_CONTEXT = "context"
 FM_SOURCE = "source"
 FM_DATE = "date"
-FM_DATE_CREATED = "date created"
+FM_CREATED = "created"
+FM_CREATED_LEGACY = "date created"            # older notes; same ISO datetime format
 FM_TAGS = "tags"
 ```
 
@@ -912,7 +931,7 @@ Extraction by file type:
 | **Indexing trigger** | All files in a collection | Opt-in via `context` or `source` in frontmatter |
 | **BM25 granularity** | Document-level, weighted columns | Document-level, weighted columns (ADR-005) |
 | **Sibling documents** | Not supported | Automatic via shared `source` slug |
-| **Date handling** | File modification date | `date` > `date created` priority resolution |
+| **Date handling** | File modification date | `date` > `created` priority resolution |
 | **Filtering** | By collection | By context, source, type, tags, date range |
 | **Embedding** | embeddinggemma-300M (GGUF, in-process) | Configurable: Ollama, OpenAI-compatible |
 | **Search tiers** | 3 (search, vsearch, query) | 4 (search, vsearch, query, query --rerank) |
