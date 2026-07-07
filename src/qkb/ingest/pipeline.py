@@ -43,8 +43,12 @@ def ingest_vault(
         # before, which `check_embedding_config` alone would not catch - must
         # also force the next plain ingest to fail rather than silently
         # leaving un-reached docs without chunks_vec entries.
-        storage.rebuild_vector_index(provider.dimension)
+        # Mark the sentinel BEFORE rebuilding the vector table: rebuild_vector_index
+        # drops+recreates chunks_vec and commits, so a crash in the window between
+        # that commit and the sentinel commit would otherwise leave the vector index
+        # wiped with no sentinel set and the old config still valid - undetectable.
         storage.mark_ingest_in_progress()
+        storage.rebuild_vector_index(provider.dimension)
     else:
         if storage.is_ingest_in_progress():
             raise RuntimeError(
