@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 import frontmatter
 
@@ -45,6 +47,26 @@ def _get(meta: dict, aliases: list[str]) -> object | None:
     return None
 
 
+T = TypeVar("T")
+
+
+def _get_parsed(
+    meta: dict, aliases: list[str], parse: Callable[[object], T | None]
+) -> tuple[object, T] | None:
+    """Walk an alias list and return the (raw, parsed) pair for the first alias
+    whose value is present, non-empty, AND satisfies `parse`.
+
+    Unlike `_get`, a present-but-unparseable value does not stop the search:
+    per DESIGN.md §5, invalid values fall through to the next alias.
+    """
+    for key in aliases:
+        if key in meta and meta[key] not in (None, ""):
+            parsed = parse(meta[key])
+            if parsed is not None:
+                return meta[key], parsed
+    return None
+
+
 def _stringify(value: object) -> str:
     if isinstance(value, list):
         return ", ".join(str(v) for v in value)
@@ -66,18 +88,20 @@ def parse_note(path: Path, vault_root: Path, fm_map: dict[str, list[str]]) -> Pa
         log.warning("skipping %s: indexable but has no id", path)
         return None
 
-    created_raw = _get(meta, fm_map["created"])
-    created_date = parse_date_lenient(created_raw)
-    effective = parse_date_lenient(_get(meta, fm_map["date"])) or created_date
+    created_hit = _get_parsed(meta, fm_map["created"], parse_date_lenient)
+    date_hit = _get_parsed(meta, fm_map["date"], parse_date_lenient)
+    effective = (date_hit[1] if date_hit else None) or (created_hit[1] if created_hit else None)
     if effective is None:
         log.warning("skipping %s: no parseable date", path)
         return None
-    if created_raw is None:
+    if created_hit is None:
         created_at = effective.isoformat()
-    elif isinstance(created_raw, dt.date):  # covers datetime (subclass) too
-        created_at = created_raw.isoformat()
     else:
-        created_at = str(created_raw)
+        created_raw = created_hit[0]
+        if isinstance(created_raw, dt.date):  # covers datetime (subclass) too
+            created_at = created_raw.isoformat()
+        else:
+            created_at = str(created_raw)
 
     tags_raw = _get(meta, fm_map["tags"])
     if isinstance(tags_raw, str):

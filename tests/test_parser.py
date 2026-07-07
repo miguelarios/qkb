@@ -100,6 +100,61 @@ def test_bad_date_field_falls_back_to_created(tmp_path):
     assert n.effective_date == "2026-02-02"
 
 
+def test_broken_created_falls_through_to_legacy_alias(tmp_path):
+    """Finding 7: a present-but-unparseable `created` must not shadow a valid
+    `date created` alias. No `date` key present, so effective_date and
+    created_at both come from the legacy alias."""
+    p = note(
+        tmp_path,
+        "f.md",
+        "id: f47ac10b-58cc-4372-a567-0e02b2c3d407\n"
+        "context: homelab\n"
+        "created: <% tp.date.now() %>\n"
+        "date created: 2026-07-01",
+    )
+    n = parse_note(p, tmp_path, FM)
+    assert n is not None
+    assert n.effective_date == "2026-07-01"
+    assert n.created_at == "2026-07-01"
+    assert "created" not in n.extra_metadata
+    assert "date created" not in n.extra_metadata
+
+
+def test_broken_created_with_valid_date_falls_back_to_effective(tmp_path):
+    """Finding 7: when no `created` alias parses, created_at must fall back to
+    the effective date's ISO string, never the raw unparseable value."""
+    p = note(
+        tmp_path,
+        "g.md",
+        "id: f47ac10b-58cc-4372-a567-0e02b2c3d408\n"
+        "context: homelab\n"
+        "date: 2026-06-01\n"
+        "created: <% tp.date.now() %>",
+    )
+    n = parse_note(p, tmp_path, FM)
+    assert n is not None
+    assert n.effective_date == "2026-06-01"
+    assert n.created_at == "2026-06-01"
+    assert "created" not in n.extra_metadata
+
+
+def test_valid_created_still_wins_over_legacy_alias(tmp_path):
+    """Regression: when `created` itself parses, it wins over `date created`
+    (alias order preserved) and created_at reflects it."""
+    p = note(
+        tmp_path,
+        "h.md",
+        "id: f47ac10b-58cc-4372-a567-0e02b2c3d409\n"
+        "context: homelab\n"
+        "created: 2026-02-02T08:00:00-06:00\n"
+        "date created: 2020-01-01",
+    )
+    n = parse_note(p, tmp_path, FM)
+    assert n is not None
+    assert n.effective_date == "2026-02-02"
+    assert n.created_at == "2026-02-02T08:00:00-06:00"
+
+
 def test_remapped_keys(tmp_path):
     fm = {k: list(v) for k, v in DEFAULT_FRONTMATTER.items()}
     fm["context"] = ["category"]
