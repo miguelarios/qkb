@@ -206,6 +206,24 @@ def test_opted_in_note_becoming_date_unparseable_is_protected(conn, provider, cf
     )
 
 
+def test_new_unindexable_opted_in_file_is_skipped_not_crashed(conn, provider, cfg, vault, caplog):
+    """Finding 2 (follow-up): a brand-new, never-indexed, opted-in file that is
+    unindexable (unparseable date -> parse_note raises NoteDataError) must be
+    caught and skipped - no crash, nothing to protect, nothing to de-index."""
+    (vault / "broken.md").write_text(
+        f"---\nid: {ID1}\ncontext: homelab\nsource: somewhere\n"
+        "date: <% tp.date.now() %>\n---\n\nx\n"
+    )
+
+    with caplog.at_level(logging.WARNING):
+        stats = ingest_vault(conn, cfg, provider)
+
+    assert stats.indexed == 0
+    assert stats.deindexed == 0
+    assert stats.skipped >= 1
+    assert conn.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"] == 0
+
+
 def test_duplicate_frontmatter_id_skips_second_and_no_ping_pong(conn, provider, cfg, vault, caplog):
     """Finding 4: two files sharing the same frontmatter id must not silently
     overwrite each other - the first (sorted) file wins, the duplicate is

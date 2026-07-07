@@ -95,21 +95,15 @@ def ingest_vault(
         else:
             stats.updated += 1
 
-    # Deletion sweep (DESIGN.md §7.1): de-index previously-indexed docs whose
-    # id wasn't `seen` this run - i.e. the file is gone, or the note parsed
-    # successfully but returned None (explicit opt-out, or missing id/date).
-    # We exclude `parse_failed_ids` (finding 2) so a file that still exists but
-    # raised a parse error this run keeps its last-good index entry instead of
-    # being purged. NOTE: parse_note's return contract can't currently
-    # distinguish an explicit opt-out (legitimate de-index) from a
-    # missing-id/missing-date skip (arguably also transient) when it returns
-    # None rather than raising - only the exception path carries enough
-    # information to resolve back to a doc id via file_path. Given that
-    # ambiguity, the None-return case is left as before (still de-indexed);
-    # only the exception case is protected here. This is the minimal change
-    # that fixes the reported failure mode (a raised parse exception on a
-    # still-present file silently vanishing the note) without touching
-    # parse_note's contract or the existing opt-out behavior.
+    # Deletion sweep (DESIGN.md §7.1): de-index a previously-indexed doc only when
+    # its file is genuinely gone from the vault, OR its note is a true opt-out
+    # (parse_note returned None - no context AND no source). We exclude
+    # `parse_failed_ids` (finding 2): a file that still exists but failed this run
+    # keeps its last-good index entry. parse_note now makes that distinction for
+    # us - an unindexable opted-in note (missing id or no parseable date) raises
+    # NoteDataError instead of returning None, so it's caught above, resolved to a
+    # doc id via file_path, and added to parse_failed_ids. Thus only true opt-outs
+    # and truly-absent files fall through to de-indexing here.
     for gone in (previously_indexed - set(seen)) - parse_failed_ids:
         storage.delete(gone)
         stats.deindexed += 1
