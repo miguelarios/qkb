@@ -1,0 +1,203 @@
+# QKB Architecture Decisions
+
+Captures design questions raised during brainstorming, the options considered, and the decisions made with rationale.
+
+---
+
+## ADR-001: Project Naming
+
+**Date**: 2026-04-02
+**Status**: Decided
+
+**Question**: What should the project be called?
+
+**Options considered**:
+- `pis-search` — tied to PIS (Personal Information System), a term not widely recognized
+- `qkb` — Query Knowledge Base, mirrors QMD's naming pattern (Query Markdown Documents)
+- `pkb-search`, `vault-search`, and other alternatives
+
+**Decision**: `qkb` (Query Knowledge Base)
+
+**Rationale**: Short, memorable, parallel to QMD's naming convention. "Knowledge base" is the widely recognized term for what the Obsidian vault represents (per PKM/PKMS/PIM/PIS research). The name describes what it does (query) and what it searches (a knowledge base) without being tied to a specific tool name like Obsidian.
+
+---
+
+## ADR-002: Obsidian URI Strategy
+
+**Date**: 2026-04-02
+**Status**: Decided
+
+**Question**: Should Obsidian URIs use the Advanced URI plugin (`obsidian://adv-uri?vault=...&uid=...`) or standard Obsidian URIs (`obsidian://open?vault=...&file=...`)?
+
+**Options considered**:
+- **Advanced URI plugin**: UUID-based, survives file moves, but creates a hard dependency on a third-party plugin
+- **Standard Obsidian URI**: Path-based (`obsidian://open?vault=<name>&file=<path>`), no plugin dependency, but goes stale if file moves between ingestion runs
+
+**Decision**: Standard Obsidian URIs, constructed at query time from the current file path.
+
+**Rationale**: No third-party plugin dependency. The URI is ephemeral by nature — it's built on-the-fly from whatever path the database currently has. If a file moves between ingestion runs, the URI may go stale, but the UUID remains the stable identifier in the database. The next ingestion run updates the path, and the URI self-heals. This is an acceptable tradeoff for zero plugin dependencies.
+
+---
+
+## ADR-003: UUID Generation
+
+**Date**: 2026-04-02
+**Status**: Decided
+
+**Question**: How should the `id` (UUID) property in frontmatter be generated?
+
+**Options considered**:
+- **Advanced URI plugin**: Previously used, but creates plugin dependency
+- **Any UUID plugin, QuickAdd macro, or scripting**: Multiple paths to the same result
+
+**Decision**: UUID generation is not prescribed — any method that produces a UUID v4 in the `id` frontmatter property works (plugin, macro, script, manual).
+
+**Rationale**: The ingestion pipeline only cares that `id` exists and contains a valid UUID. How it got there is irrelevant. This avoids coupling the system to any specific Obsidian plugin.
+
+---
+
+## ADR-004: Vault Path Configuration
+
+**Date**: 2026-04-02
+**Status**: Decided
+
+**Question**: Should the vault path be hardcoded or configurable?
+
+**Decision**: Environment variable (`VAULT_PATH`), with a sensible default.
+
+**Rationale**: QKB runs in multiple environments (macOS local, Docker on a home server). Hardcoding a path doesn't work. An env var is the simplest configuration mechanism that works everywhere.
+
+---
+
+## ADR-005: BM25 Granularity — Document-Level vs Chunk-Level
+
+**Date**: 2026-04-03
+**Status**: Decided
+
+**Question**: Should BM25 (FTS5) operate at the document level (one row per document with weighted metadata columns) or at the chunk level (one row per chunk)?
+
+**Context**: This is a fundamental architectural decision that affects the FTS5 schema, how RRF fusion works, and what kind of results BM25 returns.
+
+**Options considered**:
+
+1. **Document-level BM25 with weighted columns** (QMD's approach)
+   - FTS5 table has columns: title, tags, context, body, type — each with tunable BM25 weights
+   - Returns ranked documents; vector search returns ranked chunks deduplicated to documents; RRF merges both document-level lists
+   - Pros: Title/metadata get explicit weight control, IDF signal is cleaner at document level, simpler schema, proven in QMD
+   - Cons: Loses passage-level precision in the BM25 path (vector search provides that instead)
+
+2. **Chunk-level BM25** (standard RAG pattern)
+   - FTS5 table has one row per chunk, `chunk_text` only
+   - Both BM25 and vector operate at the same granularity — clean RRF merge
+   - Pros: Same granularity for both backends, standard in the RAG literature
+   - Cons: Chunks lose document context (title, metadata), no way to weight title matches vs body matches
+
+3. **Chunk-level BM25 with metadata prefix** (Anthropic's Contextual Retrieval variation)
+   - Prepend frontmatter metadata or LLM-generated summary to each chunk before FTS5 indexing
+   - Anthropic's research shows 49% reduction in retrieval failures (67% with reranking)
+   - Pros: Research-backed, same granularity as vector, context preserved
+   - Cons: LLM-generated summaries add ingestion cost; metadata-only prefix is just keywords, not a real summary; loses fine-grained weight control per field
+
+**Decision**: Document-level BM25 with weighted columns (Option 1).
+
+**Rationale**:
+- **QKB serves dual audiences**: LLM agents need passage-level context (vector search handles this), but human users want to find the right *document* to open in Obsidian. Document-level BM25 directly serves the human use case.
+- **Rich metadata deserves explicit weighting**: QKB has richer metadata than QMD (title, context, tags, type). A title match for "project kickoff" should rank very differently from a body mention. Weighted columns make this tunable.
+- **Validated by QMD**: QMD uses this architecture in production with the same tech stack (SQLite FTS5 + sqlite-vec, RRF fusion). The different-granularity merge works.
+- **Complementary, not competing**: LLM-generated chunk summaries (Anthropic's approach) could enhance the *vector search* path in the future without disrupting document-level BM25. The two approaches layer well.
+- **Full body in FTS5 is fine**: FTS5 handles large documents well with built-in length normalization. Even long transcripts don't need truncation.
+
+**FTS5 schema**:
+```sql
+CREATE VIRTUAL TABLE documents_fts USING fts5(
+  title,
+  tags,
+  context,
+  body,
+  type,
+  tokenize='porter unicode61'
+);
+
+-- Query with weights: title 5.0, tags 3.0, context 2.0, body 1.0, type 0.5
+ORDER BY bm25(documents_fts, 5.0, 3.0, 2.0, 1.0, 0.5)
+```
+
+**Research backing**: See `references/bm25-architecture-research.md` for full analysis of the RAG literature, Anthropic's Contextual Retrieval, and QMD's approach.
+
+---
+
+## ADR-006: Extra Frontmatter Properties Storage
+
+**Date**: 2026-04-03
+**Status**: Decided
+
+**Question**: Should QKB store frontmatter properties beyond the core contract (id, type, date created, date, context, source, tags)?
+
+**Context**: Obsidian notes may have domain-specific properties like `company`, `interviewer`, `provider`, `salary-min`, `status`, etc. These vary by domain and evolve over time.
+
+**Options considered**:
+
+1. **Strict core only** — Only ingest contract fields. Domain properties exist in the markdown body only, findable via text search but not as structured filters.
+2. **Core columns + metadata key-value table** — Core fields get dedicated indexed columns. Everything else in frontmatter gets stored in a key-value table (`document_id`, `key`, `value`). Domain properties are queryable but not first-class.
+3. **Core columns + curated domain columns** — Hand-pick domain fields and give them dedicated columns. Schema changes every time a new domain is added.
+
+**Decision**: Option 2 — Core columns + metadata key-value table.
+
+**Rationale**: (from Claude Desktop conversation) Core fields used for filtering and joining (`id`, `type`, `context`, `source`, `date`, `file_path`) earn dedicated indexed columns because they appear in SQL WHERE clauses constantly. Everything else goes into a key-value table for occasional filtering. This means QKB never needs a schema change when a new domain is added. The performance difference between indexed columns and key-value lookups is negligible at personal vault scale.
+
+**Schema addition**:
+```sql
+CREATE TABLE metadata (
+    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    key         TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    PRIMARY KEY (document_id, key)
+);
+```
+
+---
+
+## ADR-007: FTS5 Column Weights
+
+**Date**: 2026-04-03
+**Status**: Decided
+
+**Question**: What BM25 weights should be assigned to each FTS5 column?
+
+**Decision**:
+
+| Column | Weight | Rationale |
+|--------|--------|-----------|
+| `title` | 5.0 | Dense signal, short, always relevant — strongest boost |
+| `tags` | 3.0 | Human-curated, high precision signal |
+| `context` | 2.0 | Topical grouping slug — good for surfacing related notes |
+| `body` | 1.0 | Baseline, high volume, noisier |
+| `type` | 0.5 | Better as a filter than a ranking signal |
+
+**Rationale**: Weights reflect signal density relative to text volume. Title is short and human-written — a keyword match there is highly intentional. Tags are human-curated labels. Context is a single slug. Body is the bulk of the text. Type is usually better used as a filter (`--type transcript`) than a free-text match. These are tunable once real data is available.
+
+**Note**: `source`, `date`, and `id` are excluded from FTS5 — they're identifiers and timestamps, not text to match against. They remain as metadata columns on the `documents` table for filtering.
+
+---
+
+## ADR-008: Tags Stored in Two Places (Junction Table + FTS5)
+
+**Date**: 2026-04-04
+**Status**: Decided
+
+**Question**: Tags need to support both exact AND-match filtering (`--tags medical,gi`) and BM25 relevance boosting. Should they live in one place or two?
+
+**Options considered**:
+
+1. **Junction table only** — Exact filtering works, but tag matches don't contribute to BM25 relevance ranking.
+2. **FTS5 column only** — BM25 boosting works, but exact AND-match filtering is impossible because the `porter unicode61` tokenizer stems words and splits hyphens (e.g., `phone-screen` → `phone` + `screen`).
+3. **Both** — Junction table for exact structured filtering, FTS5 `tags` column (space-separated) for BM25 weighted matching.
+
+**Decision**: Option 3 — tags in both places.
+
+**Rationale**: Each copy serves a different purpose. The junction table handles `--tags phone-screen` as an exact match. The FTS5 column lets tag terms contribute to BM25 ranking with a 3.0× weight. Since both are written at ingestion time from the same frontmatter source, they can't drift out of sync.
+
+**Pitfalls evaluated**:
+- **FTS5 tokenization mangles hyphenated tags**: `phone-screen` becomes two tokens. This is acceptable for *relevance boosting* (you want partial matches to contribute to ranking) but is exactly why the junction table is needed for *exact filtering*.
+- **Tag-heavy documents get a slight BM25 boost**: More tags = more text in the column. BM25 length normalization mitigates this, and at 1-3 tags per note it's negligible.
+- **Storage duplication**: Tags are tiny strings. The overhead is bytes, not megabytes.
