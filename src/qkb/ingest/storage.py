@@ -31,6 +31,14 @@ def content_hash(body: str) -> str:
 # metadata alongside the reserved-hash row (which would violate the PK).
 _METADATA_HASH_KEY = "__qkb_meta_hash__"
 
+# Sentinel key in the same `embedding_config` KV table marking "a --full
+# re-embed is currently in progress / did not complete". See
+# `mark_ingest_in_progress`/`clear_ingest_in_progress`/`is_ingest_in_progress`
+# below. Distinct from "model_name"/"embedding_dim" (the only two keys
+# `check_embedding_config` compares), so its presence never perturbs that
+# comparison.
+_INGEST_IN_PROGRESS_KEY = "ingest_in_progress"
+
 
 # Delimiters for metadata_hash serialization. Distinct ASCII control characters
 # (unlikely to appear in real frontmatter values) at each nesting level, so no
@@ -251,6 +259,47 @@ class Storage:
         doesn't crash on the first insert at the new dimension (finding 1).
         """
         rebuild_vector_table(self.conn, embedding_dim)
+
+    def mark_ingest_in_progress(self) -> None:
+        """Set the `ingest_in_progress` sentinel in `embedding_config`.
+
+        Called at the START of a `--full` re-embed (before the document loop)
+        so an interruption partway through - even with the SAME model/dim as
+        before - is detectable on the next plain ingest. Without this, an
+        interrupted same-model `--full` leaves un-reached docs with orphaned
+        `chunks` rows but no `chunks_vec` entries: `check_embedding_config`
+        only fires on a model/dim MISMATCH, so those docs would silently
+        vanish from vector/hybrid search forever (finding 3 generalized).
+        Uses the existing `embedding_config` KV table rather than a new
+        column/table - no schema migration needed.
+        """
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO embedding_config (key, value) VALUES (?, '1') "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (_INGEST_IN_PROGRESS_KEY,),
+            )
+
+    def clear_ingest_in_progress(self) -> None:
+        """Clear the `ingest_in_progress` sentinel.
+
+        Called at the very end of a `--full` re-embed, right after
+        `commit_embedding_config` - so an exception anywhere between
+        `mark_ingest_in_progress` and here leaves the sentinel SET. In
+        practice `commit_embedding_config` already wipes the whole
+        `embedding_config` table (including this key) on a clean run; this
+        call is the explicit, order-independent guarantee.
+        """
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM embedding_config WHERE key = ?", (_INGEST_IN_PROGRESS_KEY,)
+            )
+
+    def is_ingest_in_progress(self) -> bool:
+        row = self.conn.execute(
+            "SELECT value FROM embedding_config WHERE key = ?", (_INGEST_IN_PROGRESS_KEY,)
+        ).fetchone()
+        return row is not None and row["value"] == "1"
 
     def set_context_description(self, context: str, description: str | None) -> None:
         with self.conn:

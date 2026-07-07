@@ -363,3 +363,57 @@ def test_interrupted_full_reembed_does_not_commit_new_model(conn, provider, cfg,
     # the interrupted full run must not have committed model-b as current
     with pytest.raises(RuntimeError, match="--full"):
         ingest_vault(conn, cfg, model_b, full=False)
+
+
+def test_interrupted_same_model_full_reembed_blocks_next_plain_ingest(conn, provider, cfg, vault):
+    """Generalization of finding 3: an interrupted --full with the SAME model/dim
+    as before is NOT caught by check_embedding_config (no mismatch) - previously
+    this let a subsequent plain ingest pass the guard, see unchanged body+metadata
+    hashes for un-reached docs, and never re-embed them, leaving orphaned `chunks`
+    rows with no `chunks_vec` entries (silent disappearance from vector/hybrid
+    search). The ingest_in_progress sentinel must catch this regardless of model
+    identity."""
+    write_note(vault, "a.md", ID1)
+    write_note(vault, "sub/b.md", ID2, body="Another note body.")
+    ingest_vault(conn, cfg, provider)  # committed as fake-8d
+
+    same_model = _ExplodingProvider(dimension=8, model_name=provider.model_name, fail_after=1)
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        ingest_vault(conn, cfg, same_model, full=True)
+
+    # a subsequent plain ingest - even with the original, non-exploding provider,
+    # whose model/dim still matches embedding_config - must refuse to proceed
+    # until --full completes.
+    with pytest.raises(RuntimeError, match="--full"):
+        ingest_vault(conn, cfg, provider, full=False)
+
+
+def test_full_reembed_after_interruption_recovers_and_clears_sentinel(conn, provider, cfg, vault):
+    """A --full run after an interruption is the recovery path: it must succeed
+    and clear the sentinel, after which a following plain ingest works normally."""
+    write_note(vault, "a.md", ID1)
+    write_note(vault, "sub/b.md", ID2, body="Another note body.")
+    ingest_vault(conn, cfg, provider)
+
+    same_model = _ExplodingProvider(dimension=8, model_name=provider.model_name, fail_after=1)
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        ingest_vault(conn, cfg, same_model, full=True)
+
+    stats = ingest_vault(conn, cfg, provider, full=True)  # recovery run must succeed
+    assert stats.indexed == 2
+
+    stats2 = ingest_vault(conn, cfg, provider, full=False)  # sentinel cleared, works normally
+    assert stats2.unchanged == 2
+
+
+def test_clean_full_reembed_leaves_sentinel_cleared(conn, provider, cfg, vault):
+    """Regression: a clean (non-interrupted) --full leaves the sentinel cleared,
+    and normal plain ingests are unaffected."""
+    write_note(vault, "a.md", ID1)
+    ingest_vault(conn, cfg, provider)
+
+    stats = ingest_vault(conn, cfg, provider, full=True)
+    assert stats.indexed == 1
+
+    stats2 = ingest_vault(conn, cfg, provider, full=False)
+    assert stats2.unchanged == 1

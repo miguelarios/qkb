@@ -38,12 +38,24 @@ def ingest_vault(
         # yet: that only happens after the loop below completes without
         # exception, so an interrupted run still fails the guard on the next
         # plain ingest (finding 3) instead of silently mixing old/new vectors.
+        # Mark the in-progress sentinel now too (before the loop): an
+        # interruption partway through - even with the SAME model/dim as
+        # before, which `check_embedding_config` alone would not catch - must
+        # also force the next plain ingest to fail rather than silently
+        # leaving un-reached docs without chunks_vec entries.
         storage.rebuild_vector_index(provider.dimension)
-    elif not storage.check_embedding_config(provider.model_name, provider.dimension):
-        raise RuntimeError(
-            "Embedding model/config changed since last ingest. "
-            "Run with --full to re-embed the whole vault."
-        )
+        storage.mark_ingest_in_progress()
+    else:
+        if storage.is_ingest_in_progress():
+            raise RuntimeError(
+                "A previous --full re-embed did not complete. "
+                "Re-run with --full to finish re-embedding."
+            )
+        if not storage.check_embedding_config(provider.model_name, provider.dimension):
+            raise RuntimeError(
+                "Embedding model/config changed since last ingest. "
+                "Run with --full to re-embed the whole vault."
+            )
 
     stats = IngestStats()
     previously_indexed = storage.all_indexed_ids()
@@ -115,7 +127,11 @@ def ingest_vault(
     if full:
         # The whole vault was just re-embedded with this model/dim without
         # error - commit it as current now, last, so a run that raised above
-        # never reaches this line.
+        # never reaches this line. Clear the in-progress sentinel right after:
+        # any exception between mark_ingest_in_progress() (above) and here
+        # leaves the sentinel SET, which is exactly what forces the next plain
+        # ingest to fail until --full is re-run to completion.
         storage.commit_embedding_config(provider.model_name, provider.dimension)
+        storage.clear_ingest_in_progress()
 
     return stats
