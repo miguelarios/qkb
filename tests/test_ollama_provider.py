@@ -36,6 +36,16 @@ def test_dimension_mismatch_raises():
         p.embed(["doc"])
 
 
+def test_close_closes_underlying_client():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"embeddings": []})
+
+    p = make_provider(handler)
+    assert p._client.is_closed is False
+    p.close()
+    assert p._client.is_closed is True
+
+
 @pytest.mark.integration
 def test_real_ollama_roundtrip():
     p = OllamaProvider(host="http://localhost:11434", model="embeddinggemma", dimension=768)

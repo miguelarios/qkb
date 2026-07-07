@@ -58,3 +58,9 @@ class OllamaProvider:
 
     def embed_query(self, query: str) -> list[float]:
         return self._embed_raw([self._query_fmt.format(t=query)])[0]
+
+    def close(self) -> None:
+        """Close the underlying httpx.Client (review finding 9: MCP built a
+        fresh OllamaProvider — and thus a fresh keep-alive httpx.Client —
+        per tool call and never closed it)."""
+        self._client.close()
