@@ -1,0 +1,8 @@
+# Copy to ~/.config/qkb/golden_queries.yaml and edit with your own vault's
+# known-answer queries. The real file stays OUT of the repo (personal data).
+queries:
+  - query: "how did I fix the reverse proxy certificate renewal"
+    expect_title_contains: "Traefik"
+  - query: "what did we decide at the project kickoff"
+    expect_title_contains: "Kickoff"
+    context: "acme-corp-pm-role"

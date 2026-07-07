@@ -2,7 +2,19 @@
 
 An on-device hybrid search engine for Obsidian vaults that understands YAML frontmatter metadata. Combines BM25 keyword search (SQLite FTS5) and vector semantic search (sqlite-vec) with metadata filtering, sibling-document surfacing, and two first-class interfaces: a CLI for humans and an MCP server for LLM agents.
 
-**Status**: Pre-implementation — design and planning docs complete, code in progress.
+**Status**: Phase 1 (ingest, search tiers 1–3, CLI, MCP stdio).
+
+## Quickstart
+
+    pip install qkb-search
+    ollama pull embeddinggemma
+    qkb ingest                       # index your vault (reads ~/.config/qkb/config.toml)
+    qkb query "certificate renewal"  # hybrid search
+    qkb mcp                          # stdio MCP server for Claude Code / Desktop
+
+Claude Code MCP registration:
+
+    claude mcp add qkb -- qkb mcp
 
 ## Documents
 
