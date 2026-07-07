@@ -44,3 +44,11 @@ def test_env_wins_over_toml(tmp_path):
     cfg = load_config(config_path=f, env={"QKB_VAULT_NAME": "FromEnv", "QKB_EMBEDDING_DIM": "512"})
     assert cfg.vault_name == "FromEnv"
     assert cfg.embedding_dim == 512
+
+
+def test_dead_api_base_and_api_key_fields_removed():
+    """8c: api_base/api_key were read by nothing (no provider used them); they
+    were removed from Config along with their TOML/env mappings."""
+    cfg = load_config(config_path=Path("/nonexistent/qkb.toml"), env={})
+    assert not hasattr(cfg, "api_base")
+    assert not hasattr(cfg, "api_key")
