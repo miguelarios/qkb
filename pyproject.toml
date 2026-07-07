@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "qkb-search"
+version = "0.1.0"
+description = "Hybrid BM25 + vector search for Obsidian vaults with frontmatter awareness"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "Miguel Rios" }]
+keywords = ["obsidian", "search", "rag", "sqlite", "mcp"]
+dependencies = [
+  "click>=8.1",
+  "rich>=13",
+  "python-frontmatter>=1.1",
+  "sqlite-vec>=0.1.6",
+  "httpx>=0.27",
+  "mcp>=1.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+
+[project.scripts]
+qkb = "qkb.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/miguelarios/qkb"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/qkb"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: requires a running Ollama with models pulled"]
