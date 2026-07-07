@@ -84,7 +84,11 @@ def ingest_vault(
         chash = content_hash(note.body)
         stored = storage.get_content_hash(note.id)
         if stored == chash and not full:
-            storage.update_metadata_only(note, chash)
+            # Finding 10: only a real write (frontmatter-derived metadata actually
+            # changed) should touch the DB; a true no-op body+metadata match must
+            # not open a transaction or bump indexed_at. Either way this document's
+            # body is unchanged, so it's still counted as `unchanged` here.
+            storage.update_metadata_if_changed(note, chash)
             stats.unchanged += 1
             continue
         chunks = chunk_text(note.body, cfg.chunk_target_tokens, cfg.chunk_overlap_percent)

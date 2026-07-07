@@ -249,6 +249,59 @@ def test_duplicate_frontmatter_id_skips_second_and_no_ping_pong(conn, provider, 
     assert stats2.skipped >= 1
 
 
+def test_unchanged_vault_reingest_is_true_noop(conn, provider, cfg, vault):
+    """Finding 10: a second consecutive ingest of an unchanged vault must perform
+    ZERO metadata/FTS writes (no write transaction at all per doc) and must not
+    advance last_indexed_at - otherwise the staleness signal is meaningless."""
+    write_note(vault, "a.md", ID1)
+    write_note(vault, "sub/b.md", ID2, body="Another note body.")
+    ingest_vault(conn, cfg, provider)
+    last_before = conn.execute("SELECT MAX(indexed_at) m FROM documents").fetchone()["m"]
+    changes_before = conn.total_changes
+
+    stats = ingest_vault(conn, cfg, provider)
+
+    assert stats.unchanged == 2
+    assert stats.indexed == 0 and stats.updated == 0
+    assert conn.total_changes == changes_before  # no writes at all
+    last_after = conn.execute("SELECT MAX(indexed_at) m FROM documents").fetchone()["m"]
+    assert last_after == last_before
+
+
+def test_frontmatter_only_change_updates_metadata_without_full_reindex(conn, provider, cfg, vault):
+    """Frontmatter-only change (context here), body identical -> the metadata
+    update IS applied and visible, but this is not the body-changed (upsert) path."""
+    write_note(vault, "a.md", ID1)
+    ingest_vault(conn, cfg, provider)
+
+    write_note(vault, "a.md", ID1, context="homelab-updated")  # same body, new context
+    stats = ingest_vault(conn, cfg, provider)
+
+    assert stats.unchanged == 1
+    assert stats.updated == 0  # not the body-changed path
+    row = conn.execute("SELECT context FROM documents WHERE id = ?", (ID1,)).fetchone()
+    assert row["context"] == "homelab-updated"
+    fts_context = conn.execute(
+        "SELECT context FROM documents_fts WHERE doc_id = ?", (ID1,)
+    ).fetchone()["context"]
+    assert fts_context == "homelab-updated"
+
+
+def test_body_change_still_triggers_full_reindex(conn, provider, cfg, vault):
+    """Regression: a body change must still go through the full upsert path even
+    with the no-op metadata fast-path in place."""
+    write_note(vault, "a.md", ID1)
+    ingest_vault(conn, cfg, provider)
+
+    write_note(vault, "a.md", ID1, body="Edited body!")
+    stats = ingest_vault(conn, cfg, provider)
+
+    assert stats.updated == 1
+    assert stats.unchanged == 0
+    row = conn.execute("SELECT body FROM documents_fts WHERE doc_id = ?", (ID1,)).fetchone()
+    assert "Edited body!" in row["body"]
+
+
 def test_interrupted_full_reembed_does_not_commit_new_model(conn, provider, cfg, vault):
     """Finding 3: an interrupted --full (fails partway through the document loop) must
     NOT commit the new model into embedding_config — the guard must still fire on the

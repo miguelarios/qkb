@@ -15,6 +15,41 @@ def content_hash(body: str) -> str:
     return hashlib.sha256(body.encode()).hexdigest()
 
 
+# Reserved key in the `metadata` KV table used to stash a hash of the
+# frontmatter-derived fields for a document (see `metadata_hash` below). No
+# schema migration is needed for this: it reuses the existing `metadata` table
+# rather than adding a `documents.metadata_hash` column, which would require an
+# `ALTER TABLE` migration guard for pre-existing DBs (db.py's `connect()` uses
+# `CREATE TABLE IF NOT EXISTS`, which does not add columns to an already-created
+# table). A DB ingested before this fix simply has no row under this key yet;
+# `get_metadata_hash` returns None, so the first post-upgrade ingest treats
+# metadata as "changed" (one legitimate write that populates the hash), and
+# every ingest after that is a true no-op. The leading/trailing dunders make an
+# accidental collision with a real frontmatter `extra_metadata` key vanishingly
+# unlikely.
+_METADATA_HASH_KEY = "__qkb_meta_hash__"
+
+
+def metadata_hash(note: ParsedNote) -> str:
+    """Stable hash over the frontmatter-derived fields `update_metadata_if_changed`
+    is responsible for keeping in sync: title, type, context, source,
+    effective_date, created_at, tags, and extra_metadata. Deliberately excludes
+    body/file_path (covered by `content_hash`) so a body-only change is not
+    mistaken for a metadata change and vice versa.
+    """
+    parts = [
+        note.title or "",
+        note.type,
+        note.context or "",
+        note.source or "",
+        note.effective_date,
+        note.created_at,
+        ",".join(sorted(note.tags)),
+        ",".join(f"{k}={v}" for k, v in sorted(note.extra_metadata.items())),
+    ]
+    return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()
+
+
 class Storage:
     def __init__(self, conn: sqlite3.Connection, vault_name: str = "Notes"):
         self.conn = conn
@@ -25,6 +60,13 @@ class Storage:
             "SELECT content_hash FROM documents WHERE id = ?", (doc_id,)
         ).fetchone()
         return row["content_hash"] if row else None
+
+    def get_metadata_hash(self, doc_id: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT value FROM metadata WHERE document_id = ? AND key = ?",
+            (doc_id, _METADATA_HASH_KEY),
+        ).fetchone()
+        return row["value"] if row else None
 
     def all_indexed_ids(self) -> set[str]:
         return {r["id"] for r in self.conn.execute("SELECT id FROM documents")}
@@ -75,16 +117,18 @@ class Storage:
             (note.title, " ".join(note.tags), note.context or "", note.body, note.type, note.id),
         )
 
-    def _write_tags_and_metadata(self, note: ParsedNote) -> None:
+    def _write_tags_and_metadata(self, note: ParsedNote, mhash: str) -> None:
         self.conn.execute("DELETE FROM tags WHERE document_id = ?", (note.id,))
         self.conn.executemany(
             "INSERT INTO tags (document_id, tag) VALUES (?,?)",
             [(note.id, t) for t in dict.fromkeys(note.tags)],
         )
         self.conn.execute("DELETE FROM metadata WHERE document_id = ?", (note.id,))
+        rows = [(note.id, k, v) for k, v in note.extra_metadata.items()]
+        rows.append((note.id, _METADATA_HASH_KEY, mhash))
         self.conn.executemany(
             "INSERT INTO metadata (document_id, key, value) VALUES (?,?,?)",
-            [(note.id, k, v) for k, v in note.extra_metadata.items()],
+            rows,
         )
 
     def upsert(
@@ -98,7 +142,7 @@ class Storage:
             self._delete_chunks(note.id)
             self._write_doc_row(note, chash)
             self._write_fts_row(note)
-            self._write_tags_and_metadata(note)
+            self._write_tags_and_metadata(note, metadata_hash(note))
             for chunk, vec in zip(chunks, embeddings, strict=True):
                 cur = self.conn.execute(
                     "INSERT INTO chunks (document_id, chunk_index, chunk_text, token_count) "
@@ -110,11 +154,28 @@ class Storage:
                     (cur.lastrowid, sqlite_vec.serialize_float32(vec)),
                 )
 
-    def update_metadata_only(self, note: ParsedNote, chash: str) -> None:
+    def update_metadata_if_changed(self, note: ParsedNote, chash: str) -> bool:
+        """Refresh the documents row, FTS metadata columns, tags, and metadata
+        for a document whose body is known unchanged (caller already matched
+        `content_hash`) - but ONLY if the frontmatter-derived metadata actually
+        changed since the last ingest (finding 10).
+
+        Returns True if a write happened (indexed_at legitimately advances),
+        False if this was a true no-op: no transaction opened, nothing written,
+        indexed_at untouched. Called for every content-unchanged document on
+        every ingest, so the no-op path must stay cheap (a single indexed
+        lookup in `metadata`, no writes) - on a large vault this is the
+        difference between ~0 writes and one full-body FTS re-tokenization per
+        document per cron run.
+        """
+        mhash = metadata_hash(note)
+        if self.get_metadata_hash(note.id) == mhash:
+            return False
         with self.conn:
             self._write_doc_row(note, chash)
             self._write_fts_row(note)
-            self._write_tags_and_metadata(note)
+            self._write_tags_and_metadata(note, mhash)
+        return True
 
     def _delete_chunks(self, doc_id: str) -> None:
         ids = [

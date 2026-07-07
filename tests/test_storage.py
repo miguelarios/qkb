@@ -49,6 +49,56 @@ def test_embedding_config_check(conn):
     assert s.check_embedding_config("other-model", 8) is False
 
 
+def test_update_metadata_if_changed_is_noop_when_nothing_changed(conn, provider):
+    """Finding 10: when neither the body nor the frontmatter-derived metadata
+    changed, update_metadata_if_changed must perform ZERO writes (no documents/
+    FTS/tags/metadata rewrite, no indexed_at bump) and report no change."""
+    note = make_note()
+    ingest_one(conn, provider, note)
+    s = Storage(conn)
+    before_changes = conn.total_changes
+    before_indexed_at = conn.execute(
+        "SELECT indexed_at FROM documents WHERE id = ?", (note.id,)
+    ).fetchone()["indexed_at"]
+
+    changed = s.update_metadata_if_changed(note, content_hash(note.body))
+
+    assert changed is False
+    assert conn.total_changes == before_changes
+    after_indexed_at = conn.execute(
+        "SELECT indexed_at FROM documents WHERE id = ?", (note.id,)
+    ).fetchone()["indexed_at"]
+    assert after_indexed_at == before_indexed_at
+
+
+def test_update_metadata_if_changed_writes_when_metadata_changed(conn, provider):
+    """Body-unchanged but frontmatter-derived metadata changed (title/tags here)
+    must still be written - this is the one legitimate reason
+    update_metadata_if_changed exists."""
+    note = make_note()
+    ingest_one(conn, provider, note)
+    s = Storage(conn)
+    before_changes = conn.total_changes
+    updated = make_note(
+        title="Traefik Cert Renewal (updated)", tags=["networking", "ssl", "renewed"]
+    )
+
+    changed = s.update_metadata_if_changed(updated, content_hash(updated.body))
+
+    assert changed is True
+    assert conn.total_changes > before_changes
+    row = conn.execute("SELECT title FROM documents WHERE id = ?", (note.id,)).fetchone()
+    assert row["title"] == "Traefik Cert Renewal (updated)"
+    tags = {
+        r["tag"] for r in conn.execute("SELECT tag FROM tags WHERE document_id = ?", (note.id,))
+    }
+    assert tags == {"networking", "ssl", "renewed"}
+    fts_title = conn.execute(
+        "SELECT title FROM documents_fts WHERE doc_id = ?", (note.id,)
+    ).fetchone()["title"]
+    assert fts_title == "Traefik Cert Renewal (updated)"
+
+
 def test_context_descriptions_and_stats(conn, provider):
     ingest_one(conn, provider, make_note())
     s = Storage(conn)
