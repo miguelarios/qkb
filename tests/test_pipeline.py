@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from qkb.config import Config
@@ -125,6 +127,66 @@ class _ExplodingProvider(FakeProvider):
         if self._calls > self._fail_after:
             raise RuntimeError("simulated interruption")
         return super().embed(texts)
+
+
+def test_parse_exception_on_present_file_does_not_deindex(conn, provider, cfg, vault, caplog):
+    """Finding 2: a note that fails to parse (exception) this run, but whose file
+    is still present in the vault, must keep its prior index entry - only a
+    genuinely-deleted file should be de-indexed."""
+    write_note(vault, "a.md", ID1)
+    write_note(vault, "b.md", ID2)
+    ingest_vault(conn, cfg, provider)
+
+    # a.md gets a mid-edit save with malformed YAML frontmatter (parse raises)
+    (vault / "a.md").write_text("---\nid: [unterminated\ncontext: homelab\n---\n\nbody\n")
+    # b.md is genuinely deleted
+    (vault / "b.md").unlink()
+
+    with caplog.at_level(logging.WARNING):
+        stats = ingest_vault(conn, cfg, provider)
+
+    assert stats.deindexed == 1  # only the genuinely-deleted b.md
+    assert stats.skipped >= 1  # a.md's parse failure is counted, not silently dropped
+
+    # a.md's prior rows are still intact and searchable
+    assert (
+        conn.execute("SELECT COUNT(*) c FROM documents WHERE id = ?", (ID1,)).fetchone()["c"] == 1
+    )
+    assert (
+        conn.execute("SELECT COUNT(*) c FROM documents_fts WHERE doc_id = ?", (ID1,)).fetchone()[
+            "c"
+        ]
+        == 1
+    )
+    # b.md is fully gone
+    assert (
+        conn.execute("SELECT COUNT(*) c FROM documents WHERE id = ?", (ID2,)).fetchone()["c"] == 0
+    )
+
+
+def test_duplicate_frontmatter_id_skips_second_and_no_ping_pong(conn, provider, cfg, vault, caplog):
+    """Finding 4: two files sharing the same frontmatter id must not silently
+    overwrite each other - the first (sorted) file wins, the duplicate is
+    warned about and counted, and re-ingesting must not ping-pong re-embed."""
+    write_note(vault, "a.md", ID1, body="First body.")
+    write_note(vault, "z-dup.md", ID1, body="Second body claiming the same id.")
+
+    with caplog.at_level(logging.WARNING):
+        stats = ingest_vault(conn, cfg, provider)
+
+    assert stats.indexed == 1  # only the first (sorted) file was indexed
+    assert stats.skipped >= 1  # the duplicate is counted, not silently absorbed
+    assert any("duplicate" in r.message.lower() for r in caplog.records)
+
+    row = conn.execute("SELECT file_path FROM documents WHERE id = ?", (ID1,)).fetchone()
+    assert row["file_path"] == "a.md"
+
+    # a second consecutive ingest must not re-embed either file (no ping-pong)
+    stats2 = ingest_vault(conn, cfg, provider)
+    assert stats2.indexed == 0
+    assert stats2.updated == 0
+    assert stats2.unchanged == 1
+    assert stats2.skipped >= 1
 
 
 def test_interrupted_full_reembed_does_not_commit_new_model(conn, provider, cfg, vault):

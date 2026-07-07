@@ -47,7 +47,14 @@ def ingest_vault(
 
     stats = IngestStats()
     previously_indexed = storage.all_indexed_ids()
-    seen: set[str] = set()
+    indexed_paths = storage.indexed_paths()  # file_path -> id, snapshot from before this run
+    seen: dict[str, Path] = {}  # note id -> first file path that claimed it this run
+    # Doc ids whose backing file still exists but raised an exception while
+    # parsing this run (e.g. a note saved mid-edit with malformed frontmatter).
+    # These must be protected from the deletion sweep below (finding 2): the
+    # file is present, just transiently unparseable, so the prior index entry
+    # must be kept rather than treated as a deletion.
+    parse_failed_ids: set[str] = set()
 
     for path in _vault_files(cfg.vault_path):
         stats.scanned += 1
@@ -56,11 +63,24 @@ def ingest_vault(
         except Exception:
             log.warning("failed to parse %s; skipping", path, exc_info=True)
             stats.skipped += 1
+            rel_path = path.relative_to(cfg.vault_path).as_posix()
+            prior_id = indexed_paths.get(rel_path)
+            if prior_id is not None:
+                parse_failed_ids.add(prior_id)
             continue
         if note is None:
             stats.skipped += 1
             continue
-        seen.add(note.id)
+        if note.id in seen:
+            log.warning(
+                "duplicate id %s: %s already claimed it this run; skipping %s",
+                note.id,
+                seen[note.id],
+                path,
+            )
+            stats.skipped += 1
+            continue
+        seen[note.id] = path
         chash = content_hash(note.body)
         stored = storage.get_content_hash(note.id)
         if stored == chash and not full:
@@ -75,7 +95,22 @@ def ingest_vault(
         else:
             stats.updated += 1
 
-    for gone in previously_indexed - seen:
+    # Deletion sweep (DESIGN.md §7.1): de-index previously-indexed docs whose
+    # id wasn't `seen` this run - i.e. the file is gone, or the note parsed
+    # successfully but returned None (explicit opt-out, or missing id/date).
+    # We exclude `parse_failed_ids` (finding 2) so a file that still exists but
+    # raised a parse error this run keeps its last-good index entry instead of
+    # being purged. NOTE: parse_note's return contract can't currently
+    # distinguish an explicit opt-out (legitimate de-index) from a
+    # missing-id/missing-date skip (arguably also transient) when it returns
+    # None rather than raising - only the exception path carries enough
+    # information to resolve back to a doc id via file_path. Given that
+    # ambiguity, the None-return case is left as before (still de-indexed);
+    # only the exception case is protected here. This is the minimal change
+    # that fixes the reported failure mode (a raised parse exception on a
+    # still-present file silently vanishing the note) without touching
+    # parse_note's contract or the existing opt-out behavior.
+    for gone in (previously_indexed - set(seen)) - parse_failed_ids:
         storage.delete(gone)
         stats.deindexed += 1
 

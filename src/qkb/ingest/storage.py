@@ -29,6 +29,18 @@ class Storage:
     def all_indexed_ids(self) -> set[str]:
         return {r["id"] for r in self.conn.execute("SELECT id FROM documents")}
 
+    def indexed_paths(self) -> dict[str, str]:
+        """Map of vault-relative file_path -> document id for indexed documents.
+
+        Used by the ingest deletion sweep to resolve a path that failed to parse
+        this run back to the doc id it previously indexed, so a transient parse
+        error doesn't get treated as a file deletion.
+        """
+        return {
+            r["file_path"]: r["id"]
+            for r in self.conn.execute("SELECT id, file_path FROM documents")
+        }
+
     def _write_doc_row(self, note: ParsedNote, chash: str) -> None:
         self.conn.execute(
             """INSERT INTO documents
