@@ -15,9 +15,8 @@ from qkb.embed import get_provider
 from qkb.ingest.pipeline import ingest_vault
 from qkb.ingest.storage import Storage
 from qkb.search.filters import Filters
-from qkb.search.hybrid import search as run_search
-from qkb.search.results import hydrate
-from qkb.search.retrieval import get_document
+from qkb.search.retrieval import DocumentFileMissing, get_document
+from qkb.search.service import execute_search
 
 console = Console()
 
@@ -32,6 +31,7 @@ def _conn(cfg: Config):
 
 def search_options(fn):
     fn = click.option("--context", default=None)(fn)
+    fn = click.option("--source", default=None)(fn)
     fn = click.option("--type", "doc_type", default=None)(fn)
     fn = click.option("--tags", default=None, help="comma-separated, AND semantics")(fn)
     fn = click.option("--date-from", default=None)(fn)
@@ -42,9 +42,10 @@ def search_options(fn):
     return fn
 
 
-def _filters(context, doc_type, tags, date_from, date_to) -> Filters:
+def _filters(context, source, doc_type, tags, date_from, date_to) -> Filters:
     return Filters(
         context=context,
+        source=source,
         doc_type=doc_type,
         tags=[t.strip() for t in tags.split(",") if t.strip()] if tags else None,
         date_from=date_from,
@@ -77,6 +78,7 @@ def _do_search(
     tier: str,
     query,
     context,
+    source,
     doc_type,
     tags,
     date_from,
@@ -92,16 +94,19 @@ def _do_search(
         sys.exit(2)
     conn = _conn(cfg)
     provider = None if tier == "bm25" else get_provider(cfg)
-    ranked = run_search(
-        conn,
-        cfg,
-        provider,
-        query,
-        _filters(context, doc_type, tags, date_from, date_to),
-        limit or cfg.default_limit,
-        tier,
-    )
-    _emit(hydrate(conn, ranked), as_json, as_files)
+    try:
+        results = execute_search(
+            conn,
+            cfg,
+            provider,
+            query,
+            _filters(context, source, doc_type, tags, date_from, date_to),
+            limit,
+            tier,
+        )
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+    _emit(results, as_json, as_files)
 
 
 @click.group()
@@ -125,18 +130,30 @@ def ingest(full: bool) -> None:
 @cli.command()
 @click.argument("query")
 @search_options
-def search(query, context, doc_type, tags, date_from, date_to, limit, as_json, as_files):
+def search(query, context, source, doc_type, tags, date_from, date_to, limit, as_json, as_files):
     """Tier 1: BM25 keyword search."""
-    _do_search("bm25", query, context, doc_type, tags, date_from, date_to, limit, as_json, as_files)
+    _do_search(
+        "bm25", query, context, source, doc_type, tags, date_from, date_to, limit, as_json, as_files
+    )
 
 
 @cli.command()
 @click.argument("query")
 @search_options
-def vsearch(query, context, doc_type, tags, date_from, date_to, limit, as_json, as_files):
+def vsearch(query, context, source, doc_type, tags, date_from, date_to, limit, as_json, as_files):
     """Tier 2: vector semantic search."""
     _do_search(
-        "vector", query, context, doc_type, tags, date_from, date_to, limit, as_json, as_files
+        "vector",
+        query,
+        context,
+        source,
+        doc_type,
+        tags,
+        date_from,
+        date_to,
+        limit,
+        as_json,
+        as_files,
     )
 
 
@@ -144,12 +161,15 @@ def vsearch(query, context, doc_type, tags, date_from, date_to, limit, as_json, 
 @click.argument("query")
 @click.option("--rerank", is_flag=True)
 @search_options
-def query(query, rerank, context, doc_type, tags, date_from, date_to, limit, as_json, as_files):
+def query(
+    query, rerank, context, source, doc_type, tags, date_from, date_to, limit, as_json, as_files
+):
     """Tier 3: hybrid BM25 + vector with RRF fusion."""
     _do_search(
         "hybrid",
         query,
         context,
+        source,
         doc_type,
         tags,
         date_from,
@@ -165,12 +185,14 @@ def query(query, rerank, context, doc_type, tags, date_from, date_to, limit, as_
 @click.argument("id_or_prefix")
 @click.option("--raw", is_flag=True)
 @click.option("--open", "open_", is_flag=True, help="open in Obsidian")
-@click.option("--json", "as_json", is_flag=True)
-def get(id_or_prefix, raw, open_, as_json):
+def get(id_or_prefix, raw, open_):
     cfg = _cfg()
     conn = _conn(cfg)
     try:
         doc = get_document(conn, id_or_prefix, vault_path=cfg.vault_path, include_raw=raw)
+    except DocumentFileMissing as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
     except (KeyError, ValueError) as e:
         click.echo(str(e), err=True)
         sys.exit(1)
@@ -212,8 +234,7 @@ def describe(label, description, remove):
 
 
 @cli.command()
-@click.option("--json", "as_json", is_flag=True)
-def status(as_json):
+def status():
     st = Storage(_conn(_cfg())).stats()
     click.echo(jsonlib.dumps(st, indent=2))
 
