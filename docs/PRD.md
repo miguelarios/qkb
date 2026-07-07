@@ -40,8 +40,9 @@ Two first-class consumers, equal priority: **the vault owner at the terminal** (
 - `qkb ingest` — walks the vault, indexes opted-in notes (frontmatter contract), incremental via content hashing.
 - `qkb search` / `vsearch` / `query` — keyword, semantic, and hybrid (RRF-fused) search, with filters: `--context`, `--type`, `--tags`, `--date-from/to`. `--rerank` exists but returns "not configured" until Phase 2.
 - `qkb get <UUID>` — retrieve any document as file path, `obsidian://` URI, or raw markdown.
+- `qkb contexts` / `qkb context describe` — free-text descriptions per context label, returned with results so agents understand what each grouping means (QMD-inspired).
 - `qkb mcp` — stdio MCP server exposing `qkb`, `qkb_get`, `qkb_status` tools.
-- Local-first: embeddings via Ollama by default; OpenAI-compatible remote providers configurable. GitHub Actions CI (lint, types, tests) and tag-triggered release to PyPI.
+- Local-first and adaptable: embeddings via Ollama (`embeddinggemma` default — multilingual, runs on CPU-only hardware); frontmatter keys remappable in config so any vault's conventions work. GitHub Actions CI (lint, types, tests) and tag-triggered release to PyPI.
 
 ## How: What is the experiment plan?
 

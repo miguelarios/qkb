@@ -130,6 +130,27 @@ Legacy key: a small number of older notes use `date created` instead of `created
 
 An empty value does not trigger indexing: notes with `context:` or `source:` present but blank (observed in real vaults, e.g. left by templates) are treated as if the property were absent.
 
+**Context normalization**: `context` is a short grouping label, not prose. It does not have to be a hyphenated slug — `laundry tips` is valid — but values are normalized at ingestion (trimmed, lowercased) and context filters match case-insensitively, so `Laundry Tips` and `laundry tips` are the same group. What makes context useful is *consistency*, which tooling supports: `qkb contexts` lists existing values with counts so users (and agents) pick from what exists instead of inventing near-duplicates.
+
+### Configurable field mapping
+
+Every frontmatter key above is a **default, not a requirement**. The mapping is user-configurable via the config file, so any vault can adopt qkb without changing its existing conventions (e.g., a vault using `category` instead of `context`, or `uid` instead of `id`, just remaps):
+
+```toml
+# ~/.config/qkb/config.toml
+[frontmatter]
+id      = "id"
+type    = "type"
+title   = "title"
+context = "context"
+source  = "source"
+date    = "date"
+created = ["created", "date created"]   # list = aliases, first present wins
+tags    = "tags"
+```
+
+Internally the pipeline only ever speaks the canonical names (left-hand side); the mapping is applied once at parse time.
+
 ### Optional enrichment
 
 | Property | Purpose |
@@ -275,6 +296,15 @@ CREATE TABLE metadata (
 );
 ```
 
+### `context_descriptions` (QMD-inspired, see §8.8)
+
+```sql
+CREATE TABLE context_descriptions (
+    context     TEXT PRIMARY KEY,          -- normalized context label
+    description TEXT NOT NULL              -- free text, user-authored
+);
+```
+
 ### `embedding_config`
 
 ```sql
@@ -412,7 +442,7 @@ class FakeProvider(EmbeddingProvider):
 
 **Model switching**: The `embedding_config` table tracks which model produced the current embeddings. If the configured model differs from what's stored, the ingestion pipeline requires a `--full` re-embed. This prevents mixing vectors from incompatible models.
 
-**Default model**: `nomic-embed-text` via Ollama (768 dimensions, strong English retrieval, local, zero API cost). For multilingual needs (e.g., Spanish content), `Qwen3-Embedding-0.6B` is the recommended alternative — it covers 119 languages and runs through Ollama at similar speeds.
+**Default model**: `embeddinggemma` via Ollama (300M params, 768 dimensions, 100+ languages including Spanish, local, zero API cost — and the same model QMD defaults to). It runs comfortably on CPU-only hardware (verified target: Ryzen 3900X), so the GPU-less server deployment works. Alternatives, one config line away: `nomic-embed-text` (~140M, faster, English-focused) and `qwen3-embedding:0.6b` (1024d, strongest multilingual quality, slower on CPU). Switching models forces a full re-embed via the `embedding_config` check — at personal-vault scale that costs minutes, so it's not a one-way door.
 
 ---
 
@@ -556,7 +586,18 @@ When a search hit comes from a document with a `source`, the response also inclu
 }
 ```
 
-### 8.7 Document Retrieval — Three Formats
+### 8.7 Context Descriptions (QMD-Inspired)
+
+QMD's "don't sleep on it" feature, adapted: free-text descriptions attached to context labels, **returned alongside results** so a consuming LLM can choose documents intelligently. Like QMD, descriptions play no role in embeddings, ranking, or filtering — they're pure result enrichment, attached at format time.
+
+```bash
+qkb context describe family-health "Health tracking for the kids: appointments, transcripts, care notes"
+qkb contexts                        # list all context values, counts, and descriptions
+```
+
+Every search result and document retrieval whose document has a described context includes a `context_description` field. The MCP server also prepends it to raw document text (`<!-- Context: ... -->`) the way QMD does, and `qkb_status` returns the full context list — giving agents immediate orientation about what's searchable without a tool call.
+
+### 8.8 Document Retrieval — Three Formats
 
 Every document can be retrieved by UUID. The response includes three access formats for different consumers:
 
@@ -605,6 +646,11 @@ qkb get <UUID>               # metadata + paths + obsidian URI
 qkb get <UUID> --raw         # include full markdown body
 qkb get <UUID> --open        # open in Obsidian
 
+# Contexts
+qkb contexts                             # list context values with counts + descriptions
+qkb context describe <label> "<text>"    # attach/update a description
+qkb context describe <label> --remove
+
 # Status
 qkb status                   # index health, counts, last ingestion
 ```
@@ -635,8 +681,10 @@ tools:
         include_siblings: bool (optional, default true)
 
   - qkb_status:
-      description: "Index health and stats"
+      description: "Index health and stats, including the list of context values with counts and descriptions"
 ```
+
+Search results carry `context_description` when available; `qkb_get` raw text is prefixed with `<!-- Context: ... -->` (see §8.7).
 
 ```bash
 qkb mcp                       # stdio (subprocess per client)
@@ -729,53 +777,52 @@ qkb/
 
 ## 11. Configuration
 
-```python
-# config.py — defaults, overridable via env vars, config file, or CLI flags
+Layered resolution, later wins: built-in defaults → config file (`~/.config/qkb/config.toml`, overridable via `QKB_CONFIG`) → environment variables (`QKB_*`) → CLI flags. Everything below is a default.
 
-from pathlib import Path
+```toml
+# ~/.config/qkb/config.toml — all values shown are the defaults
 
-# Vault
-VAULT_PATH = Path.home() / "Notes"
-VAULT_NAME = "Notes"                          # for Obsidian URI construction
+[vault]
+path = "~/Notes"
+name = "Notes"                        # for Obsidian URI construction
 
-# Database
-DB_PATH = Path.home() / ".local/share/qkb/qkb.db"
+[database]
+path = "~/.local/share/qkb/qkb.db"
 
-# Embedding
-EMBEDDING_PROVIDER = "ollama"                 # "ollama" | "openai_compatible"
-EMBEDDING_MODEL = "nomic-embed-text"          # or "qwen3-embedding-0.6b", etc.
-EMBEDDING_DIM = 768
-OLLAMA_HOST = "http://localhost:11434"
+[embedding]
+provider = "ollama"                   # "ollama" | "openai_compatible"
+model = "embeddinggemma"              # alternatives: "nomic-embed-text", "qwen3-embedding:0.6b"
+dimension = 768
+ollama_host = "http://localhost:11434"
 # For remote provider:
-# EMBEDDING_API_BASE = "https://api.openai.com/v1"
-# EMBEDDING_API_KEY = "${API_KEY}"            # env var, never committed
+# api_base = "https://api.openai.com/v1"
+# api_key comes from env only (QKB_EMBEDDING_API_KEY) — never in the file
 
-# Chunking
-CHUNK_TARGET_TOKENS = 500
-CHUNK_OVERLAP_PERCENT = 15                    # 15% of target = 75 tokens
+[chunking]
+target_tokens = 500
+overlap_percent = 15                  # 15% of target = 75 tokens
 
-# Search
-DEFAULT_SEARCH_LIMIT = 10
-RRF_K = 60
-VEC_CANDIDATES = 30
-FTS_CANDIDATES = 30
-FTS_WEIGHTS = (5.0, 3.0, 2.0, 1.0, 0.5)       # title, tags, context, body, type (ADR-007)
+[search]
+default_limit = 10
+rrf_k = 60
+vec_candidates = 30
+fts_candidates = 30
+fts_weights = [5.0, 3.0, 2.0, 1.0, 0.5]   # title, tags, context, body, type (ADR-007)
 
-# Re-ranking (tier 4, Phase 2)
-RERANK_MODEL = "qwen3.5:2b"                   # via Ollama
-RERANK_ENABLED = False                        # off by default
-QUERY_EXPANSION_ENABLED = False
+[rerank]                              # tier 4, Phase 2
+model = "qwen3.5:2b"                  # via Ollama
+enabled = false
+query_expansion = false
 
-# Frontmatter keys
-FM_ID = "id"
-FM_TYPE = "type"
-FM_TITLE = "title"
-FM_CONTEXT = "context"
-FM_SOURCE = "source"
-FM_DATE = "date"
-FM_CREATED = "created"
-FM_CREATED_LEGACY = "date created"            # older notes; same ISO datetime format
-FM_TAGS = "tags"
+[frontmatter]                         # user-remappable (see §4); list = aliases, first present wins
+id      = "id"
+type    = "type"
+title   = "title"
+context = "context"
+source  = "source"
+date    = "date"
+created = ["created", "date created"]
+tags    = "tags"
 ```
 
 ---
@@ -838,9 +885,9 @@ services:
       - /path/to/obsidian-vault:/vault:ro
       - /path/to/qkb-data:/data
     environment:
-      - VAULT_PATH=/vault
-      - DB_PATH=/data/qkb.db
-      - OLLAMA_HOST=http://ollama:11434
+      - QKB_VAULT_PATH=/vault
+      - QKB_DB_PATH=/data/qkb.db
+      - QKB_OLLAMA_HOST=http://ollama:11434
     ports:
       - "8181:8181"
 ```
@@ -864,10 +911,12 @@ docker exec qkb qkb mcp --http --daemon
 Both subsystems with tiers 1-3 (no LLM re-ranking), CLI, MCP stdio server, packaging, and CI/CD.
 
 - Repo scaffolding: pyproject (qkb-search), CI workflow, release workflow
-- Vault walker + frontmatter parser
+- Layered configuration (TOML file + env + flags) with user-remappable frontmatter keys
+- Vault walker + frontmatter parser (lenient dates, alias keys, blank-value handling)
 - Smart chunker (break-point scoring with transcript awareness)
-- Embedding provider abstraction (Ollama + Fake providers)
-- SQLite schema + storage with content-hash diffing (documents, documents_fts, chunks, chunks_vec, tags, metadata)
+- Embedding provider abstraction (Ollama + Fake providers; embeddinggemma default)
+- SQLite schema + storage with content-hash diffing (documents, documents_fts, chunks, chunks_vec, tags, metadata, context_descriptions)
+- Context descriptions: `qkb contexts`, `qkb context describe`, result enrichment
 - BM25 document search (FTS5 weighted columns)
 - Vector search (sqlite-vec) with document dedup
 - Hybrid search with document-level RRF fusion

@@ -201,3 +201,56 @@ CREATE TABLE metadata (
 - **FTS5 tokenization mangles hyphenated tags**: `phone-screen` becomes two tokens. This is acceptable for *relevance boosting* (you want partial matches to contribute to ranking) but is exactly why the junction table is needed for *exact filtering*.
 - **Tag-heavy documents get a slight BM25 boost**: More tags = more text in the column. BM25 length normalization mitigates this, and at 1-3 tags per note it's negligible.
 - **Storage duplication**: Tags are tiny strings. The overhead is bytes, not megabytes.
+
+---
+
+## ADR-009: Context Labels + Description Registry
+
+**Date**: 2026-07-06
+**Status**: Decided
+
+**Question**: Does `context` have to be a slug? And should qkb adopt QMD's context-description feature?
+
+**Options considered**:
+
+1. **Strict slugs** — enforce hyphenated lowercase. Predictable, but hostile to quick entry, and real vault data already contains `laundry tips`.
+2. **Free-form prose** — maximally easy to enter, but destroys exact-match filtering and pollutes the FTS context column.
+3. **Short labels, normalized at ingest, plus a separate description registry** — labels stay filter-keys (trimmed, lowercased, case-insensitive matching); free text lives in an optional per-label description returned with search results.
+
+**Decision**: Option 3.
+
+**Rationale**: The filter never needed sluginess — it needs consistency, which normalization plus a `qkb contexts` listing command provides. Reading the QMD source settled the second half: QMD's context descriptions are *not* used in embeddings, expansion, or reranking — they are attached to results (prepended as `<!-- Context: ... -->` in MCP document text) purely so the consuming LLM picks documents better. That feature is orthogonal to filtering and cheap (one table, one command, attach-at-format-time), so qkb adopts both halves: normalized labels for grouping/filtering, descriptions for agent orientation.
+
+---
+
+## ADR-010: Default Embedding Model — embeddinggemma
+
+**Date**: 2026-07-06
+**Status**: Decided
+
+**Question**: Which Ollama embedding model should be the default, given deployment targets of a CPU-only Linux server (Ryzen 3900X) and a GPU macOS machine, and a partly multilingual (Spanish) vault?
+
+**Options considered**:
+
+| Model | Dims | Size | CPU fit | Languages |
+|---|---|---|---|---|
+| `nomic-embed-text` | 768 | ~140M | Fastest | English-focused |
+| `embeddinggemma` | 768 | 300M | Fine | 100+ |
+| `qwen3-embedding:0.6b` | 1024 | 600M | Acceptable (batch) | Strongest multilingual |
+
+**Decision**: `embeddinggemma` (768 dimensions).
+
+**Rationale**: Multilingual coverage matters for this vault; embeddinggemma delivers it at a size that ingests a ~3k-note vault in minutes on the CPU-only box. It is also QMD's default, so quality expectations carry over. The `embedding_config` model check makes later switching a cheap, explicit full re-embed rather than a trap.
+
+---
+
+## ADR-011: User-Configurable Frontmatter Mapping
+
+**Date**: 2026-07-06
+**Status**: Decided
+
+**Question**: Should the frontmatter contract keys (`id`, `context`, `created`, …) be hardcoded?
+
+**Decision**: No — every key is remappable in `~/.config/qkb/config.toml` under `[frontmatter]`, with the documented contract as strong defaults. A key may map to a list of aliases (first present wins), which also absorbs vault history drift (e.g., `created` vs legacy `date created`).
+
+**Rationale**: qkb is published publicly; no two vaults share conventions. Survey of the author's own vault found the original design's assumed key (`date created`, `YYYY-MM-DD`) was wrong for 97% of notes (`created`, ISO 8601 datetime) — if the reference vault drifts from the spec, everyone's will. The pipeline speaks canonical names internally; mapping is applied once at parse time.

@@ -23,7 +23,7 @@ Inspired by [QMD](https://github.com/tobi/qmd)'s search architecture, adapted fo
 pip install qkb-search   # or: pipx install qkb-search / uvx --from qkb-search qkb
 ```
 
-The package installs the `qkb` command. Requires Python ≥3.11 and, for local embeddings, [Ollama](https://ollama.com) with `nomic-embed-text` pulled.
+The package installs the `qkb` command. Requires Python ≥3.11 and, for local embeddings, [Ollama](https://ollama.com) with `embeddinggemma` pulled (multilingual, CPU-friendly; other models configurable).
 
 ## License
 
