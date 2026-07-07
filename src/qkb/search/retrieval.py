@@ -1,0 +1,37 @@
+"""Document retrieval by UUID or prefix, three formats (DESIGN.md §8.8)."""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+from qkb.search.results import context_description, hydrate
+
+
+def get_document(
+    conn: sqlite3.Connection,
+    id_or_prefix: str,
+    vault_path: Path | None = None,
+    include_raw: bool = False,
+    include_siblings: bool = True,
+) -> dict:
+    rows = conn.execute(
+        "SELECT id FROM documents WHERE id LIKE ? || '%'", (id_or_prefix,)
+    ).fetchall()
+    if not rows:
+        raise KeyError(f"no document with id (prefix) {id_or_prefix!r}")
+    if len(rows) > 1:
+        raise ValueError(f"ambiguous prefix {id_or_prefix!r} matches {len(rows)} documents")
+    doc = hydrate(conn, [(rows[0]["id"], 0.0, None)])[0]
+    del doc["score"], doc["matched_text"]
+    if not include_siblings:
+        doc["siblings"] = []
+    if include_raw:
+        if vault_path is None:
+            raise ValueError("include_raw requires vault_path")
+        text = (vault_path / doc["file_path"]).read_text()
+        desc = context_description(conn, doc["context"])
+        if desc:
+            text = f"<!-- Context: {desc} -->\n\n{text}"
+        doc["raw_text"] = text
+    return doc
