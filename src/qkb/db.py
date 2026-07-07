@@ -62,6 +62,27 @@ CREATE INDEX IF NOT EXISTS idx_metadata_key ON metadata(key, value);
 """
 
 
+def _create_vector_table(conn: sqlite3.Connection, embedding_dim: int) -> None:
+    conn.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0("
+        f"chunk_id INTEGER PRIMARY KEY, embedding float[{embedding_dim}] distance_metric=cosine)"
+    )
+
+
+def rebuild_vector_table(conn: sqlite3.Connection, embedding_dim: int) -> None:
+    """Drop and recreate ``chunks_vec`` at the given dimension.
+
+    ``chunks_vec`` keeps whatever dimension it was first created with; a `vec0`
+    virtual table can't be altered in place. Used by a `--full` re-embed when
+    the configured embedding model/dimension changes, so the first insert at
+    the new dimension doesn't crash with a raw sqlite-vec error. All existing
+    vectors are discarded — the caller must re-embed every document afterward.
+    """
+    conn.execute("DROP TABLE IF EXISTS chunks_vec")
+    _create_vector_table(conn, embedding_dim)
+    conn.commit()
+
+
 def connect(db_path: Path, embedding_dim: int) -> sqlite3.Connection:
     if str(db_path) != ":memory:":
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -77,9 +98,6 @@ def connect(db_path: Path, embedding_dim: int) -> sqlite3.Connection:
     conn.enable_load_extension(False)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(_SCHEMA)
-    conn.execute(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0("
-        f"chunk_id INTEGER PRIMARY KEY, embedding float[{embedding_dim}] distance_metric=cosine)"
-    )
+    _create_vector_table(conn, embedding_dim)
     conn.commit()
     return conn

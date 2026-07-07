@@ -1,4 +1,8 @@
-from qkb.db import connect
+import sqlite3
+
+import pytest
+
+from qkb.db import connect, rebuild_vector_table
 
 
 def test_schema_created(tmp_path):
@@ -40,3 +44,25 @@ def test_vector_roundtrip(tmp_path):
         (sqlite_vec.serialize_float32([0.1, 0.2, 0.3, 0.4]),),
     ).fetchone()
     assert row["chunk_id"] == 1
+
+
+def test_rebuild_vector_table_changes_dimension(tmp_path):
+    import sqlite_vec
+
+    conn = connect(tmp_path / "qkb.db", embedding_dim=4)
+    rebuild_vector_table(conn, 8)
+    # a 4-dim insert must now fail; an 8-dim insert must succeed and be searchable
+    with pytest.raises(sqlite3.Error):
+        conn.execute(
+            "INSERT INTO chunks_vec (chunk_id, embedding) VALUES (?, ?)",
+            (1, sqlite_vec.serialize_float32([0.1, 0.2, 0.3, 0.4])),
+        )
+    conn.execute(
+        "INSERT INTO chunks_vec (chunk_id, embedding) VALUES (?, ?)",
+        (2, sqlite_vec.serialize_float32([0.1] * 8)),
+    )
+    row = conn.execute(
+        "SELECT chunk_id FROM chunks_vec WHERE embedding MATCH ? AND k = 1",
+        (sqlite_vec.serialize_float32([0.1] * 8),),
+    ).fetchone()
+    assert row["chunk_id"] == 2

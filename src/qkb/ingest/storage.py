@@ -7,6 +7,7 @@ import sqlite3
 
 import sqlite_vec
 
+from qkb.db import rebuild_vector_table
 from qkb.models import Chunk, ParsedNote
 
 
@@ -122,17 +123,35 @@ class Storage:
     def check_embedding_config(self, model_name: str, dim: int) -> bool:
         rows = {r["key"]: r["value"] for r in self.conn.execute("SELECT * FROM embedding_config")}
         if not rows:
-            with self.conn:
-                self.conn.executemany(
-                    "INSERT INTO embedding_config (key, value) VALUES (?,?)",
-                    [("model_name", model_name), ("embedding_dim", str(dim))],
-                )
+            # Nothing committed yet (fresh DB) - this is the first-ever ingest for this
+            # index, so there is no prior model to mix vectors with. Safe to commit now.
+            self.commit_embedding_config(model_name, dim)
             return True
         return rows.get("model_name") == model_name and rows.get("embedding_dim") == str(dim)
 
-    def reset_embedding_config(self) -> None:
+    def commit_embedding_config(self, model_name: str, dim: int) -> None:
+        """Record model_name/dim as the current, committed embedding config.
+
+        Overwrites any prior rows. Callers driving a `--full` re-embed must only
+        call this once re-embedding has completed successfully (see
+        `ingest_vault`) - otherwise an interrupted run could leave a mix of
+        old- and new-model vectors while `check_embedding_config` reports no
+        mismatch, which is exactly the corruption the guard exists to prevent.
+        """
         with self.conn:
             self.conn.execute("DELETE FROM embedding_config")
+            self.conn.executemany(
+                "INSERT INTO embedding_config (key, value) VALUES (?,?)",
+                [("model_name", model_name), ("embedding_dim", str(dim))],
+            )
+
+    def rebuild_vector_index(self, embedding_dim: int) -> None:
+        """Drop and recreate the chunks_vec vector index at `embedding_dim`.
+
+        Used at the start of a `--full` re-embed so a model/dimension change
+        doesn't crash on the first insert at the new dimension (finding 1).
+        """
+        rebuild_vector_table(self.conn, embedding_dim)
 
     def set_context_description(self, context: str, description: str | None) -> None:
         with self.conn:

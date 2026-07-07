@@ -31,8 +31,15 @@ def ingest_vault(
 ) -> IngestStats:
     storage = Storage(conn, vault_name=cfg.vault_name)
     if full:
-        storage.reset_embedding_config()
-    if not storage.check_embedding_config(provider.model_name, provider.dimension):
+        # A --full re-embed always starts from a clean vector index at the
+        # currently-configured dimension, and always re-embeds every document
+        # below (see the `full` checks in the loop) - so the guard doesn't
+        # apply here. Do NOT commit the new model/dim into embedding_config
+        # yet: that only happens after the loop below completes without
+        # exception, so an interrupted run still fails the guard on the next
+        # plain ingest (finding 3) instead of silently mixing old/new vectors.
+        storage.rebuild_vector_index(provider.dimension)
+    elif not storage.check_embedding_config(provider.model_name, provider.dimension):
         raise RuntimeError(
             "Embedding model/config changed since last ingest. "
             "Run with --full to re-embed the whole vault."
@@ -71,4 +78,11 @@ def ingest_vault(
     for gone in previously_indexed - seen:
         storage.delete(gone)
         stats.deindexed += 1
+
+    if full:
+        # The whole vault was just re-embedded with this model/dim without
+        # error - commit it as current now, last, so a run that raised above
+        # never reaches this line.
+        storage.commit_embedding_config(provider.model_name, provider.dimension)
+
     return stats

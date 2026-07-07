@@ -1,6 +1,7 @@
 import pytest
 
 from qkb.config import Config
+from qkb.embed.fake import FakeProvider
 from qkb.ingest.pipeline import ingest_vault
 
 
@@ -77,3 +78,67 @@ def test_model_switch_requires_full(conn, provider, cfg, vault):
         ingest_vault(conn, cfg, other)
     stats = ingest_vault(conn, cfg, other, full=True)
     assert stats.indexed == 1
+
+
+def test_full_reembed_across_dimension_change_rebuilds_vector_index(conn, provider, cfg, vault):
+    """Finding 1: switching to a wider embedding dimension and running --full must
+    rebuild chunks_vec instead of crashing on the first mismatched-dimension insert."""
+    write_note(vault, "a.md", ID1)
+    write_note(vault, "sub/b.md", ID2, body="Another note body.")
+    ingest_vault(conn, cfg, provider)  # indexed at dim=8
+
+    wider = FakeProvider(dimension=16)
+    stats = ingest_vault(conn, cfg, wider, full=True)  # must not raise sqlite-vec dim mismatch
+    assert stats.indexed == 2
+
+    chunk_count = conn.execute("SELECT COUNT(*) c FROM chunks").fetchone()["c"]
+    vec_count = conn.execute("SELECT COUNT(*) c FROM chunks_vec").fetchone()["c"]
+    assert chunk_count > 0
+    assert vec_count == chunk_count
+
+    import sqlite_vec
+
+    qvec = wider.embed_query("Another note body")
+    row = conn.execute(
+        "SELECT chunk_id, distance FROM chunks_vec WHERE embedding MATCH ? AND k = 1",
+        (sqlite_vec.serialize_float32(qvec),),
+    ).fetchone()
+    assert row is not None
+
+
+class _ExplodingProvider(FakeProvider):
+    """FakeProvider under a different model name that fails after N embed() calls,
+    simulating an Ollama crash / Ctrl-C partway through a --full re-embed."""
+
+    def __init__(self, dimension: int, model_name: str, fail_after: int):
+        super().__init__(dimension=dimension)
+        self._model_name_override = model_name
+        self._fail_after = fail_after
+        self._calls = 0
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name_override
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self._calls += 1
+        if self._calls > self._fail_after:
+            raise RuntimeError("simulated interruption")
+        return super().embed(texts)
+
+
+def test_interrupted_full_reembed_does_not_commit_new_model(conn, provider, cfg, vault):
+    """Finding 3: an interrupted --full (fails partway through the document loop) must
+    NOT commit the new model into embedding_config — the guard must still fire on the
+    next plain ingest, forcing the user to re-run --full."""
+    write_note(vault, "a.md", ID1)
+    write_note(vault, "sub/b.md", ID2, body="Another note body.")
+    ingest_vault(conn, cfg, provider)  # committed as fake-8d
+
+    model_b = _ExplodingProvider(dimension=8, model_name="model-b", fail_after=1)
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        ingest_vault(conn, cfg, model_b, full=True)
+
+    # the interrupted full run must not have committed model-b as current
+    with pytest.raises(RuntimeError, match="--full"):
+        ingest_vault(conn, cfg, model_b, full=False)
