@@ -133,6 +133,118 @@ def test_filter_restricts_candidates_before_knn(conn, provider):
     assert all(r[0] == "target-0001" for r in filtered)
 
 
+def test_long_doc_does_not_crowd_out_other_docs(conn, provider):
+    """Finding 3: `k` sizes the KNN pool in CHUNKS, but results dedup to
+    DOCUMENTS. A single many-chunk document whose chunks all rank nearest the
+    query must not crowd the whole chunk pool and starve every other
+    filter-passing document out of the document-level result set.
+
+    One document is chunked into 12 IDENTICAL sections (FakeProvider gives
+    identical text identical vectors -> distance 0 for all 12), so with the
+    old fixed-size pool (k = max(candidates, limit)) every slot in a small
+    pool is consumed by ties from this one document, and 15 other
+    filter-passing single-chunk documents never appear at all. The fix must
+    grow the pool until `limit` distinct documents are collected.
+    """
+    section = (
+        "## Section\n\nContent block about the reverse proxy certificate renewal. "
+        + "filler word " * 80
+    )
+    query = section
+    long_body = "\n\n".join([section] * 12)
+    ingest_one(
+        conn,
+        provider,
+        make_note(
+            id="long-0001",
+            title="Long Doc",
+            context="homelab-traefik",
+            file_path="02-Areas/Homelab/Long.md",
+            body=long_body,
+        ),
+    )
+    n_singles = 15
+    for i in range(n_singles):
+        ingest_one(
+            conn,
+            provider,
+            make_note(
+                id=f"single-{i:04d}",
+                title=f"Single {i}",
+                context="homelab-traefik",
+                file_path=f"02-Areas/Homelab/Single{i}.md",
+                body=f"Unrelated maintenance notes number {i} about disk usage on the NAS.",
+            ),
+        )
+    limit = 10
+    results = search_vector(
+        conn,
+        query,
+        Filters(context="homelab-traefik"),
+        limit=limit,
+        candidates=5,  # deliberately small: old k = max(5, 10) = 10 chunks,
+        # all consumed by the 12 tied chunks of the single long document.
+        provider=provider,
+    )
+    ids = [r[0] for r in results]
+    # 16 filter-passing docs exist (1 long + 15 singles); limit=10 < 16, so
+    # the fixed result set must be exactly `limit` DISTINCT documents.
+    assert len(ids) == len(set(ids)) == limit
+
+
+def test_multi_chunk_docs_all_returned_when_limit_equals_doc_count(conn, provider):
+    """Finding 3: several multi-chunk docs, `limit` == doc count, `candidates`
+    smaller than total chunk count -> every document must be returned, not
+    just the ones whose chunks happen to land in a too-small fixed pool."""
+    query = "distinct content for the search index"
+    n_docs = 6
+    chunks_per_doc = 6
+    # doc 0: every chunk identical to the query (distance 0 ties) so a
+    # fixed-size small pool gets entirely consumed by this one document.
+    crowding_section = (
+        "## Section\n\nContent block about the reverse proxy certificate renewal. "
+        + "filler word " * 80
+    )
+    ingest_one(
+        conn,
+        provider,
+        make_note(
+            id="multi-0000",
+            title="Multi Doc 0",
+            context="homelab-traefik",
+            file_path="02-Areas/Homelab/Multi0.md",
+            body="\n\n".join([crowding_section] * chunks_per_doc),
+        ),
+    )
+    for d in range(1, n_docs):
+        sections = "\n\n".join(
+            f"## Section {d}-{s}\n\nDistinct filler content for doc {d} section {s}. "
+            + "filler word " * 80
+            for s in range(chunks_per_doc)
+        )
+        ingest_one(
+            conn,
+            provider,
+            make_note(
+                id=f"multi-{d:04d}",
+                title=f"Multi Doc {d}",
+                context="homelab-traefik",
+                file_path=f"02-Areas/Homelab/Multi{d}.md",
+                body=sections,
+            ),
+        )
+    results = search_vector(
+        conn,
+        query,
+        Filters(),  # no filter leg of the pool-sizing fix
+        limit=n_docs,
+        candidates=4,  # smaller than total chunks (36) and smaller than n_docs
+        provider=provider,
+    )
+    ids = [r[0] for r in results]
+    assert len(ids) == len(set(ids)) == n_docs
+
+
 def test_limit_above_candidates_not_truncated(conn, provider):
     """Finding 6: candidate k must scale with the requested limit, not just
     `candidates` — otherwise a large --limit is silently capped."""

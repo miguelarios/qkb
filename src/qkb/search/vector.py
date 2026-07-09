@@ -21,10 +21,6 @@ def search_vector(
     qvec = provider.embed_query(query)
     clause, params = build_filter_clause(filters)
     has_filters = clause != "1=1"
-    # The candidate pool must be at least as large as the requested output
-    # limit, or a large `limit` gets silently truncated to a smaller fixed
-    # candidate count (review finding 6).
-    k = max(candidates, limit)
     # When filters are present, restrict the KNN candidate set to
     # filter-passing chunks BEFORE the vector search runs (sqlite-vec's vec0
     # supports constraining MATCH by rowid via `chunk_id IN (...)`), rather
@@ -42,6 +38,15 @@ def search_vector(
             "SELECT c.id FROM chunks c JOIN documents d ON d.id = c.document_id "
             f"WHERE {clause})"
         )
+        total_chunks = conn.execute(
+            "SELECT COUNT(*) FROM chunks c JOIN documents d ON d.id = c.document_id "
+            f"WHERE {clause}",
+            params,
+        ).fetchone()[0]
+    else:
+        total_chunks = conn.execute("SELECT COUNT(*) FROM chunks_vec").fetchone()[0]
+    if total_chunks == 0:
+        return []
     sql = f"""
         WITH knn AS (
             SELECT chunk_id, distance
@@ -55,15 +60,30 @@ def search_vector(
         JOIN chunks c ON c.id = knn.chunk_id
         ORDER BY knn.distance ASC
     """
-    knn_params: list = [sqlite_vec.serialize_float32(qvec), k, *params]
-    rows = conn.execute(sql, knn_params).fetchall()
-    out: list[tuple[str, float, str]] = []
-    seen: set[str] = set()
-    for r in rows:  # already best-first; keep best chunk per document
-        if r["doc_id"] in seen:
-            continue
-        seen.add(r["doc_id"])
-        out.append((r["doc_id"], r["score"], r["chunk_text"]))
-        if len(out) >= limit:
+    qvec_bytes = sqlite_vec.serialize_float32(qvec)
+    # The KNN pool must be at least as large as the requested output limit,
+    # or a large `limit` gets silently truncated to a smaller fixed candidate
+    # count (review finding 6). But `k` sizes a pool of CHUNKS while the
+    # result loop below dedups to best-chunk-per-DOCUMENT and stops at
+    # `limit` documents — on any vault whose docs average more than one
+    # chunk, a few long documents can crowd the chunk pool and starve the
+    # document-level result set (review finding 3). So grow the pool
+    # iteratively until `limit` distinct documents are collected or the
+    # candidate chunk set is exhausted, rather than sizing it once from
+    # `candidates`/`limit` alone.
+    k = min(max(candidates, limit), total_chunks)
+    while True:
+        rows = conn.execute(sql, [qvec_bytes, k, *params]).fetchall()
+        out: list[tuple[str, float, str]] = []
+        seen: set[str] = set()
+        for r in rows:  # already best-first; keep best chunk per document
+            if r["doc_id"] in seen:
+                continue
+            seen.add(r["doc_id"])
+            out.append((r["doc_id"], r["score"], r["chunk_text"]))
+            if len(out) >= limit:
+                break
+        if len(out) >= limit or k >= total_chunks:
             break
-    return out
+        k = min(k * 2, total_chunks)
+    return out[:limit]
