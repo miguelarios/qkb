@@ -1,6 +1,7 @@
 import pytest
 
 from qkb.config import Config
+from qkb.embed.fake import FakeProvider
 from qkb.ingest.storage import Storage
 from qkb.search.filters import Filters
 from qkb.search.service import execute_search
@@ -54,22 +55,35 @@ def test_dimension_mismatch_raises_value_error_for_vector_and_hybrid(conn, provi
     """Finding 5: after embedding_dim changes without a re-ingest, `chunks_vec`
     is still built at the old dimension. Vector/hybrid search must raise a
     friendly `ValueError`, not let sqlite-vec's raw `OperationalError` through.
+
+    The query-time provider here must actually emit `cfg.embedding_dim`-length
+    vectors (not the ingest-time `DIM`-length ones) — otherwise the query
+    vector still matches `chunks_vec`'s real DIM-wide column and the
+    underlying sqlite-vec MATCH never has anything to complain about, so the
+    guard-removed control (see below) can't distinguish "prevents a crash"
+    from "blocks a harmless no-op". With a mismatched query vector, removing
+    the guard in `execute_search` reproduces
+    `sqlite3.OperationalError: Dimension mismatch...` from sqlite-vec.
     """
     ingest_one(conn, provider, make_note())
     cfg.embedding_dim = DIM + 1  # conn's chunks_vec was created at DIM (see conftest)
+    query_provider = FakeProvider(dimension=DIM + 1)
 
     for tier in ("vector", "hybrid"):
         with pytest.raises(ValueError, match="dimension") as exc_info:
-            execute_search(conn, cfg, provider, "traefik", Filters(), None, tier)
+            execute_search(conn, cfg, query_provider, "traefik", Filters(), None, tier)
         assert "--full" in str(exc_info.value)
 
 
 def test_dimension_mismatch_does_not_block_bm25(conn, provider, cfg):
-    """BM25 never touches `chunks_vec`, so a dimension mismatch must not block it."""
+    """BM25 never touches `chunks_vec`, so a dimension mismatch must not block
+    it — even when the query-time provider's output actually mismatches
+    `chunks_vec` (see the vector/hybrid test above for why that matters)."""
     ingest_one(conn, provider, make_note())
     cfg.embedding_dim = DIM + 1
+    query_provider = FakeProvider(dimension=DIM + 1)
 
-    results = execute_search(conn, cfg, provider, "traefik", Filters(), None, "bm25")
+    results = execute_search(conn, cfg, query_provider, "traefik", Filters(), None, "bm25")
     assert len(results) == 1
 
 
@@ -88,5 +102,6 @@ def test_ingest_in_progress_blocks_every_tier(conn, provider, cfg):
         assert "--full" in str(exc_info.value)
 
     Storage(conn).clear_ingest_in_progress()
-    results = execute_search(conn, cfg, provider, "traefik", Filters(), None, "bm25")
-    assert len(results) == 1
+    for tier in ("bm25", "vector", "hybrid"):
+        results = execute_search(conn, cfg, provider, "traefik", Filters(), None, tier)
+        assert len(results) == 1
