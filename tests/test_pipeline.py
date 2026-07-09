@@ -441,6 +441,43 @@ def test_renamed_note_that_fails_to_parse_is_not_deindexed(conn, provider, cfg, 
     )
 
 
+def test_unrelated_deletion_deferred_during_unresolved_parse_failure(
+    conn, provider, cfg, vault, caplog
+):
+    """Documents the accepted trade-off in the sweep's `unresolved_failures` guard:
+    it is a whole-run boolean, not scoped to any directory or id, so a genuinely
+    deleted-and-unrelated doc is deferred (not de-indexed) in the SAME run where
+    any other file fails to parse at an unrecognized path. This is deliberate -
+    scoping the protection would re-break finding 4's cross-directory rename
+    case - and self-heals as soon as a run has zero parse failures."""
+    write_note(vault, "a.md", ID1)
+    write_note(vault, "unrelated/b.md", ID2, body="Unrelated note body.")
+    ingest_vault(conn, cfg, provider)
+
+    # Run 2: genuinely delete a.md, AND introduce an unrelated new file at a
+    # never-before-seen path with malformed frontmatter (unresolved parse failure).
+    (vault / "a.md").unlink()
+    (vault / "new-broken.md").write_text("---\nid: [unterminated\ncontext: homelab\n---\n\nbody\n")
+
+    with caplog.at_level(logging.WARNING):
+        stats = ingest_vault(conn, cfg, provider)
+
+    assert stats.deindexed == 0  # a.md's deletion is deferred, not applied
+    assert stats.skipped >= 1
+    assert (
+        conn.execute("SELECT COUNT(*) c FROM documents WHERE id = ?", (ID1,)).fetchone()["c"] == 1
+    )
+
+    # Run 3: parse-clean (remove the malformed file); a.md is still gone.
+    (vault / "new-broken.md").unlink()
+    stats2 = ingest_vault(conn, cfg, provider)
+
+    assert stats2.deindexed == 1  # now that no parse failures are unresolved, it de-indexes
+    assert (
+        conn.execute("SELECT COUNT(*) c FROM documents WHERE id = ?", (ID1,)).fetchone()["c"] == 0
+    )
+
+
 def test_full_same_dimension_does_not_wipe_vector_table_for_protected_doc(
     conn, provider, cfg, vault, caplog
 ):

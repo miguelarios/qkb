@@ -96,9 +96,6 @@ class Storage:
         ).fetchone()
         return row["value"] if row else None
 
-    def all_indexed_ids(self) -> set[str]:
-        return {r["id"] for r in self.conn.execute("SELECT id FROM documents")}
-
     def indexed_paths(self) -> dict[str, str]:
         """Map of vault-relative file_path -> document id for indexed documents.
 

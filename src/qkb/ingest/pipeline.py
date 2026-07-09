@@ -151,6 +151,22 @@ def ingest_vault(
     # (`parse_failed_ids`, finding 2), or when some file failed to parse at an
     # unrecognized path this run (`unresolved_failures`, finding 4).
     #
+    # DELIBERATE, ACCEPTED TRADE-OFF (`unresolved_failures` is whole-run, not
+    # scoped to any directory or id): when ANY file fails to parse this run at a
+    # path we don't recognize from a prior run, EVERY ambiguous deletion (every
+    # doc whose stored file is gone) is deferred to the next parse-clean ingest -
+    # even docs completely unrelated to the failing file. This is necessary
+    # because an unparseable new/renamed path can't be linked back to whichever
+    # old id it used to be (parse_note never ran far enough to read its
+    # frontmatter `id`), so we can't tell "this is the renamed note, protect it"
+    # apart from "this is an unrelated deletion, purge it" by path or id alone -
+    # scoping the protection (e.g. same-directory-only) would just re-break
+    # finding 4 for cross-directory renames. We accept a briefly-stale (already-
+    # deleted, still-searchable) doc for one run rather than risk permanently
+    # de-indexing a present-but-renamed note (silent search data-loss, much
+    # worse than a deletion that self-heals as soon as a run has zero parse
+    # failures). See test_unrelated_deletion_deferred_during_unresolved_parse_failure.
+    #
     # Deliberate deviation from the brief's literal `file_present` check (a raw
     # `(cfg.vault_path / stored_rel).exists()` test, OR'd in independent of any
     # parse failure this run): that check is true whenever *anything* now sits

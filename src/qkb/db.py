@@ -98,7 +98,7 @@ def vector_table_dimension(conn: sqlite3.Connection) -> int | None:
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunks_vec'"
     ).fetchone()
-    if row is None:
+    if row is None or row["sql"] is None:
         return None
     match = re.search(r"float\[(\d+)\]", row["sql"])
     if match is None:
