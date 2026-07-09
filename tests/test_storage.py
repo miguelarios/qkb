@@ -171,6 +171,21 @@ def test_upsert_filters_reserved_metadata_key_directly(conn, provider):
     assert stored != "injected-fake-hash"
 
 
+def test_clear_content_hash_forces_reembed_path(conn, provider):
+    """R1.2: clear_content_hash blanks documents.content_hash so the next
+    ingest of this doc can never take the hash-unchanged fast path (finding 1:
+    a --full that wiped chunks_vec must force protected, unre-embedded docs
+    back through the full upsert path)."""
+    note = make_note()
+    ingest_one(conn, provider, note)
+    s = Storage(conn)
+    assert s.get_content_hash(note.id) == content_hash(note.body)
+
+    s.clear_content_hash(note.id)
+
+    assert s.get_content_hash(note.id) == ""
+
+
 def test_context_descriptions_and_stats(conn, provider):
     ingest_one(conn, provider, make_note())
     s = Storage(conn)

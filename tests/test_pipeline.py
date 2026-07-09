@@ -417,3 +417,125 @@ def test_clean_full_reembed_leaves_sentinel_cleared(conn, provider, cfg, vault):
 
     stats2 = ingest_vault(conn, cfg, provider, full=False)
     assert stats2.unchanged == 1
+
+
+def test_renamed_note_that_fails_to_parse_is_not_deindexed(conn, provider, cfg, vault, caplog):
+    """Finding 4: a note renamed AND made unparseable in the same run can't be
+    resolved back to its old id by file_path (the new path was never indexed
+    under that name), so parse_failed_ids alone can't protect it. It must
+    still not be treated as a genuine deletion - an unresolved parse failure
+    this run (finding 4's signature) protects the whole sweep instead."""
+    write_note(vault, "a.md", ID1)
+    ingest_vault(conn, cfg, provider)
+
+    (vault / "a.md").unlink()
+    (vault / "renamed.md").write_text("---\nid: [unterminated\ncontext: homelab\n---\n\nbody\n")
+
+    with caplog.at_level(logging.WARNING):
+        stats = ingest_vault(conn, cfg, provider)
+
+    assert stats.deindexed == 0
+    assert stats.skipped >= 1
+    assert (
+        conn.execute("SELECT COUNT(*) c FROM documents WHERE id = ?", (ID1,)).fetchone()["c"] == 1
+    )
+
+
+def test_full_same_dimension_does_not_wipe_vector_table_for_protected_doc(
+    conn, provider, cfg, vault, caplog
+):
+    """Finding 1 + finding 2 (read-atomicity half): a --full at the SAME
+    dimension as the existing chunks_vec must not DROP/recreate it - so a doc
+    protected from de-indexing by a transient parse failure keeps its
+    already-embedded vectors intact, rather than losing them to an
+    unconditional wipe with no re-embed to follow."""
+    write_note(vault, "a.md", ID1)
+    write_note(vault, "sub/b.md", ID2, body="Another note body.")
+    ingest_vault(conn, cfg, provider)
+
+    b_chunk_ids = [
+        r["id"] for r in conn.execute("SELECT id FROM chunks WHERE document_id = ?", (ID2,))
+    ]
+    assert b_chunk_ids
+    marks = ",".join("?" * len(b_chunk_ids))
+    vec_count_before = conn.execute(
+        f"SELECT COUNT(*) c FROM chunks_vec WHERE chunk_id IN ({marks})", b_chunk_ids
+    ).fetchone()["c"]
+    assert vec_count_before == len(b_chunk_ids)
+
+    (vault / "sub/b.md").write_text("---\nid: [unterminated\ncontext: homelab\n---\n\nbody\n")
+
+    with caplog.at_level(logging.WARNING):
+        stats = ingest_vault(conn, cfg, provider, full=True)  # same dimension (8)
+
+    assert stats.deindexed == 0
+    vec_count_after = conn.execute(
+        f"SELECT COUNT(*) c FROM chunks_vec WHERE chunk_id IN ({marks})", b_chunk_ids
+    ).fetchone()["c"]
+    assert vec_count_after == vec_count_before
+
+
+def test_full_dimension_change_clears_content_hash_for_protected_doc_and_later_reembeds(
+    conn, provider, cfg, vault, caplog
+):
+    """Finding 1: a --full that DOES change dimension (and therefore wipes
+    chunks_vec) must clear content_hash on any doc it protected-but-couldn't-
+    re-embed, so a later successful parse of that doc takes the re-embed path
+    instead of silently staying vector-less forever."""
+    write_note(vault, "a.md", ID1)
+    write_note(vault, "sub/b.md", ID2, body="Another note body.")
+    ingest_vault(conn, cfg, provider)  # dim=8
+
+    (vault / "sub/b.md").write_text("---\nid: [unterminated\ncontext: homelab\n---\n\nbody\n")
+
+    wider = FakeProvider(dimension=16)
+    with caplog.at_level(logging.WARNING):
+        stats = ingest_vault(conn, cfg, wider, full=True)  # dimension change -> wipes table
+
+    assert stats.deindexed == 0
+    row = conn.execute("SELECT content_hash FROM documents WHERE id = ?", (ID2,)).fetchone()
+    assert row["content_hash"] == ""
+
+    # fix b.md and run a plain ingest with the now-current (wider) provider
+    write_note(vault, "sub/b.md", ID2, body="Another note body.")
+    cfg.embedding_dim = 16
+    stats2 = ingest_vault(conn, cfg, wider, full=False)
+
+    assert stats2.updated == 1  # stored hash was '' (not None), so this is the update path
+    b_chunk_ids = [
+        r["id"] for r in conn.execute("SELECT id FROM chunks WHERE document_id = ?", (ID2,))
+    ]
+    assert b_chunk_ids
+    marks = ",".join("?" * len(b_chunk_ids))
+    vec_count = conn.execute(
+        f"SELECT COUNT(*) c FROM chunks_vec WHERE chunk_id IN ({marks})", b_chunk_ids
+    ).fetchone()["c"]
+    assert vec_count == len(b_chunk_ids)
+    row2 = conn.execute("SELECT content_hash FROM documents WHERE id = ?", (ID2,)).fetchone()
+    assert row2["content_hash"] != ""
+
+
+def test_single_scan_sweep_still_deindexes_pure_deletion(conn, provider, cfg, vault):
+    """Below-cut: guards that consolidating to a single indexed_paths() scan
+    (plus the new parse_failed_paths/unresolved_failures bookkeeping) didn't
+    change sweep results for the ordinary case - a genuinely-removed file with
+    NO parse failures anywhere this run must still be de-indexed, alongside an
+    unrelated update, with correct stats."""
+    write_note(vault, "a.md", ID1)
+    write_note(vault, "sub/b.md", ID2, body="Another note body.")
+    stats = ingest_vault(conn, cfg, provider)
+    assert stats.indexed == 2
+
+    write_note(vault, "a.md", ID1, body="Edited body!")  # update
+    (vault / "sub/b.md").unlink()  # genuine deletion, no parse failures this run
+
+    stats2 = ingest_vault(conn, cfg, provider)
+
+    assert stats2.updated == 1
+    assert stats2.deindexed == 1
+    assert (
+        conn.execute("SELECT COUNT(*) c FROM documents WHERE id = ?", (ID2,)).fetchone()["c"] == 0
+    )
+    assert (
+        conn.execute("SELECT COUNT(*) c FROM documents WHERE id = ?", (ID1,)).fetchone()["c"] == 1
+    )

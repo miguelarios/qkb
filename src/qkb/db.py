@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -81,6 +82,28 @@ def rebuild_vector_table(conn: sqlite3.Connection, embedding_dim: int) -> None:
     conn.execute("DROP TABLE IF EXISTS chunks_vec")
     _create_vector_table(conn, embedding_dim)
     conn.commit()
+
+
+def vector_table_dimension(conn: sqlite3.Connection) -> int | None:
+    """Return the dimension `chunks_vec` was created at, or None if it doesn't exist.
+
+    Read authoritatively from the stored DDL rather than tracked state: a vec0
+    virtual table can't be altered in place, so whatever dimension is baked
+    into its `CREATE VIRTUAL TABLE` statement is the dimension inserts must
+    match. Used by `ingest_vault`'s `--full` path to decide whether a rebuild
+    is actually needed (finding 2: only DROP/recreate when the dimension
+    changed, so a concurrent reader doesn't see an empty index for the whole
+    run when the dimension is unchanged).
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunks_vec'"
+    ).fetchone()
+    if row is None:
+        return None
+    match = re.search(r"float\[(\d+)\]", row["sql"])
+    if match is None:
+        return None
+    return int(match.group(1))
 
 
 def connect(db_path: Path, embedding_dim: int) -> sqlite3.Connection:

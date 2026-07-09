@@ -221,6 +221,21 @@ class Storage:
             self.conn.execute(f"DELETE FROM chunks_vec WHERE chunk_id IN ({marks})", ids)
             self.conn.execute("DELETE FROM chunks WHERE document_id = ?", (doc_id,))
 
+    def clear_content_hash(self, doc_id: str) -> None:
+        """Blank out `documents.content_hash` for `doc_id` (finding 1).
+
+        Empty string satisfies the NOT NULL column and can never equal a real
+        64-hex-char sha256 hash, so the next successful parse of this doc is
+        guaranteed to miss the hash-unchanged fast path in `ingest_vault` and
+        go through the full chunk/embed/upsert path instead. Used when a
+        `--full` re-embed wiped `chunks_vec` (dimension changed) while this
+        doc was protected from de-indexing by a transient parse failure: its
+        old content_hash would otherwise make every later ingest believe it's
+        already up to date, even though it now has zero vectors.
+        """
+        with self.conn:
+            self.conn.execute("UPDATE documents SET content_hash = '' WHERE id = ?", (doc_id,))
+
     def delete(self, doc_id: str) -> None:
         with self.conn:
             self._delete_chunks(doc_id)
