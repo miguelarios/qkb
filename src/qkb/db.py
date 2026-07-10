@@ -63,6 +63,16 @@ CREATE INDEX IF NOT EXISTS idx_metadata_key ON metadata(key, value);
 """
 
 
+def placeholders(n: int) -> str:
+    """Build a `?,?,...` SQL IN-list placeholder string for `n` parameters.
+
+    Shared helper (below-the-cut dedup) for the several call sites that each
+    hand-rolled `",".join("?" * len(...))` for a dynamic IN-list: results.py,
+    filters.py (tags), storage.py (_delete_chunks).
+    """
+    return ",".join("?" * n)
+
+
 def _create_vector_table(conn: sqlite3.Connection, embedding_dim: int) -> None:
     conn.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0("

@@ -2,7 +2,7 @@ import sqlite3
 
 import pytest
 
-from qkb.db import connect, rebuild_vector_table, vector_table_dimension
+from qkb.db import connect, placeholders, rebuild_vector_table, vector_table_dimension
 
 
 def test_schema_created(tmp_path):
@@ -80,3 +80,9 @@ def test_vector_table_dimension_none_when_table_missing(tmp_path):
     conn = connect(tmp_path / "qkb.db", embedding_dim=8)
     conn.execute("DROP TABLE chunks_vec")
     assert vector_table_dimension(conn) is None
+
+
+def test_placeholders():
+    assert placeholders(3) == "?,?,?"
+    assert placeholders(1) == "?"
+    assert placeholders(0) == ""

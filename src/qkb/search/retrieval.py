@@ -60,6 +60,17 @@ def get_document(
                 f"file moved or deleted since last ingest: {doc['file_path']!r} "
                 f"(document {doc['document_id']!r}) — re-run `qkb ingest`"
             ) from e
+        except OSError as e:
+            # Below-the-cut: FileNotFoundError is the common case (moved/deleted
+            # since last ingest) and gets the friendly message above. Anything
+            # else OSError-shaped (PermissionError, IsADirectoryError, ...) still
+            # means "can't read this document's file" and should surface as the
+            # same typed, catchable error rather than a raw traceback.
+            # (UnicodeDecodeError subclasses ValueError, not OSError, and is
+            # already handled by callers expecting ValueError.)
+            raise DocumentFileMissing(
+                f"cannot read file {doc['file_path']!r} (document {doc['document_id']!r}): {e}"
+            ) from e
         desc = context_description(conn, doc["context"])
         if desc:
             text = f"<!-- Context: {desc} -->\n\n{text}"

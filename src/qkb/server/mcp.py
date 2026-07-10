@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -26,19 +27,22 @@ def build_server(cfg: Config | None = None) -> FastMCP:
     # connection and the embedding provider once here and let every tool call
     # below share them.
     #
-    # Sharing them safely does NOT depend on the process being
-    # single-threaded - it depends on every tool body below being a
-    # SYNCHRONOUS function (`def`, no `await`). FastMCP awaits each tool call
+    # Sharing them safely currently rests on every tool body below being a
+    # SYNCHRONOUS function (`def`, no `await`): FastMCP awaits each tool call
     # to completion before the event loop can start the next one, so two
     # synchronous tool bodies can never interleave their statements against
-    # `conn`/`provider`, even under concurrent requests. If a tool body were
-    # changed to `async def` (or gained an internal `await`), the event loop
-    # could switch to another call mid-body, and interleaved statements on
-    # the shared sqlite3.Connection (not thread/task-safe for concurrent use)
-    # or provider would corrupt state - that would require per-call
-    # connections or a lock around the shared ones instead.
+    # `conn`/`provider`, even under concurrent requests.
+    #
+    # Below-the-cut: that safety was previously just a comment ("every tool
+    # body must stay sync") - a convention, not a mechanism. `_lock` below
+    # turns it into one: each tool body's conn/provider-touching region runs
+    # `with _lock:`, so calls serialize on the shared connection even if a
+    # future change makes a body async or FastMCP ever dispatches tool calls
+    # on separate threads. Uncontended (and therefore cheap) as long as
+    # bodies stay synchronous, which they still must.
     conn = connect(cfg.db_path, cfg.embedding_dim)
     provider = get_provider(cfg)
+    _lock = threading.Lock()
 
     @asynccontextmanager
     async def _lifespan(_server: FastMCP) -> AsyncIterator[None]:
@@ -78,25 +82,26 @@ def build_server(cfg: Config | None = None) -> FastMCP:
     ) -> dict:
         if rerank:
             return {"error": "re-ranking not configured (Phase 2)"}
-        try:
-            results = execute_search(
-                conn,
-                cfg,
-                provider,
-                query,
-                Filters(
-                    context=context,
-                    source=source,
-                    doc_type=type,
-                    tags=tags,
-                    date_from=date_from,
-                    date_to=date_to,
-                ),
-                limit,
-                "hybrid",
-            )
-        except ValueError as e:
-            return {"error": str(e)}
+        with _lock:
+            try:
+                results = execute_search(
+                    conn,
+                    cfg,
+                    provider,
+                    query,
+                    Filters(
+                        context=context,
+                        source=source,
+                        doc_type=type,
+                        tags=tags,
+                        date_from=date_from,
+                        date_to=date_to,
+                    ),
+                    limit,
+                    "hybrid",
+                )
+            except ValueError as e:
+                return {"error": str(e)}
         return {"result": results}
 
     @server.tool(
@@ -105,21 +110,24 @@ def build_server(cfg: Config | None = None) -> FastMCP:
         "obsidian:// URI, siblings, and optionally the raw markdown body.",
     )
     def qkb_get(document_id: str, include_raw: bool = False, include_siblings: bool = True) -> dict:
-        try:
-            return get_document(
-                conn,
-                document_id,
-                vault_path=cfg.vault_path,
-                include_raw=include_raw,
-                include_siblings=include_siblings,
-            )
-        except DocumentFileMissing as e:
-            # Task 6: get_document raises this when the on-disk file is gone
-            # since the last ingest. An MCP tool should hand the caller a
+        with _lock:
+            try:
+                return get_document(
+                    conn,
+                    document_id,
+                    vault_path=cfg.vault_path,
+                    include_raw=include_raw,
+                    include_siblings=include_siblings,
+                )
+            # get_document raises DocumentFileMissing when the on-disk file is
+            # gone since the last ingest. An MCP tool should hand the caller a
             # structured error to reason about, not an uncaught exception.
-            return {"error": str(e)}
-        except (KeyError, ValueError) as e:
-            return {"error": str(e)}
+            # DocumentFileMissing subclasses FileNotFoundError (not KeyError/
+            # ValueError), so it must stay named in the tuple to be caught
+            # here; its arm was byte-identical to the one below, so they're
+            # merged (below-the-cut).
+            except (DocumentFileMissing, KeyError, ValueError) as e:
+                return {"error": str(e)}
 
     @server.tool(
         name="qkb_status",
@@ -127,7 +135,8 @@ def build_server(cfg: Config | None = None) -> FastMCP:
         "descriptions, last ingestion time.",
     )
     def qkb_status() -> dict:
-        return Storage(conn).stats()
+        with _lock:
+            return Storage(conn).stats()
 
     return server
 

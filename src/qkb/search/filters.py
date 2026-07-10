@@ -4,6 +4,7 @@ import calendar
 import re
 from dataclasses import dataclass
 
+from qkb.db import placeholders
 from qkb.ingest.parser import normalize_context, parse_date_lenient
 
 
@@ -80,7 +81,7 @@ def build_filter_clause(f: Filters) -> tuple[str, list]:
         conditions.append("d.effective_date <= ?")
         params.append(date_to)
     if f.tags:
-        marks = ",".join("?" * len(f.tags))
+        marks = placeholders(len(f.tags))
         conditions.append(
             f"d.id IN (SELECT document_id FROM tags WHERE tag IN ({marks}) "
             "GROUP BY document_id HAVING COUNT(DISTINCT tag) = ?)"

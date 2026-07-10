@@ -7,8 +7,13 @@ import sqlite3
 
 import sqlite_vec
 
-from qkb.db import rebuild_vector_table
+from qkb.db import placeholders, rebuild_vector_table
 from qkb.models import Chunk, ParsedNote
+
+# Sentinel distinguishing "caller did not pass stored_metadata_hash" (fall back
+# to the per-doc SELECT below) from "caller passed a batched value, which may
+# legitimately be None" in update_metadata_if_changed - see 6b.
+_NOT_GIVEN = object()
 
 
 def content_hash(body: str) -> str:
@@ -95,6 +100,24 @@ class Storage:
             (doc_id, _METADATA_HASH_KEY),
         ).fetchone()
         return row["value"] if row else None
+
+    def all_metadata_hashes(self) -> dict[str, str]:
+        """Map of document_id -> stored metadata_hash for every indexed document.
+
+        Batches the per-unchanged-doc point SELECT that `update_metadata_if_changed`
+        would otherwise run once per document (below-the-cut: on top of the
+        per-doc `get_content_hash`, that's a second full pass of point queries
+        over a large all-unchanged vault). Mirrors `indexed_paths()`: the
+        pipeline fetches this once before the ingest loop and passes each
+        document's precomputed hash into `update_metadata_if_changed` via
+        `stored_metadata_hash`.
+        """
+        return {
+            r["document_id"]: r["value"]
+            for r in self.conn.execute(
+                "SELECT document_id, value FROM metadata WHERE key = ?", (_METADATA_HASH_KEY,)
+            )
+        }
 
     def indexed_paths(self) -> dict[str, str]:
         """Map of vault-relative file_path -> document id for indexed documents.
@@ -185,22 +208,37 @@ class Storage:
                     (cur.lastrowid, sqlite_vec.serialize_float32(vec)),
                 )
 
-    def update_metadata_if_changed(self, note: ParsedNote, chash: str) -> bool:
+    def update_metadata_if_changed(
+        self,
+        note: ParsedNote,
+        chash: str,
+        stored_metadata_hash: str | None = _NOT_GIVEN,  # type: ignore[assignment]
+    ) -> bool:
         """Refresh the documents row, FTS metadata columns, tags, and metadata
         for a document whose body is known unchanged (caller already matched
         `content_hash`) - but ONLY if the frontmatter-derived metadata actually
         changed since the last ingest (finding 10).
 
+        `stored_metadata_hash`, if given, is the caller's already-fetched value
+        (e.g. from `all_metadata_hashes()`), so this method skips its own
+        per-doc `get_metadata_hash` SELECT (below-the-cut: batching that point
+        query, like `indexed_paths()` already batches file-path lookups).
+        Omit it (the default) to fall back to the old per-doc SELECT.
+
         Returns True if a write happened (indexed_at legitimately advances),
         False if this was a true no-op: no transaction opened, nothing written,
         indexed_at untouched. Called for every content-unchanged document on
-        every ingest, so the no-op path must stay cheap (a single indexed
-        lookup in `metadata`, no writes) - on a large vault this is the
-        difference between ~0 writes and one full-body FTS re-tokenization per
-        document per cron run.
+        every ingest, so the no-op path must stay cheap - on a large vault
+        this is the difference between ~0 writes and one full-body FTS
+        re-tokenization per document per cron run.
         """
         mhash = metadata_hash(note, self.vault_name)
-        if self.get_metadata_hash(note.id) == mhash:
+        stored = (
+            self.get_metadata_hash(note.id)
+            if stored_metadata_hash is _NOT_GIVEN
+            else stored_metadata_hash
+        )
+        if stored == mhash:
             return False
         with self.conn:
             self._write_doc_row(note, chash)
@@ -214,7 +252,7 @@ class Storage:
             for r in self.conn.execute("SELECT id FROM chunks WHERE document_id = ?", (doc_id,))
         ]
         if ids:
-            marks = ",".join("?" * len(ids))
+            marks = placeholders(len(ids))
             self.conn.execute(f"DELETE FROM chunks_vec WHERE chunk_id IN ({marks})", ids)
             self.conn.execute("DELETE FROM chunks WHERE document_id = ?", (doc_id,))
 
@@ -314,14 +352,31 @@ class Storage:
         return row is not None and row["value"] == "1"
 
     def set_context_description(self, context: str, description: str | None) -> None:
+        """Store/clear a context's description, keyed by its NORMALIZED label.
+
+        Normalizes `context` here (below-the-cut) rather than trusting the
+        caller to have already done it: `cli.py describe` normalizes before
+        calling this, but a future non-CLI caller passing a raw label would
+        otherwise store a description under a context ingest/query never
+        produce, since both of those normalize. Inlined rather than importing
+        `qkb.ingest.parser.normalize_context` to avoid an import cycle
+        (parser.py imports `_METADATA_HASH_KEY` from this module) - this
+        mirrors `normalize_context`'s `str(value).strip().lower() or None`
+        exactly.
+        """
+        normalized = str(context).strip().lower() or None
+        if normalized is None:
+            raise ValueError("context must not be empty")
         with self.conn:
             if description is None:
-                self.conn.execute("DELETE FROM context_descriptions WHERE context = ?", (context,))
+                self.conn.execute(
+                    "DELETE FROM context_descriptions WHERE context = ?", (normalized,)
+                )
             else:
                 self.conn.execute(
                     "INSERT INTO context_descriptions (context, description) VALUES (?,?) "
                     "ON CONFLICT(context) DO UPDATE SET description=excluded.description",
-                    (context, description),
+                    (normalized, description),
                 )
 
     def list_contexts(self) -> list[dict]:

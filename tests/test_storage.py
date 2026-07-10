@@ -1,3 +1,5 @@
+import pytest
+
 from qkb.ingest.storage import Storage, content_hash
 from tests.conftest import ingest_one, make_note
 
@@ -198,3 +200,69 @@ def test_context_descriptions_and_stats(conn, provider):
     assert s.list_contexts()[0]["description"] is None
     st = s.stats()
     assert st["documents"] == 1 and st["chunks"] >= 1
+
+
+def test_set_context_description_normalizes_context(conn, provider):
+    """6e: Storage.set_context_description must normalize the label itself
+    (mirroring parser.normalize_context), not rely solely on the CLI having
+    already done it - so a future non-CLI caller can't store a description
+    under a context ingest/query-normalized contexts never match."""
+    ingest_one(conn, provider, make_note(context="homelab"))
+    s = Storage(conn)
+
+    s.set_context_description("  Homelab  ", "x")
+
+    row = conn.execute(
+        "SELECT description FROM context_descriptions WHERE context = ?", ("homelab",)
+    ).fetchone()
+    assert row["description"] == "x"
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) c FROM context_descriptions WHERE context = ?", ("  Homelab  ",)
+        ).fetchone()["c"]
+        == 0
+    )
+
+
+def test_set_context_description_rejects_empty_after_normalization(conn):
+    s = Storage(conn)
+    with pytest.raises(ValueError):
+        s.set_context_description("   ", "x")
+
+
+def test_all_metadata_hashes_returns_stored_hashes(conn, provider):
+    """6b: Storage.all_metadata_hashes() batches what update_metadata_if_changed
+    otherwise looks up per-document via get_metadata_hash."""
+    from qkb.ingest.storage import metadata_hash
+
+    note = make_note()
+    ingest_one(conn, provider, note)
+    s = Storage(conn)
+
+    hashes = s.all_metadata_hashes()
+
+    assert hashes == {note.id: metadata_hash(note, s.vault_name)}
+    assert hashes[note.id] == s.get_metadata_hash(note.id)
+
+
+def test_update_metadata_if_changed_uses_precomputed_hash_without_select(conn, provider):
+    """6b: when the caller supplies stored_metadata_hash (as the pipeline now
+    does, from the batched all_metadata_hashes() dict), update_metadata_if_changed
+    must not run its own get_metadata_hash SELECT - and no-op semantics must be
+    identical to the unsupplied-argument path."""
+    from unittest.mock import patch
+
+    note = make_note()
+    ingest_one(conn, provider, note)
+    s = Storage(conn)
+    meta_hashes = s.all_metadata_hashes()
+    before_changes = conn.total_changes
+
+    with patch.object(Storage, "get_metadata_hash") as spy:
+        changed = s.update_metadata_if_changed(
+            note, content_hash(note.body), meta_hashes.get(note.id)
+        )
+
+    spy.assert_not_called()
+    assert changed is False
+    assert conn.total_changes == before_changes

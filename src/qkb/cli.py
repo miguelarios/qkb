@@ -191,10 +191,10 @@ def get(id_or_prefix, raw, open_):
     conn = _conn(cfg)
     try:
         doc = get_document(conn, id_or_prefix, vault_path=cfg.vault_path, include_raw=raw)
-    except DocumentFileMissing as e:
-        click.echo(str(e), err=True)
-        sys.exit(1)
-    except (KeyError, ValueError) as e:
+    # DocumentFileMissing subclasses FileNotFoundError (not KeyError/ValueError),
+    # so it must stay named in the tuple to be caught here; its arm was
+    # byte-identical to the one below, so they're merged (below-the-cut).
+    except (DocumentFileMissing, KeyError, ValueError) as e:
         click.echo(str(e), err=True)
         sys.exit(1)
     if open_:

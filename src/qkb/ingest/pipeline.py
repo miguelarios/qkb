@@ -78,6 +78,10 @@ def ingest_vault(
     # full-table scan.
     indexed_paths = storage.indexed_paths()  # file_path -> id, snapshot from before this run
     previously_indexed = set(indexed_paths.values())
+    # Below-the-cut: batch the per-unchanged-doc metadata-hash SELECT into one
+    # upfront query (like indexed_paths() above), instead of update_metadata_
+    # if_changed running its own point SELECT for every content-unchanged doc.
+    meta_hashes = storage.all_metadata_hashes()  # doc id -> stored metadata_hash
     seen: dict[str, Path] = {}  # note id -> first file path that claimed it this run
     # Doc ids whose backing file still exists but raised an exception while
     # parsing this run (e.g. a note saved mid-edit with malformed frontmatter).
@@ -126,7 +130,7 @@ def ingest_vault(
             # changed) should touch the DB; a true no-op body+metadata match must
             # not open a transaction or bump indexed_at. Either way this document's
             # body is unchanged, so it's still counted as `unchanged` here.
-            storage.update_metadata_if_changed(note, chash)
+            storage.update_metadata_if_changed(note, chash, meta_hashes.get(note.id))
             stats.unchanged += 1
             continue
         chunks = chunk_text(note.body, cfg.chunk_target_tokens, cfg.chunk_overlap_percent)

@@ -552,6 +552,28 @@ def test_full_dimension_change_clears_content_hash_for_protected_doc_and_later_r
     assert row2["content_hash"] != ""
 
 
+def test_unchanged_reingest_uses_batched_metadata_hashes_no_per_doc_select(
+    conn, provider, cfg, vault
+):
+    """6b: an all-unchanged re-ingest must fetch metadata hashes once (via
+    Storage.all_metadata_hashes(), like indexed_paths()) rather than running
+    Storage.get_metadata_hash's per-doc point SELECT once per unchanged
+    document."""
+    from unittest.mock import patch
+
+    from qkb.ingest.storage import Storage
+
+    write_note(vault, "a.md", ID1)
+    write_note(vault, "sub/b.md", ID2, body="Another note body.")
+    ingest_vault(conn, cfg, provider)
+
+    with patch.object(Storage, "get_metadata_hash") as spy:
+        stats = ingest_vault(conn, cfg, provider)
+
+    spy.assert_not_called()
+    assert stats.unchanged == 2
+
+
 def test_single_scan_sweep_still_deindexes_pure_deletion(conn, provider, cfg, vault):
     """Below-cut: guards that consolidating to a single indexed_paths() scan
     (plus the new parse_failed_paths/unresolved_failures bookkeeping) didn't

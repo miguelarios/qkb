@@ -5,6 +5,8 @@ from __future__ import annotations
 import sqlite3
 from urllib.parse import quote
 
+from qkb.db import placeholders
+
 
 def obsidian_uri(vault_name: str, file_path: str) -> str:
     path = file_path.removesuffix(".md")
@@ -20,15 +22,11 @@ def context_description(conn: sqlite3.Connection, context: str | None) -> str | 
     return row["description"] if row else None
 
 
-def _placeholders(n: int) -> str:
-    return ",".join("?" * n)
-
-
 def _batch_doc_rows(conn: sqlite3.Connection, doc_ids: list[str]) -> dict[str, sqlite3.Row]:
     if not doc_ids:
         return {}
     rows = conn.execute(
-        f"SELECT * FROM documents WHERE id IN ({_placeholders(len(doc_ids))})", doc_ids
+        f"SELECT * FROM documents WHERE id IN ({placeholders(len(doc_ids))})", doc_ids
     ).fetchall()
     return {r["id"]: r for r in rows}
 
@@ -39,7 +37,7 @@ def _batch_tags(conn: sqlite3.Connection, doc_ids: list[str]) -> dict[str, list[
         return tags_by_doc
     rows = conn.execute(
         "SELECT document_id, tag FROM tags WHERE document_id IN "
-        f"({_placeholders(len(doc_ids))}) ORDER BY tag",
+        f"({placeholders(len(doc_ids))}) ORDER BY tag",
         doc_ids,
     ).fetchall()
     for r in rows:
@@ -53,7 +51,7 @@ def _batch_context_descriptions(conn: sqlite3.Connection, contexts: list[str]) -
         return {}
     rows = conn.execute(
         "SELECT context, description FROM context_descriptions WHERE context IN "
-        f"({_placeholders(len(unique))})",
+        f"({placeholders(len(unique))})",
         unique,
     ).fetchall()
     return {r["context"]: r["description"] for r in rows}
@@ -68,7 +66,7 @@ def _batch_siblings(conn: sqlite3.Connection, sources: list[str]) -> dict[str, l
         return siblings_by_source
     rows = conn.execute(
         "SELECT id, title, type, file_path, vault_name, source FROM documents "
-        f"WHERE source IN ({_placeholders(len(unique))}) ORDER BY title",
+        f"WHERE source IN ({placeholders(len(unique))}) ORDER BY title",
         unique,
     ).fetchall()
     for r in rows:
