@@ -21,6 +21,13 @@ def _validated_template(name: str, template: str | None) -> str | None:
         return None
     if "{t}" not in template:
         raise ValueError(f"{name} must contain a {{t}} placeholder, got {template!r}")
+    try:
+        template.format(t="")
+    except (KeyError, IndexError, ValueError) as e:
+        raise ValueError(
+            f"{name} has an invalid format template {template!r}: only the "
+            f"{{t}} placeholder is allowed ({e!r})"
+        ) from e
     return template
 
 

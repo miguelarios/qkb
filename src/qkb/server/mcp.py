@@ -77,7 +77,7 @@ def build_server(cfg: Config | None = None) -> FastMCP:
         rerank: bool = False,
     ) -> dict:
         if rerank:
-            return {"result": [{"error": "re-ranking not configured (Phase 2)"}]}
+            return {"error": "re-ranking not configured (Phase 2)"}
         try:
             results = execute_search(
                 conn,
@@ -96,7 +96,7 @@ def build_server(cfg: Config | None = None) -> FastMCP:
                 "hybrid",
             )
         except ValueError as e:
-            return {"result": [{"error": str(e)}]}
+            return {"error": str(e)}
         return {"result": results}
 
     @server.tool(

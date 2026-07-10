@@ -70,6 +70,50 @@ def test_template_missing_placeholder_raises():
         )
 
 
+def test_template_with_extra_named_field_raises_naming_the_setting():
+    """Finding 10: '{t}' in template passes the presence check, but a stray
+    named field like {context} isn't supplied at format-time and used to
+    crash str.format with an opaque KeyError mid-embed. Validation-by-attempt
+    must catch this at construction time and name the offending setting."""
+    with pytest.raises(ValueError, match="doc_template"):
+        OllamaProvider(
+            host="http://testserver",
+            model="embeddinggemma",
+            dimension=4,
+            doc_template="foo: {t} | {context}",
+        )
+
+
+def test_template_with_positional_field_raises():
+    with pytest.raises(ValueError, match="query_template"):
+        OllamaProvider(
+            host="http://testserver",
+            model="embeddinggemma",
+            dimension=4,
+            query_template="{t} {0}",
+        )
+
+
+def test_template_with_unbalanced_brace_raises():
+    with pytest.raises(ValueError, match="doc_template"):
+        OllamaProvider(
+            host="http://testserver",
+            model="embeddinggemma",
+            dimension=4,
+            doc_template="{t} {",
+        )
+
+
+def test_valid_template_with_only_t_placeholder_accepted():
+    p = OllamaProvider(
+        host="http://testserver",
+        model="embeddinggemma",
+        dimension=4,
+        doc_template="search_query: {t}",
+    )
+    assert p._doc_fmt == "search_query: {t}"
+
+
 def test_dimension_mismatch_raises():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"embeddings": [[0.1, 0.2]]})

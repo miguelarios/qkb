@@ -58,7 +58,7 @@ def test_mcp_tools(tmp_path):
     assert out["documents"] == 1
 
     out = call(server, "qkb", query="x", rerank=True)
-    assert "error" in out["result"][0]
+    assert out == {"error": "re-ranking not configured (Phase 2)"}
 
 
 def test_qkb_uses_cfg_default_limit_when_omitted(tmp_path):
@@ -101,7 +101,24 @@ def test_qkb_limit_below_one_returns_structured_error_not_exception(tmp_path):
 
     server = build_server(cfg)
     out = call(server, "qkb", query="traefik", limit=0)
-    assert "error" in out["result"][0]
+    assert "error" in out
+    assert "result" not in out
+
+
+def test_qkb_context_filter_whitespace_returns_top_level_error(tmp_path):
+    """Finding 9: the qkb ValueError branch (here triggered via R4's
+    whitespace/empty-context guard in build_filter_clause) must return the
+    unified top-level {"error": ...} shape, not {"result": [{"error": ...}]}."""
+    cfg = make_cfg(tmp_path)
+    write_note(cfg.vault_path, "a.md", ID1, body="Renewing traefik certificates.")
+    conn = connect(cfg.db_path, cfg.embedding_dim)
+    ingest_vault(conn, cfg, FakeProvider(8))
+    conn.close()
+
+    server = build_server(cfg)
+    out = call(server, "qkb", query="traefik", context="   ")
+    assert out == {"error": "context filter is empty or whitespace-only"}
+    assert "result" not in out
 
 
 def test_qkb_get_missing_raw_file_returns_structured_error(tmp_path):
