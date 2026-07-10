@@ -30,11 +30,9 @@ def _normalize_bound(label: str, value: str | None, *, upper: bool) -> str | Non
     lexicographically-comparable canonical `effective_date` column
     (finding 8) instead of hard-erroring or mis-comparing.
     """
-    if not value:
+    if value is None:
         return None
     v = value.strip()
-    if not v:
-        return None
     if _YEAR.match(v):
         y = int(v)
         return f"{y:04d}-12-31" if upper else f"{y:04d}-01-01"

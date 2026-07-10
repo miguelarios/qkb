@@ -145,6 +145,27 @@ def test_date_garbage_raises():
         build_filter_clause(Filters(date_from="garbage"))
 
 
+def test_date_from_whitespace_only_raises():
+    """Same bug class as finding 7 (whitespace-only context): a whitespace-only
+    date_from must not silently produce no clause and run the query
+    unfiltered - it must raise, matching the empty/whitespace handling used
+    for context and source."""
+    with pytest.raises(ValueError, match="date_from"):
+        build_filter_clause(Filters(date_from="   "))
+
+
+def test_date_to_empty_string_raises():
+    with pytest.raises(ValueError, match="date_to"):
+        build_filter_clause(Filters(date_to=""))
+
+
+def test_date_bounds_none_still_unfiltered():
+    """Regression guard: None must remain the only way to get 'no clause' -
+    this must not raise and must not add date conditions."""
+    clause, params = build_filter_clause(Filters(date_from=None, date_to=None))
+    assert clause == "1=1" and params == []
+
+
 def test_partial_date_from_filters_real_search(conn, provider):
     """End-to-end: a bare-year --date-from should actually include docs dated
     in that year via search_bm25, not just build a clause in isolation."""
