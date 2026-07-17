@@ -33,6 +33,9 @@ class Config:
     ollama_host: str = "http://localhost:11434"
     embedding_doc_template: str | None = None
     embedding_query_template: str | None = None
+    local_gguf_repo: str = "ggml-org/embeddinggemma-300M-GGUF"
+    local_gguf_file: str = "embeddinggemma-300M-Q8_0.gguf"
+    model_cache_dir: Path = Path.home() / ".cache/qkb/models"
     chunk_target_tokens: int = 500
     chunk_overlap_percent: int = 15
     default_limit: int = 10
@@ -56,6 +59,9 @@ _TOML_MAP = [
     ("embedding", "ollama_host", "ollama_host", str),
     ("embedding", "doc_template", "embedding_doc_template", str),
     ("embedding", "query_template", "embedding_query_template", str),
+    ("embedding", "local_gguf_repo", "local_gguf_repo", str),
+    ("embedding", "local_gguf_file", "local_gguf_file", str),
+    ("embedding", "model_cache_dir", "model_cache_dir", Path),
     ("chunking", "target_tokens", "chunk_target_tokens", int),
     ("chunking", "overlap_percent", "chunk_overlap_percent", int),
     ("search", "default_limit", "default_limit", int),
@@ -76,6 +82,9 @@ _ENV_MAP = {
     "QKB_OLLAMA_HOST": ("ollama_host", str),
     "QKB_EMBEDDING_DOC_TEMPLATE": ("embedding_doc_template", str),
     "QKB_EMBEDDING_QUERY_TEMPLATE": ("embedding_query_template", str),
+    "QKB_LOCAL_GGUF_REPO": ("local_gguf_repo", str),
+    "QKB_LOCAL_GGUF_FILE": ("local_gguf_file", str),
+    "QKB_MODEL_CACHE_DIR": ("model_cache_dir", Path),
 }
 
 
@@ -101,4 +110,5 @@ def load_config(config_path: Path | None = None, env: Mapping[str, str] | None =
 
     cfg.vault_path = cfg.vault_path.expanduser()
     cfg.db_path = cfg.db_path.expanduser()
+    cfg.model_cache_dir = cfg.model_cache_dir.expanduser()
     return cfg

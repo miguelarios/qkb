@@ -84,3 +84,40 @@ def test_dead_api_base_and_api_key_fields_removed():
     cfg = load_config(config_path=Path("/nonexistent/qkb.toml"), env={})
     assert not hasattr(cfg, "api_base")
     assert not hasattr(cfg, "api_key")
+
+
+def test_local_provider_defaults():
+    cfg = load_config(config_path=Path("/nonexistent"), env={})
+    assert cfg.local_gguf_repo == "ggml-org/embeddinggemma-300M-GGUF"
+    assert cfg.local_gguf_file == "embeddinggemma-300M-Q8_0.gguf"
+    assert cfg.model_cache_dir == Path.home() / ".cache/qkb/models"
+
+
+def test_local_provider_toml_overrides(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text(
+        "[embedding]\n"
+        'provider = "local"\n'
+        'local_gguf_repo = "example-org/other-model-GGUF"\n'
+        'local_gguf_file = "other-model-Q4_K_M.gguf"\n'
+        'model_cache_dir = "/tmp/qkb-models"\n'
+    )
+    cfg = load_config(config_path=p, env={})
+    assert cfg.embedding_provider == "local"
+    assert cfg.local_gguf_repo == "example-org/other-model-GGUF"
+    assert cfg.local_gguf_file == "other-model-Q4_K_M.gguf"
+    assert cfg.model_cache_dir == Path("/tmp/qkb-models")
+
+
+def test_local_provider_env_overrides(tmp_path):
+    cfg = load_config(
+        config_path=Path("/nonexistent"),
+        env={
+            "QKB_LOCAL_GGUF_REPO": "example-org/env-model-GGUF",
+            "QKB_LOCAL_GGUF_FILE": "env-model.gguf",
+            "QKB_MODEL_CACHE_DIR": "~/custom-cache",
+        },
+    )
+    assert cfg.local_gguf_repo == "example-org/env-model-GGUF"
+    assert cfg.local_gguf_file == "env-model.gguf"
+    assert cfg.model_cache_dir == Path.home() / "custom-cache"
