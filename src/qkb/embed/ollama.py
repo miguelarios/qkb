@@ -20,7 +20,7 @@ class OllamaProvider:
     ):
         """`doc_template`/`query_template` are explicit `{t}`-placeholder prompt
         templates (e.g. from [embedding] doc_template/query_template config).
-        When either is unset, the per-model `_formats(model)` heuristic is used
+        When either is unset, the per-model `default_formats(model)` heuristic is used
         for that slot — so a custom model tag (that the heuristic doesn't
         recognize) can still get correct task-prefixed prompts via config."""
         self._model = model
