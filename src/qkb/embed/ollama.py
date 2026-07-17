@@ -4,31 +4,9 @@ from __future__ import annotations
 
 import httpx
 
+from qkb.embed.templates import default_formats, validated_template
+
 _BATCH = 32
-
-
-def _formats(model: str) -> tuple[str, str]:
-    """(doc_template, query_template) with {t} placeholder."""
-    if model.startswith("embeddinggemma"):
-        return "title: none | text: {t}", "task: search result | query: {t}"
-    if model.startswith("nomic"):
-        return "search_document: {t}", "search_query: {t}"
-    return "{t}", "{t}"
-
-
-def _validated_template(name: str, template: str | None) -> str | None:
-    if template is None:
-        return None
-    if "{t}" not in template:
-        raise ValueError(f"{name} must contain a {{t}} placeholder, got {template!r}")
-    try:
-        template.format(t="")
-    except (KeyError, IndexError, ValueError) as e:
-        raise ValueError(
-            f"{name} has an invalid format template {template!r}: only the "
-            f"{{t}} placeholder is allowed ({e!r})"
-        ) from e
-    return template
 
 
 class OllamaProvider:
@@ -47,9 +25,9 @@ class OllamaProvider:
         recognize) can still get correct task-prefixed prompts via config."""
         self._model = model
         self._dim = dimension
-        default_doc_fmt, default_query_fmt = _formats(model)
-        self._doc_fmt = _validated_template("doc_template", doc_template) or default_doc_fmt
-        self._query_fmt = _validated_template("query_template", query_template) or default_query_fmt
+        default_doc_fmt, default_query_fmt = default_formats(model)
+        self._doc_fmt = validated_template("doc_template", doc_template) or default_doc_fmt
+        self._query_fmt = validated_template("query_template", query_template) or default_query_fmt
         self._client = httpx.Client(base_url=host, timeout=120.0)
 
     @property
