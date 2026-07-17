@@ -15,6 +15,17 @@ def get_provider(cfg: Config) -> EmbeddingProvider:
             doc_template=cfg.embedding_doc_template,
             query_template=cfg.embedding_query_template,
         )
+    if cfg.embedding_provider == "local":
+        from qkb.embed.local import LlamaCppProvider
+        from qkb.embed.models import ensure_model
+
+        model_path = ensure_model(cfg.local_gguf_repo, cfg.local_gguf_file, cfg.model_cache_dir)
+        return LlamaCppProvider(
+            model_path,
+            cfg.embedding_dim,
+            doc_template=cfg.embedding_doc_template,
+            query_template=cfg.embedding_query_template,
+        )
     if cfg.embedding_provider == "fake":
         return FakeProvider(cfg.embedding_dim)
     raise ValueError(f"unknown embedding provider: {cfg.embedding_provider!r}")

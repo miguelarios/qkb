@@ -33,9 +33,21 @@ Inspired by [QMD](https://github.com/tobi/qmd)'s search architecture, adapted fo
 
 ```bash
 pip install qkb-search   # or: pipx install qkb-search / uvx --from qkb-search qkb
+pip install 'qkb-search[local]'   # or: uv tool install 'qkb-search[local]'
 ```
 
 The package installs the `qkb` command. Requires Python ≥3.11 and, for local embeddings, [Ollama](https://ollama.com) with `embeddinggemma` pulled (multilingual, CPU-friendly; other models configurable).
+
+### No Ollama? Use the in-process provider
+
+The `[local]` extra runs embeddings in-process via `llama-cpp-python` — no Ollama service required. Useful on a laptop used for occasional searches where a resident Ollama process isn't worth keeping around.
+
+```toml
+[embedding]
+provider = "local"
+```
+
+The first `qkb ingest` downloads the GGUF (~300 MB, one-time, cached under `~/.cache/qkb/models/`) and then embeds normally. Switching providers forces a full re-embed — run `qkb ingest --full` after changing `provider`.
 
 ## License
 

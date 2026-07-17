@@ -254,3 +254,20 @@ CREATE TABLE metadata (
 **Decision**: No — every key is remappable in `~/.config/qkb/config.toml` under `[frontmatter]`, with the documented contract as strong defaults. A key may map to a list of aliases (first present wins), which also absorbs vault history drift (e.g., `created` vs legacy `date created`).
 
 **Rationale**: qkb is published publicly; no two vaults share conventions. Survey of the author's own vault found the original design's assumed key (`date created`, `YYYY-MM-DD`) was wrong for 97% of notes (`created`, ISO 8601 datetime) — if the reference vault drifts from the spec, everyone's will. The pipeline speaks canonical names internally; mapping is applied once at parse time.
+
+---
+
+## ADR-012: Local (In-Process) Embedding Provider
+
+**Date**: 2026-07-16
+**Status**: Decided
+
+**Question**: Ollama requires a resident service; on a laptop used for occasional searches that's an unwanted always-on dependency. Rewrite in a compiled language for a single binary, or add an in-process provider?
+
+**Options considered**:
+
+1. **Status quo, Ollama only.**
+2. **Rewrite in Go/Rust/Bun for a true single binary** (what QMD does via node-llama-cpp + Bun compile).
+3. **Add a llama-cpp-python provider behind the existing `EmbeddingProvider` protocol as an optional extra.**
+
+**Decision**: Option 3. The Ollama dependency is an architecture choice, not a language artifact — the protocol seam already exists, so in-process inference is one module (`qkb.embed.local`) + one optional extra (`qkb-search[local]`), preserving the tested Phase 1 core. Same GGUF QMD uses (embeddinggemma-300M-Q8_0 from ggml-org), auto-downloaded to `~/.cache/qkb/models/`. Per-machine config: `provider = "local"` on the laptop, `provider = "ollama"` where a container already runs. `model_name` reports the GGUF stem so provider switches force a `--full` re-embed (cross-runtime/quantization vectors are not interchangeable). Trade-offs accepted: ~1s model load per one-shot CLI call (MCP server loads once); llama-cpp-python compiles from source at install; not a literal single binary (`uv tool install` is the distribution answer).
