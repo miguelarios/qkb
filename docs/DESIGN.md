@@ -103,6 +103,7 @@ Rationale: the transcription tooling upstream of qkb is already Python, `sqlite-
 | `rich` | Terminal output formatting |
 | `mcp` | MCP server SDK (stdio transport, Phase 1) |
 | `fastapi` + `uvicorn` | HTTP API (Phase 2, optional) |
+| `llama-cpp-python` (optional, `[local]` extra) | In-process GGUF embeddings — no Ollama service needed |
 
 Embedding and LLM dependencies are runtime-selected via the provider abstraction (see §7.3).
 
@@ -438,11 +439,20 @@ class FakeProvider(EmbeddingProvider):
     no model. Keeps the test suite runnable anywhere (including CI)
     and keeps the provider abstraction honest.
     """
+
+class LlamaCppProvider(EmbeddingProvider):
+    """In-process embeddings via llama-cpp-python (GGUF).
+
+    No resident service. The GGUF (default: embeddinggemma-300M-Q8_0 from
+    ggml-org, same model QMD uses) is auto-downloaded to
+    ~/.cache/qkb/models/ on first use. Install: pip install 'qkb-search[local]'.
+    model_name is the GGUF stem, so switching provider forces --full re-embed.
+    """
 ```
 
 **Model switching**: The `embedding_config` table tracks which model produced the current embeddings. If the configured model differs from what's stored, the ingestion pipeline requires a `--full` re-embed. This prevents mixing vectors from incompatible models.
 
-**Default model**: `embeddinggemma` via Ollama (300M params, 768 dimensions, 100+ languages including Spanish, local, zero API cost — and the same model QMD defaults to). It runs comfortably on CPU-only hardware (verified target: Ryzen 3900X), so the GPU-less server deployment works. Alternatives, one config line away: `nomic-embed-text` (~140M, faster, English-focused) and `qwen3-embedding:0.6b` (1024d, strongest multilingual quality, slower on CPU). Switching models forces a full re-embed via the `embedding_config` check — at personal-vault scale that costs minutes, so it's not a one-way door.
+**Default model**: `embeddinggemma` via Ollama (300M params, 768 dimensions, 100+ languages including Spanish, local, zero API cost — and the same model QMD defaults to). It runs comfortably on CPU-only hardware (verified target: Ryzen 3900X), so the GPU-less server deployment works. Alternatives, one config line away: `nomic-embed-text` (~140M, faster, English-focused) and `qwen3-embedding:0.6b` (1024d, strongest multilingual quality, slower on CPU). Switching models forces a full re-embed via the `embedding_config` check — at personal-vault scale that costs minutes, so it's not a one-way door. On machines without a resident Ollama (e.g. a laptop used for occasional searches), `provider = "local"` runs the same model in-process via llama-cpp-python — a ~1s model load per CLI invocation, loaded once for the MCP server.
 
 ---
 
@@ -790,10 +800,14 @@ name = "Notes"                        # for Obsidian URI construction
 path = "~/.local/share/qkb/qkb.db"
 
 [embedding]
-provider = "ollama"                   # "ollama" | "openai_compatible"
+provider = "ollama"                   # "ollama" | "local" | "openai_compatible"
 model = "embeddinggemma"              # alternatives: "nomic-embed-text", "qwen3-embedding:0.6b"
 dimension = 768
 ollama_host = "http://localhost:11434"
+# For provider = "local" (in-process llama.cpp, no Ollama service):
+# local_gguf_repo = "ggml-org/embeddinggemma-300M-GGUF"
+# local_gguf_file = "embeddinggemma-300M-Q8_0.gguf"
+# model_cache_dir = "~/.cache/qkb/models"
 # For remote provider:
 # api_base = "https://api.openai.com/v1"
 # api_key comes from env only (QKB_EMBEDDING_API_KEY) — never in the file
