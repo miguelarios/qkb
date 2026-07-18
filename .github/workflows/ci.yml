@@ -5,15 +5,21 @@ on:
 jobs:
   test:
     strategy:
+      fail-fast: false # one failing cell shouldn't cancel (and mask) the others
       matrix:
         os: [ubuntu-latest, macos-latest]
         python: ["3.11", "3.12", "3.13"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "${{ matrix.python }}" }
-      - run: pip install -e ".[dev]"
-      - run: ruff check . && ruff format --check .
-      - run: mypy src
-      - run: pytest -m "not integration" -q
+      # uv provides a python-build-standalone interpreter whose sqlite3 has
+      # extension loading enabled — required by sqlite-vec. The stock
+      # actions/setup-python macOS build lacks it and errors on every db test.
+      - uses: astral-sh/setup-uv@v8
+        with:
+          python-version: "${{ matrix.python }}"
+      - run: uv venv
+      - run: uv pip install -e ".[dev]"
+      - run: uv run --no-sync ruff check . && uv run --no-sync ruff format --check .
+      - run: uv run --no-sync mypy src
+      - run: uv run --no-sync pytest -m "not integration" -q
