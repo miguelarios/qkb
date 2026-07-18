@@ -1,0 +1,10 @@
+# Optional local protection for contributors:
+#   pip install pre-commit && pre-commit install
+# Runs the same gitleaks scan that CI runs, using this repo's .gitleaks.toml.
+# (The maintainer's machine also has a global gitleaks hook; this makes an
+# equivalent guard available to anyone who clones the repo.)
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
