@@ -52,6 +52,15 @@ python_version = "3.11"
 strict = false
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# fastembed pulls in numpy, whose newer stubs use PEP 695 `type` statements
+# that mypy rejects under python_version 3.11. qkb uses no numpy types
+# directly, so skip it. Must list both `numpy` (the numpy/__init__.pyi that
+# trips) and `numpy.*` — the wildcard alone doesn't match the top-level module.
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["integration: requires a running Ollama with models pulled"]
