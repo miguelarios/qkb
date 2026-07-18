@@ -6,11 +6,19 @@ An on-device hybrid search engine for Obsidian vaults that understands YAML fron
 
 ## Quickstart
 
-    uv tool install qkb-search       # isolated install (like pipx / npm -g); or: pipx install qkb-search
-    ollama pull embeddinggemma
-    qkb ingest                       # index your vault (reads ~/.config/qkb/config.toml)
+    uv tool install qkb-search       # isolated install (like pipx / npm -g)
+    qkb status                       # check config, model, and vault
+    qkb ingest                       # index your vault (downloads the embedding model once)
     qkb query "certificate renewal"  # hybrid search
     qkb mcp                          # stdio MCP server for Claude Code / Desktop
+
+No separate service, no compile: embeddings run **in-process via ONNX Runtime**,
+whose prebuilt wheels install with the package. The default model is
+**embeddinggemma-300M** (multilingual, ~310 MB — the same embedding model
+[QMD](https://github.com/tobi/qmd) uses); it downloads once on first
+`qkb ingest` and is cached. Point qkb at your vault in
+`~/.config/qkb/config.toml` (`[vault] path = "..."`) — `qkb status` shows
+what it resolved.
 
 Claude Code MCP registration:
 
@@ -25,41 +33,61 @@ Claude Code MCP registration:
 
 ## The Short Version
 
-Notes opt in to indexing via frontmatter (`context` and/or `source` properties). An ingestion pipeline walks the vault, chunks markdown with structure-aware break-point scoring, embeds locally via Ollama, and stores everything in a single SQLite file. A search engine layers BM25 (document-level, weighted columns), vector similarity (chunk-level), and Reciprocal Rank Fusion on top — exposed as `qkb search` / `vsearch` / `query`, `qkb get <UUID>`, and `qkb mcp`.
+Notes opt in to indexing via frontmatter (`context` and/or `source` properties). An ingestion pipeline walks the vault, chunks markdown with structure-aware break-point scoring, embeds in-process (fastembed/ONNX by default; Ollama or GGUF optional), and stores everything in a single SQLite file. A search engine layers BM25 (document-level, weighted columns), vector similarity (chunk-level), and Reciprocal Rank Fusion on top — exposed as `qkb search` / `vsearch` / `query`, `qkb get <UUID>`, and `qkb mcp`.
 
 Inspired by [QMD](https://github.com/tobi/qmd)'s search architecture, adapted for structured knowledge systems with frontmatter metadata.
 
-## Installation (once released)
+## Installation
 
 `qkb` is a command-line tool, so install it into an isolated environment —
-the same idea as `pipx` or `npm i -g`, and independent of whichever Python
-happens to be active:
+the same idea as `pipx` or `npm i -g`:
 
 ```bash
 # Recommended (uv):
 uv tool install qkb-search
-uv tool install 'qkb-search[local]'   # + in-process embeddings, no Ollama
 
 # Run without installing:
-uvx --from qkb-search qkb search "certificate renewal"
+uvx --from qkb-search qkb query "certificate renewal"
 
-# Alternatives (pipx isolates like uv; plain pip drops into the current env):
+# Alternatives (pipx isolates like uv; plain pip uses the current env):
 pipx install qkb-search
 pip install qkb-search
 ```
 
-The package installs the `qkb` command. Requires Python ≥3.11 and, for local embeddings, [Ollama](https://ollama.com) with `embeddinggemma` pulled (multilingual, CPU-friendly; other models configurable).
+That's the whole setup — **no service, no compile.** The default embedding
+provider runs in-process via **fastembed / ONNX Runtime**, whose prebuilt
+wheels ship with the package (the C/C++ work is done upfront by the wheel
+builders, the way QMD relies on node-llama-cpp's prebuilt native binaries).
+Requires Python ≥3.11.
 
-### No Ollama? Use the in-process provider
+The default model is **embeddinggemma-300M** — the same embedding model QMD
+uses. GGUF (QMD) and ONNX (qkb) are just different packagings of the same
+weights for different runtimes; search quality comes from the model, not the
+file format. The ~310 MB quantized ONNX downloads once on first `qkb ingest`
+and is cached.
 
-The `[local]` extra runs embeddings in-process via `llama-cpp-python` — no Ollama service required. Useful on a laptop used for occasional searches where a resident Ollama process isn't worth keeping around.
+### Embedding providers
+
+Three interchangeable providers, set via `[embedding].provider`:
+
+| provider | how it runs | when to use |
+|---|---|---|
+| `local` *(default)* | in-process fastembed / ONNX (prebuilt wheels) | just works — no service, no compile |
+| `ollama` | the [Ollama](https://ollama.com) HTTP API | you already run Ollama (e.g. a Linux box) |
+| `gguf` | in-process llama-cpp-python (the `[gguf]` extra) | you want a specific GGUF; compiles on install |
+
+Switching provider or model changes the vectors, so run `qkb ingest --full`
+afterward to re-embed. Any model in
+[fastembed's catalog](https://qdrant.github.io/fastembed/examples/Supported_Models/)
+also works — e.g. a smaller/faster one:
 
 ```toml
+# ~/.config/qkb/config.toml
 [embedding]
 provider = "local"
+model = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"  # 384-dim, ~220 MB
+dimension = 384
 ```
-
-The first `qkb ingest` downloads the GGUF (~300 MB, one-time, cached under `~/.cache/qkb/models/`) and then embeds normally. Switching providers forces a full re-embed — run `qkb ingest --full` after changing `provider`.
 
 ## License
 

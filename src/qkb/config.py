@@ -27,8 +27,10 @@ class Config:
     vault_path: Path = Path.home() / "Notes"
     vault_name: str = "Notes"
     db_path: Path = Path.home() / ".local/share/qkb/qkb.db"
-    embedding_provider: str = "ollama"
-    embedding_model: str = "embeddinggemma"
+    embedding_provider: str = "local"
+    # The ONNX export of embeddinggemma-300M — the same embedding model QMD
+    # uses (different packaging for a different runtime, same weights).
+    embedding_model: str = "onnx-community/embeddinggemma-300m-ONNX"
     embedding_dim: int = 768
     ollama_host: str = "http://localhost:11434"
     embedding_doc_template: str | None = None

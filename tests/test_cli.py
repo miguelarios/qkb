@@ -60,8 +60,10 @@ def test_get_and_contexts_and_status(tmp_path):
     rows = json.loads(r.output)
     assert rows[0]["context"] == "homelab" and rows[0]["description"] == "Home server notes"
 
-    r = run(["status"], env)
+    r = run(["status", "--json"], env)
     assert json.loads(r.output)["documents"] == 1
+    r = run(["status"], env)  # human-readable default
+    assert r.exit_code == 0 and "Provider:" in r.output and "fake" in r.output
 
 
 def test_context_describe_normalizes_label(tmp_path):
@@ -84,14 +86,15 @@ def test_context_describe_empty_label_errors(tmp_path):
     assert r.exit_code != 0
 
 
-def test_get_and_status_reject_removed_json_flag(tmp_path):
+def test_get_rejects_removed_json_flag_but_status_accepts_it(tmp_path):
     vault, env = make_env(tmp_path)
     write_note(vault, "a.md", ID1)
     run(["ingest"], env)
     r = run(["get", ID1[:8], "--json"], env)
     assert r.exit_code != 0 and "no such option" in r.output.lower()
+    # status is human-readable by default now, and regained --json for machines.
     r = run(["status", "--json"], env)
-    assert r.exit_code != 0 and "no such option" in r.output.lower()
+    assert r.exit_code == 0 and json.loads(r.output)["documents"] == 1
 
 
 def test_rerank_not_configured(tmp_path):

@@ -1,5 +1,6 @@
-"""Real llama.cpp inference. Needs the [local] extra and downloads the
-~300 MB GGUF on first run — integration-only, never in CI."""
+"""Real llama.cpp inference (optional `gguf` provider). Needs the [gguf]
+extra and downloads the ~300 MB GGUF on first run — integration-only,
+never in CI."""
 
 import pytest
 
@@ -13,7 +14,8 @@ pytestmark = pytest.mark.integration
 
 def test_real_embed_roundtrip():
     cfg = Config()
-    cfg.embedding_provider = "local"
+    cfg.embedding_provider = "gguf"
+    cfg.embedding_dim = 768  # embeddinggemma-300M GGUF
     provider = get_provider(cfg)  # downloads to ~/.cache/qkb/models on first run
     try:
         vecs = provider.embed(["the quick brown fox", "totally different topic: sqlite"])

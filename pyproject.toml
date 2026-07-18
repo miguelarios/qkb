@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qkb-search"
-version = "0.1.0"
+version = "0.2.0"
 description = "Hybrid BM25 + vector search for Obsidian vaults with frontmatter awareness"
 readme = "README.md"
 license = "MIT"
@@ -18,11 +18,18 @@ dependencies = [
   "sqlite-vec>=0.1.6",
   "httpx>=0.27",
   "mcp>=1.2",
+  "fastembed>=0.4",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
-local = ["llama-cpp-python>=0.3"]
+# Optional in-process GGUF backend (provider = "gguf"). Unlike fastembed,
+# llama-cpp-python has no PyPI wheels and compiles from source on install.
+gguf = ["llama-cpp-python>=0.3"]
+# Back-compat no-op: 0.1.0's `[local]` extra pulled llama-cpp-python; the
+# default in-process provider is now fastembed (a core dependency), so
+# `qkb-search[local]` still resolves without resurrecting a source build.
+local = []
 
 [project.scripts]
 qkb = "qkb.cli:main"
@@ -44,6 +51,15 @@ select = ["E", "F", "I", "UP", "B"]
 python_version = "3.11"
 strict = false
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# fastembed pulls in numpy, whose newer stubs use PEP 695 `type` statements
+# that mypy rejects under python_version 3.11. qkb uses no numpy types
+# directly, so skip it. Must list both `numpy` (the numpy/__init__.pyi that
+# trips) and `numpy.*` — the wildcard alone doesn't match the top-level module.
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
