@@ -7,14 +7,15 @@ jobs:
     strategy:
       fail-fast: false # one failing cell shouldn't cancel (and mask) the others
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # Linux only: sqlite-vec needs sqlite3 extension loading, which neither
+        # actions/setup-python nor uv's python-build-standalone enables on the
+        # GitHub macOS runners. The package works on real macOS (Homebrew /
+        # python.org Python) — covered by local dev, not this CI.
         python: ["3.11", "3.12", "3.13"]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # uv provides a python-build-standalone interpreter whose sqlite3 has
-      # extension loading enabled — required by sqlite-vec. The stock
-      # actions/setup-python macOS build lacks it and errors on every db test.
+      # uv installs faster than pip and gives a consistent interpreter per row.
       - uses: astral-sh/setup-uv@v8.3.2
         with:
           python-version: "${{ matrix.python }}"
