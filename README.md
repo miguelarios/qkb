@@ -6,7 +6,7 @@ An on-device hybrid search engine for Obsidian vaults that understands YAML fron
 
 ## Quickstart
 
-    pip install qkb-search
+    uv tool install qkb-search       # isolated install (like pipx / npm -g); or: pipx install qkb-search
     ollama pull embeddinggemma
     qkb ingest                       # index your vault (reads ~/.config/qkb/config.toml)
     qkb query "certificate renewal"  # hybrid search
@@ -31,9 +31,21 @@ Inspired by [QMD](https://github.com/tobi/qmd)'s search architecture, adapted fo
 
 ## Installation (once released)
 
+`qkb` is a command-line tool, so install it into an isolated environment —
+the same idea as `pipx` or `npm i -g`, and independent of whichever Python
+happens to be active:
+
 ```bash
-pip install qkb-search   # or: pipx install qkb-search / uvx --from qkb-search qkb
-pip install 'qkb-search[local]'   # or: uv tool install 'qkb-search[local]'
+# Recommended (uv):
+uv tool install qkb-search
+uv tool install 'qkb-search[local]'   # + in-process embeddings, no Ollama
+
+# Run without installing:
+uvx --from qkb-search qkb search "certificate renewal"
+
+# Alternatives (pipx isolates like uv; plain pip drops into the current env):
+pipx install qkb-search
+pip install qkb-search
 ```
 
 The package installs the `qkb` command. Requires Python ≥3.11 and, for local embeddings, [Ollama](https://ollama.com) with `embeddinggemma` pulled (multilingual, CPU-friendly; other models configurable).
