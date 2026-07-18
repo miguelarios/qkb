@@ -6,19 +6,44 @@ An on-device hybrid search engine for Obsidian vaults that understands YAML fron
 
 ## Quickstart
 
-    uv tool install qkb-search       # isolated install (like pipx / npm -g)
-    qkb status                       # check config, model, and vault
-    qkb ingest                       # index your vault (downloads the embedding model once)
+**1. Install** (isolated, like `pipx` / `npm -g`):
+
+    uv tool install qkb-search
+
+**2. Point qkb at your vault** — create `~/.config/qkb/config.toml`:
+
+```toml
+[vault]
+path = "~/Documents/MyVault"   # your Obsidian vault (read-only to qkb)
+name = "MyVault"               # used to build obsidian:// links
+```
+
+**3. Opt notes in.** Only notes whose frontmatter has a `context` and/or
+`source` property are indexed — and an opted-in note also needs an `id` and
+a parseable date (`created` or `date`):
+
+```yaml
+---
+id: f47ac10b-58cc-4372-a567-0e02b2c3d401
+context: homelab
+created: 2026-03-15
+---
+```
+
+**4. Check, index, search:**
+
+    qkb status                       # verify config, vault, and model resolve
+    qkb ingest                       # build the index (downloads the ~310 MB model once)
+    qkb status                       # see documents/chunks/vectors counts
     qkb query "certificate renewal"  # hybrid search
     qkb mcp                          # stdio MCP server for Claude Code / Desktop
 
 No separate service, no compile: embeddings run **in-process via ONNX Runtime**,
 whose prebuilt wheels install with the package. The default model is
-**embeddinggemma-300M** (multilingual, ~310 MB — the same embedding model
-[QMD](https://github.com/tobi/qmd) uses); it downloads once on first
-`qkb ingest` and is cached. Point qkb at your vault in
-`~/.config/qkb/config.toml` (`[vault] path = "..."`) — `qkb status` shows
-what it resolved.
+**embeddinggemma-300M** (multilingual — the same embedding model
+[QMD](https://github.com/tobi/qmd) uses), cached after the first download.
+Re-running `qkb ingest` is incremental: unchanged notes are skipped, so it's
+cheap to re-index after editing notes.
 
 Claude Code MCP registration:
 
