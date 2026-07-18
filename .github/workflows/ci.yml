@@ -15,7 +15,7 @@ jobs:
       # uv provides a python-build-standalone interpreter whose sqlite3 has
       # extension loading enabled — required by sqlite-vec. The stock
       # actions/setup-python macOS build lacks it and errors on every db test.
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@v8.3.2
         with:
           python-version: "${{ matrix.python }}"
       - run: uv venv
