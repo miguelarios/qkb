@@ -27,9 +27,9 @@ class Config:
     vault_path: Path = Path.home() / "Notes"
     vault_name: str = "Notes"
     db_path: Path = Path.home() / ".local/share/qkb/qkb.db"
-    embedding_provider: str = "ollama"
-    embedding_model: str = "embeddinggemma"
-    embedding_dim: int = 768
+    embedding_provider: str = "local"
+    embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    embedding_dim: int = 384
     ollama_host: str = "http://localhost:11434"
     embedding_doc_template: str | None = None
     embedding_query_template: str | None = None

@@ -273,3 +273,22 @@ CREATE TABLE metadata (
 **Decision**: Option 3 — add a llama-cpp-python provider behind the existing `EmbeddingProvider` protocol as an optional extra (`qkb-search[local]`), a single module (`qkb.embed.local`). Same GGUF QMD uses (embeddinggemma-300M-Q8_0 from ggml-org), auto-downloaded to `~/.cache/qkb/models/`. Per-machine config: `provider = "local"` on the laptop, `provider = "ollama"` where a container already runs. `model_name` reports the GGUF stem so provider switches force a `--full` re-embed (cross-runtime/quantization vectors are not interchangeable).
 
 **Rationale**: The Ollama dependency is an architecture choice, not a language artifact — the protocol seam already exists, so in-process inference preserves the tested Phase 1 core without the full-rewrite cost of Option 2. Trade-offs accepted: ~1s model load per one-shot CLI call (MCP server loads once); llama-cpp-python compiles from source at install; not a literal single binary (`uv tool install` is the distribution answer).
+
+---
+
+## ADR-013: Default In-Process Provider via fastembed/ONNX (supersedes ADR-010, revises ADR-012)
+
+**Date**: 2026-07-18
+**Status**: Decided
+
+**Question**: The default must "just work" on a Mac with a single install — no separate service and no local compile. ADR-012's llama-cpp-python path fails this: llama-cpp-python publishes **no PyPI wheels**, so `uv tool install qkb-search` would compile it from source (CMake + C++ toolchain, minutes, fragile). Ollama (ADR-010's default) installs trivially but requires an always-on service. What should the default in-process backend be?
+
+**Options considered**:
+
+1. **Keep Ollama default.** Lightest install, but the always-on service is exactly the friction we want gone on a laptop.
+2. **Promote llama-cpp-python to a core dependency.** No PyPI wheels → every install (and CI) compiles from source; the prebuilt-wheel index can't be pinned from package metadata (PyPI rejects direct index refs). Rejected.
+3. **Switch the in-process backend to fastembed (ONNX Runtime).** onnxruntime ships prebuilt platform wheels on PyPI and fastembed is a pure-Python wheel, so `uv tool install qkb-search` installs a working provider with no service and no compile. Multilingual models available.
+
+**Decision**: Option 3. fastembed becomes a **core dependency**, and `provider = "local"` maps to a new `qkb.embed.fastembed.FastEmbedProvider` (in-process ONNX, lazily loaded). Default model: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (384-dim, ~220 MB, multilingual), downloaded and cached on first use. Ollama stays an optional provider (`provider = "ollama"`). The llama-cpp-python/GGUF path from ADR-012 is retained but demoted to an optional provider (`provider = "gguf"`, the `[gguf]` extra) — kept for anyone who wants a specific GGUF, forced on no one. `model_name` reports the model id, so a provider/model switch forces a `--full` re-embed.
+
+**Rationale**: The requirement is "the work is done upfront so the user just installs" — which in Python means **wheels** (onnxruntime's C/C++ compiled once by its builders), exactly analogous to QMD's prebuilt node-llama-cpp native binaries (QMD is an npm package bundling prebuilt natives, not a Bun binary — corrected here). llama-cpp-python breaks that on PyPI; fastembed/onnxruntime honor it with zero wheel-building burden on us. Trade-off: a model change (embeddinggemma-768 → multilingual-MiniLM-384) — a smaller default, verified against the golden-query bar and bumpable to `paraphrase-multilingual-mpnet-base-v2` (768) or `multilingual-e5-large` via one config line. Supersedes ADR-010 (default model) and revises ADR-012 (the in-process default is now fastembed; llama-cpp is the optional `gguf` provider).

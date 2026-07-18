@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json as jsonlib
+import os
 import sys
+from pathlib import Path
 
 import click
 from rich.console import Console
 from rich.table import Table
 
-from qkb.config import Config, load_config
+from qkb.config import DEFAULT_CONFIG_PATH, Config, load_config
 from qkb.db import connect
 from qkb.embed import get_provider
 from qkb.ingest.parser import normalize_context
@@ -237,10 +239,84 @@ def describe(label, description, remove):
         raise click.UsageError("provide a description or --remove")
 
 
+def _human_size(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
+
+
 @cli.command()
-def status():
-    st = Storage(_conn(_cfg())).stats()
-    click.echo(jsonlib.dumps(st, indent=2))
+@click.option("--json", "as_json", is_flag=True, help="machine-readable output")
+def status(as_json: bool) -> None:
+    """Show embedding model, index, and vault status."""
+    cfg = _cfg()
+    config_path = Path(os.environ.get("QKB_CONFIG", str(DEFAULT_CONFIG_PATH)))
+    db_exists = cfg.db_path.exists()
+    st = Storage(_conn(cfg)).stats() if db_exists else None
+
+    if as_json:
+        payload: dict = {
+            "config_path": str(config_path),
+            "config_exists": config_path.exists(),
+            "vault_path": str(cfg.vault_path),
+            "vault_exists": cfg.vault_path.exists(),
+            "db_path": str(cfg.db_path),
+            "db_size_bytes": cfg.db_path.stat().st_size if db_exists else 0,
+            "provider": cfg.embedding_provider,
+            "model": cfg.embedding_model,
+            "dimension": cfg.embedding_dim,
+        }
+        payload.update(
+            st
+            or {
+                "documents": 0,
+                "chunks": 0,
+                "vectors": 0,
+                "dim": None,
+                "contexts": [],
+                "last_indexed_at": None,
+            }
+        )
+        click.echo(jsonlib.dumps(payload, indent=2))
+        return
+
+    def mark(ok: bool) -> str:
+        return "✓" if ok else "✗"
+
+    out = ["qkb status", ""]
+    found = "found" if config_path.exists() else "using defaults"
+    out.append(f"Config:   {config_path}  ({found})")
+    out.append(f"Vault:    {cfg.vault_path}  ({cfg.vault_name})  [{mark(cfg.vault_path.exists())}]")
+    if db_exists:
+        out.append(f"Database: {cfg.db_path}  ({_human_size(cfg.db_path.stat().st_size)})")
+    else:
+        out.append(f"Database: {cfg.db_path}  (no index yet — run `qkb ingest`)")
+
+    out += ["", "Embedding"]
+    out.append(f"  Provider: {cfg.embedding_provider}")
+    out.append(f"  Model:    {cfg.embedding_model}")
+    out.append(f"  Dim:      {cfg.embedding_dim}")
+    if cfg.embedding_provider == "ollama":
+        out.append(f"  Host:     {cfg.ollama_host}")
+    elif cfg.embedding_provider == "gguf":
+        cached = (cfg.model_cache_dir / cfg.local_gguf_file).exists()
+        out.append(
+            f"  GGUF:     {cfg.local_gguf_repo}/{cfg.local_gguf_file}  [{mark(cached)} cached]"
+        )
+
+    if st is not None:
+        out += ["", "Index"]
+        out.append(f"  Documents: {st['documents']}")
+        out.append(f"  Chunks:    {st['chunks']}")
+        out.append(f"  Vectors:   {st['vectors']} embedded  (dim {st['dim']})")
+        out.append(f"  Last:      {st['last_indexed_at'] or '—'}")
+        ctxs = st["contexts"]
+        names = ", ".join(c["context"] for c in ctxs[:6])
+        out.append(f"  Contexts:  {len(ctxs)}" + (f"  ({names})" if names else ""))
+    click.echo("\n".join(out))
 
 
 @cli.command()

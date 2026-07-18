@@ -6,6 +6,7 @@ import pytest
 from qkb.config import Config
 from qkb.embed import get_provider
 from qkb.embed.fake import FakeProvider
+from qkb.embed.fastembed import FastEmbedProvider
 from qkb.embed.local import LlamaCppProvider
 from qkb.embed.ollama import OllamaProvider
 
@@ -23,9 +24,19 @@ def test_get_provider_unknown_raises():
         get_provider(cfg)
 
 
-def test_get_provider_local_dispatch(monkeypatch, tmp_path):
-    """The 'local' branch is tested with a fake llama_cpp module injected
-    into sys.modules -- no llama-cpp-python needed."""
+def test_get_provider_local_dispatch_fastembed():
+    """The default 'local' provider dispatches to FastEmbedProvider without
+    importing onnxruntime or downloading a model (the embedder is lazy)."""
+    cfg = Config(embedding_provider="local", embedding_dim=384)
+    provider = get_provider(cfg)
+    assert isinstance(provider, FastEmbedProvider)
+    assert provider.dimension == 384
+    assert provider.model_name == cfg.embedding_model
+
+
+def test_get_provider_gguf_dispatch(monkeypatch, tmp_path):
+    """The optional 'gguf' branch is tested with a fake llama_cpp module
+    injected into sys.modules -- no llama-cpp-python needed."""
     constructed: list[dict] = []
 
     class FakeLlama:
@@ -37,7 +48,7 @@ def test_get_provider_local_dispatch(monkeypatch, tmp_path):
 
     monkeypatch.setitem(sys.modules, "llama_cpp", types.SimpleNamespace(Llama=FakeLlama))
 
-    cfg = Config(embedding_provider="local", model_cache_dir=tmp_path)
+    cfg = Config(embedding_provider="gguf", embedding_dim=768, model_cache_dir=tmp_path)
     # pre-cache the "model" so get_provider must not download anything
     (tmp_path / cfg.local_gguf_file).write_bytes(b"GGUF")
 

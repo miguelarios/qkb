@@ -7,7 +7,7 @@ import sqlite3
 
 import sqlite_vec
 
-from qkb.db import placeholders, rebuild_vector_table
+from qkb.db import placeholders, rebuild_vector_table, vector_table_dimension
 from qkb.models import Chunk, ParsedNote
 
 # Sentinel distinguishing "caller did not pass stored_metadata_hash" (fall back
@@ -392,10 +392,16 @@ class Storage:
     def stats(self) -> dict:
         docs = self.conn.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"]
         chunks = self.conn.execute("SELECT COUNT(*) c FROM chunks").fetchone()["c"]
+        try:
+            vectors = self.conn.execute("SELECT COUNT(*) c FROM chunks_vec").fetchone()["c"]
+        except sqlite3.Error:
+            vectors = None
         last = self.conn.execute("SELECT MAX(indexed_at) m FROM documents").fetchone()["m"]
         return {
             "documents": docs,
             "chunks": chunks,
+            "vectors": vectors,
+            "dim": vector_table_dimension(self.conn),
             "contexts": self.list_contexts(),
             "last_indexed_at": last,
         }
