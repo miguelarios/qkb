@@ -28,8 +28,10 @@ class Config:
     vault_name: str = "Notes"
     db_path: Path = Path.home() / ".local/share/qkb/qkb.db"
     embedding_provider: str = "local"
-    embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-    embedding_dim: int = 384
+    # The ONNX export of embeddinggemma-300M — the same embedding model QMD
+    # uses (different packaging for a different runtime, same weights).
+    embedding_model: str = "onnx-community/embeddinggemma-300m-ONNX"
+    embedding_dim: int = 768
     ollama_host: str = "http://localhost:11434"
     embedding_doc_template: str | None = None
     embedding_query_template: str | None = None

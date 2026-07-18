@@ -12,7 +12,7 @@ pytestmark = pytest.mark.integration
 
 
 def test_real_embed_roundtrip():
-    cfg = Config()  # defaults: provider="local", multilingual MiniLM, dim 384
+    cfg = Config()  # defaults: provider="local", embeddinggemma-300m ONNX, dim 768
     provider = get_provider(cfg)  # downloads the ONNX model on first run
     vecs = provider.embed(["the quick brown fox", "totally different topic: sqlite"])
     q = provider.embed_query("fast animal jumping")

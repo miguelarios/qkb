@@ -7,8 +7,8 @@ def test_defaults():
     cfg = load_config(config_path=Path("/nonexistent/qkb.toml"), env={})
     assert cfg.vault_name == "Notes"
     assert cfg.embedding_provider == "local"
-    assert cfg.embedding_model == "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-    assert cfg.embedding_dim == 384
+    assert cfg.embedding_model == "onnx-community/embeddinggemma-300m-ONNX"
+    assert cfg.embedding_dim == 768
     assert cfg.fts_weights == [5.0, 3.0, 2.0, 1.0, 0.5]
     assert cfg.frontmatter["created"] == ["created", "date created"]
     assert cfg.frontmatter["id"] == ["id"]

@@ -27,11 +27,26 @@ def test_get_provider_unknown_raises():
 def test_get_provider_local_dispatch_fastembed():
     """The default 'local' provider dispatches to FastEmbedProvider without
     importing onnxruntime or downloading a model (the embedder is lazy)."""
-    cfg = Config(embedding_provider="local", embedding_dim=384)
+    cfg = Config(embedding_provider="local")
     provider = get_provider(cfg)
     assert isinstance(provider, FastEmbedProvider)
-    assert provider.dimension == 384
-    assert provider.model_name == cfg.embedding_model
+    assert provider.dimension == 768
+    assert provider.model_name == "onnx-community/embeddinggemma-300m-ONNX"
+    # The default model must hit the shared embeddinggemma prompt templates
+    # (matched on the repo basename), same shapes as the ollama/gguf providers.
+    assert provider._doc_fmt == "title: none | text: {t}"
+    assert provider._query_fmt == "task: search result | query: {t}"
+
+
+def test_get_provider_local_threads_explicit_templates():
+    cfg = Config(
+        embedding_provider="local",
+        embedding_doc_template="passage: {t}",
+        embedding_query_template="query: {t}",
+    )
+    provider = get_provider(cfg)
+    assert provider._doc_fmt == "passage: {t}"
+    assert provider._query_fmt == "query: {t}"
 
 
 def test_get_provider_gguf_dispatch(monkeypatch, tmp_path):

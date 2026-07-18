@@ -12,11 +12,13 @@ An on-device hybrid search engine for Obsidian vaults that understands YAML fron
     qkb query "certificate renewal"  # hybrid search
     qkb mcp                          # stdio MCP server for Claude Code / Desktop
 
-No separate service, no compile: embeddings run **in-process via fastembed/ONNX**,
-whose prebuilt wheels install with the package. The multilingual embedding model
-(~220 MB) downloads once on first `qkb ingest` and is cached. Point qkb at your
-vault in `~/.config/qkb/config.toml` (`[vault] path = "..."`) — `qkb status`
-shows what it resolved.
+No separate service, no compile: embeddings run **in-process via ONNX Runtime**,
+whose prebuilt wheels install with the package. The default model is
+**embeddinggemma-300M** (multilingual, ~310 MB — the same embedding model
+[QMD](https://github.com/tobi/qmd) uses); it downloads once on first
+`qkb ingest` and is cached. Point qkb at your vault in
+`~/.config/qkb/config.toml` (`[vault] path = "..."`) — `qkb status` shows
+what it resolved.
 
 Claude Code MCP registration:
 
@@ -56,8 +58,13 @@ That's the whole setup — **no service, no compile.** The default embedding
 provider runs in-process via **fastembed / ONNX Runtime**, whose prebuilt
 wheels ship with the package (the C/C++ work is done upfront by the wheel
 builders, the way QMD relies on node-llama-cpp's prebuilt native binaries).
-Requires Python ≥3.11. The multilingual embedding model (~220 MB) downloads
-once on first `qkb ingest` and is cached.
+Requires Python ≥3.11.
+
+The default model is **embeddinggemma-300M** — the same embedding model QMD
+uses. GGUF (QMD) and ONNX (qkb) are just different packagings of the same
+weights for different runtimes; search quality comes from the model, not the
+file format. The ~310 MB quantized ONNX downloads once on first `qkb ingest`
+and is cached.
 
 ### Embedding providers
 
@@ -70,14 +77,16 @@ Three interchangeable providers, set via `[embedding].provider`:
 | `gguf` | in-process llama-cpp-python (the `[gguf]` extra) | you want a specific GGUF; compiles on install |
 
 Switching provider or model changes the vectors, so run `qkb ingest --full`
-afterward to re-embed. To trade the light default model for more quality:
+afterward to re-embed. Any model in
+[fastembed's catalog](https://qdrant.github.io/fastembed/examples/Supported_Models/)
+also works — e.g. a smaller/faster one:
 
 ```toml
 # ~/.config/qkb/config.toml
 [embedding]
 provider = "local"
-model = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"  # 768-dim
-dimension = 768
+model = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"  # 384-dim, ~220 MB
+dimension = 384
 ```
 
 ## License

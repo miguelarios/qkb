@@ -12,7 +12,12 @@ def get_provider(cfg: Config) -> EmbeddingProvider:
     if cfg.embedding_provider in ("local", "fastembed"):
         from qkb.embed.fastembed import FastEmbedProvider
 
-        return FastEmbedProvider(cfg.embedding_model, cfg.embedding_dim)
+        return FastEmbedProvider(
+            cfg.embedding_model,
+            cfg.embedding_dim,
+            doc_template=cfg.embedding_doc_template,
+            query_template=cfg.embedding_query_template,
+        )
     if cfg.embedding_provider == "ollama":
         return OllamaProvider(
             cfg.ollama_host,
