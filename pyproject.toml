@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qkb-search"
-version = "0.2.3"
+version = "0.3.0"
 description = "Hybrid BM25 + vector search for Obsidian vaults with frontmatter awareness"
 readme = "README.md"
 license = "MIT"

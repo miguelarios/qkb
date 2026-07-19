@@ -167,6 +167,7 @@ def test_status_surfaces_index_model_and_mismatch(tmp_path):
     vault, env = make_env(tmp_path)
     write_note(vault, "a.md", ID1)
     run(["ingest"], env)
+    run(["embed"], env)  # embedding is what commits the model/dim now
 
     # configured model (default) != the fake provider's committed "fake-8d"
     r = run(["status"], env)
