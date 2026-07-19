@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 from qkb.config import Config
 from qkb.db import vector_table_dimension
 from qkb.embed.base import EmbeddingProvider
 from qkb.ingest.chunker import chunk_text
-from qkb.ingest.parser import parse_note
+from qkb.ingest.parser import NoteDataError, parse_note
 from qkb.ingest.storage import Storage, content_hash
 from qkb.models import IngestStats
 
@@ -24,11 +25,22 @@ def _vault_files(vault: Path):
         yield p
 
 
+def _skip_reason(msg: str) -> str:
+    """Short, user-facing reason for a skipped note (from a NoteDataError)."""
+    if "no parseable date" in msg:
+        return "no date"
+    if "no id" in msg:
+        return "no id"
+    return "data error"
+
+
 def ingest_vault(
     conn: sqlite3.Connection,
     cfg: Config,
     provider: EmbeddingProvider,
     full: bool = False,
+    on_progress: Callable[[int, int], None] | None = None,
+    on_skip: Callable[[Path, str], None] | None = None,
 ) -> IngestStats:
     storage = Storage(conn, vault_name=cfg.vault_name)
     rebuilt = False
@@ -97,12 +109,25 @@ def ingest_vault(
     # from a real deletion by id alone.
     parse_failed_paths: set[str] = set()
 
-    for path in _vault_files(cfg.vault_path):
+    files = list(_vault_files(cfg.vault_path))
+    total = len(files)
+    for i, path in enumerate(files):
+        if on_progress is not None:
+            on_progress(i, total)
         stats.scanned += 1
         try:
             note = parse_note(path, cfg.vault_path, cfg.frontmatter)
-        except Exception:
-            log.warning("failed to parse %s; skipping", path, exc_info=True)
+        except Exception as e:
+            # A note that opted in (has context/source) but can't be indexed
+            # (no id / unparseable date), or an unexpected parse failure. Skip
+            # it cleanly and report a one-line reason — never a traceback.
+            if isinstance(e, NoteDataError):
+                reason = _skip_reason(str(e))
+            else:
+                reason = f"parse error: {type(e).__name__}"
+                log.debug("unexpected parse failure for %s", path, exc_info=True)
+            if on_skip is not None:
+                on_skip(path, reason)
             stats.skipped += 1
             rel_path = path.relative_to(cfg.vault_path).as_posix()
             parse_failed_paths.add(rel_path)
@@ -114,12 +139,8 @@ def ingest_vault(
             stats.skipped += 1
             continue
         if note.id in seen:
-            log.warning(
-                "duplicate id %s: %s already claimed it this run; skipping %s",
-                note.id,
-                seen[note.id],
-                path,
-            )
+            if on_skip is not None:
+                on_skip(path, f"duplicate id (also {seen[note.id].name})")
             stats.skipped += 1
             continue
         seen[note.id] = path
@@ -140,6 +161,9 @@ def ingest_vault(
             stats.indexed += 1
         else:
             stats.updated += 1
+
+    if on_progress is not None:
+        on_progress(total, total)
 
     # True iff some file failed to parse at a path we don't recognize from a
     # prior run (finding 4: a renamed note that also fails to parse can't be

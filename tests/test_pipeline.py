@@ -224,19 +224,19 @@ def test_new_unindexable_opted_in_file_is_skipped_not_crashed(conn, provider, cf
     assert conn.execute("SELECT COUNT(*) c FROM documents").fetchone()["c"] == 0
 
 
-def test_duplicate_frontmatter_id_skips_second_and_no_ping_pong(conn, provider, cfg, vault, caplog):
+def test_duplicate_frontmatter_id_skips_second_and_no_ping_pong(conn, provider, cfg, vault):
     """Finding 4: two files sharing the same frontmatter id must not silently
     overwrite each other - the first (sorted) file wins, the duplicate is
-    warned about and counted, and re-ingesting must not ping-pong re-embed."""
+    reported (via on_skip) and counted, and re-ingesting must not ping-pong."""
     write_note(vault, "a.md", ID1, body="First body.")
     write_note(vault, "z-dup.md", ID1, body="Second body claiming the same id.")
 
-    with caplog.at_level(logging.WARNING):
-        stats = ingest_vault(conn, cfg, provider)
+    skips: list[tuple[str, str]] = []
+    stats = ingest_vault(conn, cfg, provider, on_skip=lambda p, r: skips.append((p.name, r)))
 
     assert stats.indexed == 1  # only the first (sorted) file was indexed
     assert stats.skipped >= 1  # the duplicate is counted, not silently absorbed
-    assert any("duplicate" in r.message.lower() for r in caplog.records)
+    assert any("duplicate" in reason for _, reason in skips)
 
     row = conn.execute("SELECT file_path FROM documents WHERE id = ?", (ID1,)).fetchone()
     assert row["file_path"] == "a.md"
@@ -598,3 +598,30 @@ def test_single_scan_sweep_still_deindexes_pure_deletion(conn, provider, cfg, va
     assert (
         conn.execute("SELECT COUNT(*) c FROM documents WHERE id = ?", (ID1,)).fetchone()["c"] == 1
     )
+
+
+def test_on_skip_reasons_and_on_progress(conn, provider, cfg, vault):
+    """Clean, categorized skip reasons via on_skip (no traceback), and
+    on_progress is driven to completion over the scanned file count."""
+    write_note(vault, "good.md", ID1)  # indexable
+    # opted-in (has context) but no id
+    (vault / "no-id.md").write_text("---\ncontext: homelab\ncreated: 2026-01-01\n---\nbody\n")
+    # opted-in but no parseable date
+    (vault / "no-date.md").write_text(f"---\nid: {ID2}\ncontext: homelab\n---\nbody\n")
+    # true opt-out (no context/source) — silently ignored, not an on_skip event
+    (vault / "opt-out.md").write_text("---\ntitle: just a note\n---\nbody\n")
+
+    skips: list[tuple[str, str]] = []
+    progress: list[tuple[int, int]] = []
+    stats = ingest_vault(
+        conn,
+        cfg,
+        provider,
+        on_skip=lambda p, r: skips.append((p.name, r)),
+        on_progress=lambda done, total: progress.append((done, total)),
+    )
+
+    reasons = {name: reason for name, reason in skips}
+    assert reasons == {"no-id.md": "no id", "no-date.md": "no date"}  # opt-out not reported
+    assert stats.indexed == 1
+    assert progress[-1] == (4, 4)  # advanced to completion over all scanned files
