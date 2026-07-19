@@ -24,7 +24,7 @@ from qkb.config import DEFAULT_CONFIG_PATH, Config, load_config
 from qkb.db import connect
 from qkb.embed import get_provider
 from qkb.ingest.parser import normalize_context
-from qkb.ingest.pipeline import ingest_vault
+from qkb.ingest.pipeline import embed_pending, ingest_vault
 from qkb.ingest.storage import Storage
 from qkb.search.filters import Filters
 from qkb.search.retrieval import DocumentFileMissing, get_document
@@ -126,13 +126,20 @@ def cli() -> None:
     """qkb — hybrid search for Obsidian vaults."""
 
 
+def _shorten(path: str, width: int = 44) -> str:
+    # Keep the tail (filename + nearest folder), which is the useful part.
+    return path if len(path) <= width else "…" + path[-(width - 1) :]
+
+
 @cli.command()
-@click.option("--full", is_flag=True, help="force full re-embed")
+@click.option(
+    "--full", is_flag=True, help="re-chunk every note (e.g. after changing chunk settings)"
+)
 @click.option("-v", "--verbose", is_flag=True, help="list every skipped note")
 def ingest(full: bool, verbose: bool) -> None:
+    """Build the keyword index (fast, no model needed). Run `qkb embed` after."""
     cfg = _cfg()
     conn = _conn(cfg)
-    provider = get_provider(cfg)
 
     skips: list[tuple[str, str]] = []
 
@@ -143,19 +150,7 @@ def ingest(full: bool, verbose: bool) -> None:
             rel = str(path)
         skips.append((rel, reason))
 
-    def _shorten(path: str, width: int = 44) -> str:
-        # Keep the tail (filename + nearest folder), which is the useful part.
-        return path if len(path) <= width else "…" + path[-(width - 1) :]
-
     try:
-        # Load the model up front (first run downloads it) so the download shows
-        # on its own line instead of silently stalling the progress bar mid-run.
-        console.print("[dim]Loading embedding model (first run downloads it)…[/dim]")
-        try:
-            provider.embed(["warmup"])
-        except Exception as e:
-            raise click.ClickException(f"could not load embedding model: {e}") from e
-
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -172,18 +167,10 @@ def ingest(full: bool, verbose: bool) -> None:
                 )
                 progress.update(task, completed=done, total=total, description=desc)
 
-            stats = ingest_vault(
-                conn, cfg, provider, full=full, on_progress=on_progress, on_skip=on_skip
-            )
+            stats = ingest_vault(conn, cfg, full=full, on_progress=on_progress, on_skip=on_skip)
     except KeyboardInterrupt:
-        console.print(
-            "\n[yellow]Aborted.[/yellow] The index is safe — re-run `qkb ingest --full` to resume."
-        )
+        console.print("\n[yellow]Aborted.[/yellow] Re-run `qkb ingest` to continue.")
         raise SystemExit(130) from None
-    except RuntimeError as e:
-        # Guard failures (model/config changed, interrupted --full) — a clean
-        # message with the remedy, never a traceback.
-        raise click.ClickException(str(e)) from e
 
     summary = (
         f"[green]✓[/green] indexed [b]{stats.indexed}[/b]  "
@@ -207,6 +194,57 @@ def ingest(full: bool, verbose: bool) -> None:
                 "  [dim]add an `id:` (and a `created:`/`date:`) to include them; "
                 "`qkb ingest -v` lists them[/dim]"
             )
+
+    st = Storage(conn, vault_name=cfg.vault_name).stats()
+    pending = st["chunks"] - (st["vectors"] or 0)
+    if pending:
+        console.print(
+            f"[cyan]{pending}[/cyan] chunk(s) need embedding for semantic search — "
+            "run [b]qkb embed[/b]  ([dim]keyword search works now[/dim])"
+        )
+
+
+@cli.command()
+@click.option("--full", is_flag=True, help="re-embed every chunk (e.g. after changing the model)")
+def embed(full: bool) -> None:
+    """Compute vectors for chunks that need them. Resumable — safe to Ctrl-C."""
+    cfg = _cfg()
+    conn = _conn(cfg)
+    provider = get_provider(cfg)
+
+    console.print("[dim]Loading embedding model (first run downloads it)…[/dim]")
+    try:
+        provider.embed(["warmup"])
+    except Exception as e:
+        raise click.ClickException(f"could not load embedding model: {e}") from e
+
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Embedding", total=None)
+
+            def on_progress(done: int, total: int, current: str | None) -> None:
+                progress.update(task, completed=done, total=total)
+
+            n = embed_pending(conn, cfg, provider, full=full, on_progress=on_progress)
+    except KeyboardInterrupt:
+        console.print(
+            "\n[yellow]Aborted.[/yellow] Progress is saved — re-run `qkb embed` to resume."
+        )
+        raise SystemExit(130) from None
+    except RuntimeError as e:
+        raise click.ClickException(str(e)) from e
+
+    if n == 0:
+        console.print("[green]✓[/green] all chunks already embedded")
+    else:
+        console.print(f"[green]✓[/green] embedded [b]{n}[/b] chunk(s)")
 
 
 @cli.command()
@@ -399,16 +437,22 @@ def status(as_json: bool) -> None:
         )
 
     if st is not None:
+        pending = st["chunks"] - (st["vectors"] or 0)
         out += ["", "Index"]
         out.append(f"  Documents: {st['documents']}")
         out.append(f"  Chunks:    {st['chunks']}")
-        out.append(f"  Vectors:   {st['vectors']} embedded  (dim {st['dim']})")
+        vec_line = f"  Vectors:   {st['vectors']} embedded  (dim {st['dim']})"
+        if pending:
+            vec_line += f"  ({pending} pending)"
+        out.append(vec_line)
         if stored is not None:
             out.append(f"  Built with: {stored[0]}  (dim {stored[1]})")
         out.append(f"  Last:      {st['last_indexed_at'] or '—'}")
         ctxs = st["contexts"]
         names = ", ".join(c["context"] for c in ctxs[:6])
         out.append(f"  Contexts:  {len(ctxs)}" + (f"  ({names})" if names else ""))
+        if pending:
+            out.append(f"  → run `qkb embed` to compute the {pending} pending vector(s)")
     if mismatch and stored is not None:
         out += [
             "",

@@ -37,14 +37,23 @@ def _skip_reason(msg: str) -> str:
 def ingest_vault(
     conn: sqlite3.Connection,
     cfg: Config,
-    provider: EmbeddingProvider,
+    provider: EmbeddingProvider | None = None,
     full: bool = False,
     on_progress: Callable[[int, int, str | None], None] | None = None,
     on_skip: Callable[[Path, str], None] | None = None,
 ) -> IngestStats:
+    """Build the structural index (documents, chunks, BM25/FTS) from the vault.
+
+    With `provider=None` (the default, driven by `qkb ingest`) chunks are
+    stored WITHOUT vectors — fast, keyword-searchable immediately — and
+    `embed_pending` fills vectors in later. With a provider, vectors are
+    written inline (the old single-pass behavior; still used by tests and any
+    caller that wants ingest+embed in one shot). The vector-consistency guards
+    and the model/dim commit only apply to the inline-embed path.
+    """
     storage = Storage(conn, vault_name=cfg.vault_name)
     rebuilt = False
-    if full:
+    if provider is not None and full:
         # A --full re-embed always starts from a clean vector index at the
         # currently-configured dimension, and always re-embeds every document
         # below (see the `full` checks in the loop) - so the guard doesn't
@@ -72,7 +81,7 @@ def ingest_vault(
         rebuilt = vector_table_dimension(conn) != provider.dimension
         if rebuilt:
             storage.rebuild_vector_index(provider.dimension)
-    else:
+    elif provider is not None:
         if storage.is_ingest_in_progress():
             raise RuntimeError(
                 "A previous --full re-embed did not complete. "
@@ -155,7 +164,12 @@ def ingest_vault(
             stats.unchanged += 1
             continue
         chunks = chunk_text(note.body, cfg.chunk_target_tokens, cfg.chunk_overlap_percent)
-        embeddings = provider.embed([c.text for c in chunks]) if chunks else []
+        if provider is not None:
+            embeddings: list[list[float]] | None = (
+                provider.embed([c.text for c in chunks]) if chunks else []
+            )
+        else:
+            embeddings = None  # structural pass: `qkb embed` fills vectors in later
         storage.upsert(note, chash, chunks, embeddings)
         if stored is None or full:
             stats.indexed += 1
@@ -218,7 +232,7 @@ def ingest_vault(
         storage.delete(gone)
         stats.deindexed += 1
 
-    if full:
+    if provider is not None and full:
         # The whole vault was just re-embedded with this model/dim without
         # error - commit it as current now, last, so a run that raised above
         # never reaches this line. Clear the in-progress sentinel right after:
@@ -229,3 +243,48 @@ def ingest_vault(
         storage.clear_ingest_in_progress()
 
     return stats
+
+
+def embed_pending(
+    conn: sqlite3.Connection,
+    cfg: Config,
+    provider: EmbeddingProvider,
+    full: bool = False,
+    batch_size: int = 64,
+    on_progress: Callable[[int, int, str | None], None] | None = None,
+) -> int:
+    """Compute vectors for chunks that don't have one yet (the second phase,
+    driven by `qkb embed`). Resumable: each batch is committed, so an
+    interruption keeps its progress and a re-run continues from the remaining
+    `pending_chunks()`. Returns the number of chunks embedded.
+
+    Model/dim consistency: vectors from different models are not mixable, so a
+    plain run refuses when the configured model/dim differs from what produced
+    the existing vectors — `--full` clears every vector and re-embeds. The
+    (model, dim) is committed up front (after any rebuild), so even a `--full`
+    interrupted midway resumes cleanly against the new model rather than
+    restarting.
+    """
+    storage = Storage(conn, vault_name=cfg.vault_name)
+    model, dim = provider.model_name, provider.dimension
+    committed = storage.stored_embedding_config()
+    if not full and committed is not None and committed != (model, dim):
+        raise RuntimeError(
+            f"Embedding model/dim changed ({committed[0]} d{committed[1]} → {model} d{dim}). "
+            "Run `qkb embed --full` to re-embed the whole vault."
+        )
+    if full or vector_table_dimension(conn) != dim:
+        storage.rebuild_vector_index(dim)  # empties chunks_vec at the target dim
+    storage.commit_embedding_config(model, dim)
+
+    pending = storage.pending_chunks()
+    total = len(pending)
+    done = 0
+    for start in range(0, total, batch_size):
+        batch = pending[start : start + batch_size]
+        vectors = provider.embed([text for _, text in batch])
+        storage.write_vectors([(cid, vec) for (cid, _), vec in zip(batch, vectors, strict=True)])
+        done += len(batch)
+        if on_progress is not None:
+            on_progress(done, total, None)
+    return done

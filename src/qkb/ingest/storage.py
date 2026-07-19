@@ -190,23 +190,55 @@ class Storage:
         note: ParsedNote,
         chash: str,
         chunks: list[Chunk],
-        embeddings: list[list[float]],
+        embeddings: list[list[float]] | None = None,
     ) -> None:
+        """Write the document, FTS row, tags/metadata, and chunks in one
+        transaction. When `embeddings` is None the chunks are stored WITHOUT
+        vectors — the structural-only `qkb ingest` pass, so keyword/BM25 search
+        works immediately and `qkb embed` fills vectors in later. When given,
+        vectors are written inline (one per chunk, the old single-pass path)."""
         with self.conn:
             self._delete_chunks(note.id)
             self._write_doc_row(note, chash)
             self._write_fts_row(note)
             self._write_tags_and_metadata(note, metadata_hash(note, self.vault_name))
-            for chunk, vec in zip(chunks, embeddings, strict=True):
+            vecs: list[list[float] | None] = (
+                list(embeddings) if embeddings is not None else [None] * len(chunks)
+            )
+            for chunk, vec in zip(chunks, vecs, strict=True):
                 cur = self.conn.execute(
                     "INSERT INTO chunks (document_id, chunk_index, chunk_text, token_count) "
                     "VALUES (?,?,?,?)",
                     (note.id, chunk.index, chunk.text, chunk.token_count),
                 )
-                self.conn.execute(
-                    "INSERT INTO chunks_vec (chunk_id, embedding) VALUES (?,?)",
-                    (cur.lastrowid, sqlite_vec.serialize_float32(vec)),
-                )
+                if vec is not None:
+                    self.conn.execute(
+                        "INSERT INTO chunks_vec (chunk_id, embedding) VALUES (?,?)",
+                        (cur.lastrowid, sqlite_vec.serialize_float32(vec)),
+                    )
+
+    def pending_chunks(self) -> list[tuple[int, str]]:
+        """(chunk_id, chunk_text) for chunks that don't have a vector yet —
+        the work queue for `qkb embed`."""
+        return [
+            (r["id"], r["chunk_text"])
+            for r in self.conn.execute(
+                "SELECT id, chunk_text FROM chunks "
+                "WHERE id NOT IN (SELECT chunk_id FROM chunks_vec) ORDER BY id"
+            )
+        ]
+
+    def write_vectors(self, rows: list[tuple[int, list[float]]]) -> None:
+        """Insert embeddings for the given chunk ids in one transaction. Each
+        call commits, so an interrupted `qkb embed` keeps the vectors it
+        already wrote and a re-run resumes from `pending_chunks()`."""
+        if not rows:
+            return
+        with self.conn:
+            self.conn.executemany(
+                "INSERT INTO chunks_vec (chunk_id, embedding) VALUES (?,?)",
+                [(cid, sqlite_vec.serialize_float32(vec)) for cid, vec in rows],
+            )
 
     def update_metadata_if_changed(
         self,

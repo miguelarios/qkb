@@ -30,20 +30,27 @@ created: 2026-03-15
 ---
 ```
 
-**4. Check, index, search:**
+**4. Index in two phases, then search:**
 
     qkb status                       # verify config, vault, and model resolve
-    qkb ingest                       # build the index (downloads the ~310 MB model once)
-    qkb status                       # see documents/chunks/vectors counts
-    qkb query "certificate renewal"  # hybrid search
+    qkb ingest                       # keyword index — fast, no model needed
+    qkb search "certificate renewal" # keyword (BM25) search works right away
+    qkb embed                        # compute vectors (downloads the model once; resumable)
+    qkb query "certificate renewal"  # full hybrid (keyword + semantic) search
     qkb mcp                          # stdio MCP server for Claude Code / Desktop
+
+Indexing is split so nothing blocks for hours: **`qkb ingest`** builds the
+keyword index in seconds (no model), so `qkb search` works immediately;
+**`qkb embed`** then computes the vectors that power semantic/hybrid search.
+`qkb embed` is **resumable** — Ctrl-C is safe, and re-running continues where
+it left off — and `qkb status` shows how many vectors are still pending.
 
 No separate service, no compile: embeddings run **in-process via ONNX Runtime**,
 whose prebuilt wheels install with the package. The default model is
 **embeddinggemma-300M** (multilingual — the same embedding model
 [QMD](https://github.com/tobi/qmd) uses), cached after the first download.
-Re-running `qkb ingest` is incremental: unchanged notes are skipped, so it's
-cheap to re-index after editing notes.
+Re-running `qkb ingest`/`qkb embed` is incremental: unchanged notes are skipped
+and only new/changed chunks get embedded, so it's cheap to keep up to date.
 
 Claude Code MCP registration:
 

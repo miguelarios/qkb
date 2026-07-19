@@ -4,7 +4,8 @@ import pytest
 
 from qkb.config import Config
 from qkb.embed.fake import FakeProvider
-from qkb.ingest.pipeline import ingest_vault
+from qkb.ingest.pipeline import embed_pending, ingest_vault
+from qkb.ingest.storage import Storage
 
 
 def write_note(vault, name, note_id, context="homelab", body="Some body text.", extra=""):
@@ -627,3 +628,55 @@ def test_on_skip_reasons_and_on_progress(conn, provider, cfg, vault):
     assert progress[-1] == (4, 4, None)  # advanced to completion over all scanned files
     # the current file is surfaced during the run (a relative posix path)
     assert any(cur == "good.md" for _, _, cur in progress)
+
+
+def test_ingest_without_provider_defers_embedding(conn, cfg, provider, vault):
+    """`qkb ingest` (no provider) builds the structural index — chunks + BM25 —
+    without vectors, so keyword search works immediately; `embed_pending`
+    fills vectors in later."""
+    write_note(vault, "a.md", ID1)
+    write_note(vault, "b.md", ID2, body="Another note body about proxies.")
+    stats = ingest_vault(conn, cfg)  # structural only
+    assert stats.indexed == 2
+
+    s = Storage(conn)
+    st = s.stats()
+    assert st["chunks"] >= 2 and st["vectors"] == 0  # chunks present, no vectors yet
+    assert len(s.pending_chunks()) == st["chunks"]
+    assert conn.execute("SELECT COUNT(*) c FROM documents_fts").fetchone()["c"] == 2  # BM25 ready
+
+    n = embed_pending(conn, cfg, provider)  # second phase
+    assert n == st["chunks"]
+    assert s.stats()["vectors"] == st["chunks"]
+    assert s.pending_chunks() == []
+    assert s.stored_embedding_config() == ("fake-8d", 8)  # embed commits the model/dim
+
+
+def test_embed_pending_is_incremental(conn, cfg, provider, vault):
+    write_note(vault, "a.md", ID1)
+    ingest_vault(conn, cfg)
+    assert embed_pending(conn, cfg, provider) >= 1
+    assert embed_pending(conn, cfg, provider) == 0  # nothing pending on a second run
+
+    write_note(vault, "a.md", ID1, body="Edited and now much longer body. " * 20)
+    ingest_vault(conn, cfg)  # re-chunks a.md -> new pending chunks
+    s = Storage(conn)
+    assert len(s.pending_chunks()) >= 1
+    embed_pending(conn, cfg, provider)  # embeds only the new ones
+    assert s.pending_chunks() == []
+
+
+def test_embed_pending_rejects_model_change_without_full(conn, cfg, provider, vault):
+    write_note(vault, "a.md", ID1)
+    ingest_vault(conn, cfg)
+    embed_pending(conn, cfg, provider)  # commits fake-8d
+
+    other = FakeProvider(dimension=8)
+    other.__class__ = type("P", (FakeProvider,), {"model_name": property(lambda s: "other-model")})
+    with pytest.raises(RuntimeError, match="--full"):
+        embed_pending(conn, cfg, other)
+
+    n = embed_pending(conn, cfg, other, full=True)  # --full re-embeds under the new model
+    s = Storage(conn)
+    assert n == s.stats()["chunks"]
+    assert s.stored_embedding_config() == ("other-model", 8)
