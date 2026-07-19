@@ -277,6 +277,15 @@ class Storage:
             self.conn.execute("DELETE FROM documents_fts WHERE doc_id = ?", (doc_id,))
             self.conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
 
+    def stored_embedding_config(self) -> tuple[str, int] | None:
+        """(model_name, dim) the existing index was embedded with, or None if
+        no embedding config has been committed yet (fresh DB). Read-only —
+        used by `qkb status` to surface config-vs-index model mismatches."""
+        rows = {r["key"]: r["value"] for r in self.conn.execute("SELECT * FROM embedding_config")}
+        if "model_name" not in rows:
+            return None
+        return rows["model_name"], int(rows["embedding_dim"])
+
     def check_embedding_config(self, model_name: str, dim: int) -> bool:
         rows = {r["key"]: r["value"] for r in self.conn.execute("SELECT * FROM embedding_config")}
         if not rows:

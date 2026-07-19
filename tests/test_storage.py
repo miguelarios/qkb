@@ -266,3 +266,10 @@ def test_update_metadata_if_changed_uses_precomputed_hash_without_select(conn, p
     spy.assert_not_called()
     assert changed is False
     assert conn.total_changes == before_changes
+
+
+def test_stored_embedding_config_roundtrip(conn):
+    s = Storage(conn)
+    assert s.stored_embedding_config() is None  # fresh DB: nothing committed
+    s.commit_embedding_config("fake-8d", 8)
+    assert s.stored_embedding_config() == ("fake-8d", 8)
