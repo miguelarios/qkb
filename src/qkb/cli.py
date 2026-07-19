@@ -5,10 +5,19 @@ from __future__ import annotations
 import json as jsonlib
 import os
 import sys
+from collections import Counter
 from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.table import Table
 
 from qkb.config import DEFAULT_CONFIG_PATH, Config, load_config
@@ -119,15 +128,73 @@ def cli() -> None:
 
 @cli.command()
 @click.option("--full", is_flag=True, help="force full re-embed")
-def ingest(full: bool) -> None:
+@click.option("-v", "--verbose", is_flag=True, help="list every skipped note")
+def ingest(full: bool, verbose: bool) -> None:
     cfg = _cfg()
     conn = _conn(cfg)
     provider = get_provider(cfg)
-    stats = ingest_vault(conn, cfg, provider, full=full)
-    click.echo(
-        f"scanned={stats.scanned} indexed={stats.indexed} updated={stats.updated} "
-        f"unchanged={stats.unchanged} deindexed={stats.deindexed} skipped={stats.skipped}"
+
+    skips: list[tuple[str, str]] = []
+
+    def on_skip(path: Path, reason: str) -> None:
+        try:
+            rel = path.relative_to(cfg.vault_path).as_posix()
+        except ValueError:
+            rel = str(path)
+        skips.append((rel, reason))
+
+    # Load the model up front (first run downloads it) so the download shows on
+    # its own line instead of silently stalling the progress bar mid-run.
+    console.print("[dim]Loading embedding model (first run downloads it)…[/dim]")
+    try:
+        provider.embed(["warmup"])
+    except Exception as e:
+        raise click.ClickException(f"could not load embedding model: {e}") from e
+
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Indexing vault", total=None)
+
+            def on_progress(done: int, total: int) -> None:
+                progress.update(task, completed=done, total=total)
+
+            stats = ingest_vault(
+                conn, cfg, provider, full=full, on_progress=on_progress, on_skip=on_skip
+            )
+    except RuntimeError as e:
+        # Guard failures (model/config changed, interrupted --full) — a clean
+        # message with the remedy, never a traceback.
+        raise click.ClickException(str(e)) from e
+
+    summary = (
+        f"[green]✓[/green] indexed [b]{stats.indexed}[/b]  "
+        f"updated {stats.updated}  unchanged {stats.unchanged}"
     )
+    if stats.deindexed:
+        summary += f"  deindexed {stats.deindexed}"
+    summary += f"  [dim]({stats.scanned} scanned)[/dim]"
+    console.print(summary)
+
+    if skips:
+        by_reason = Counter(reason for _, reason in skips)
+        console.print(f"[yellow]⚠ {len(skips)} note(s) skipped[/yellow] (not searchable):")
+        for reason, n in by_reason.most_common():
+            console.print(f"    [b]{n}[/b] × {reason}")
+        if verbose:
+            for rel, reason in skips:
+                console.print(f"      [dim]{reason:16}[/dim] {rel}")
+        else:
+            console.print(
+                "  [dim]add an `id:` (and a `created:`/`date:`) to include them; "
+                "`qkb ingest -v` lists them[/dim]"
+            )
 
 
 @cli.command()
