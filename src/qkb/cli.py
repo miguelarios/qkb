@@ -143,15 +143,19 @@ def ingest(full: bool, verbose: bool) -> None:
             rel = str(path)
         skips.append((rel, reason))
 
-    # Load the model up front (first run downloads it) so the download shows on
-    # its own line instead of silently stalling the progress bar mid-run.
-    console.print("[dim]Loading embedding model (first run downloads it)…[/dim]")
-    try:
-        provider.embed(["warmup"])
-    except Exception as e:
-        raise click.ClickException(f"could not load embedding model: {e}") from e
+    def _shorten(path: str, width: int = 44) -> str:
+        # Keep the tail (filename + nearest folder), which is the useful part.
+        return path if len(path) <= width else "…" + path[-(width - 1) :]
 
     try:
+        # Load the model up front (first run downloads it) so the download shows
+        # on its own line instead of silently stalling the progress bar mid-run.
+        console.print("[dim]Loading embedding model (first run downloads it)…[/dim]")
+        try:
+            provider.embed(["warmup"])
+        except Exception as e:
+            raise click.ClickException(f"could not load embedding model: {e}") from e
+
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -160,14 +164,22 @@ def ingest(full: bool, verbose: bool) -> None:
             TimeElapsedColumn(),
             console=console,
         ) as progress:
-            task = progress.add_task("Indexing vault", total=None)
+            task = progress.add_task("Indexing", total=None)
 
-            def on_progress(done: int, total: int) -> None:
-                progress.update(task, completed=done, total=total)
+            def on_progress(done: int, total: int, current: str | None) -> None:
+                desc = (
+                    "Indexing" if current is None else f"Indexing [cyan]{_shorten(current)}[/cyan]"
+                )
+                progress.update(task, completed=done, total=total, description=desc)
 
             stats = ingest_vault(
                 conn, cfg, provider, full=full, on_progress=on_progress, on_skip=on_skip
             )
+    except KeyboardInterrupt:
+        console.print(
+            "\n[yellow]Aborted.[/yellow] The index is safe — re-run `qkb ingest --full` to resume."
+        )
+        raise SystemExit(130) from None
     except RuntimeError as e:
         # Guard failures (model/config changed, interrupted --full) — a clean
         # message with the remedy, never a traceback.

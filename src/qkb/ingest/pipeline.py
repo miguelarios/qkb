@@ -39,7 +39,7 @@ def ingest_vault(
     cfg: Config,
     provider: EmbeddingProvider,
     full: bool = False,
-    on_progress: Callable[[int, int], None] | None = None,
+    on_progress: Callable[[int, int, str | None], None] | None = None,
     on_skip: Callable[[Path, str], None] | None = None,
 ) -> IngestStats:
     storage = Storage(conn, vault_name=cfg.vault_name)
@@ -113,7 +113,7 @@ def ingest_vault(
     total = len(files)
     for i, path in enumerate(files):
         if on_progress is not None:
-            on_progress(i, total)
+            on_progress(i, total, path.relative_to(cfg.vault_path).as_posix())
         stats.scanned += 1
         try:
             note = parse_note(path, cfg.vault_path, cfg.frontmatter)
@@ -163,7 +163,7 @@ def ingest_vault(
             stats.updated += 1
 
     if on_progress is not None:
-        on_progress(total, total)
+        on_progress(total, total, None)
 
     # True iff some file failed to parse at a path we don't recognize from a
     # prior run (finding 4: a renamed note that also fails to parse can't be
