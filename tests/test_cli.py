@@ -158,3 +158,27 @@ def test_get_raw_missing_file_clean_error(tmp_path):
     assert r.exit_code != 0
     assert "traceback" not in r.output.lower()
     assert "qkb ingest" in r.output.lower()
+
+
+def test_status_surfaces_index_model_and_mismatch(tmp_path):
+    """status must show what model built the index and warn (with a --full
+    hint) when it differs from the configured model — instead of letting the
+    user discover the mismatch as an ingest error."""
+    vault, env = make_env(tmp_path)
+    write_note(vault, "a.md", ID1)
+    run(["ingest"], env)
+
+    # configured model (default) != the fake provider's committed "fake-8d"
+    r = run(["status"], env)
+    assert "Built with: fake-8d" in r.output
+    assert "qkb ingest --full" in r.output and "⚠" in r.output
+    d = json.loads(run(["status", "--json"], env).output)
+    assert d["index_model"] == "fake-8d" and d["index_dim"] == 8
+    assert d["model_mismatch"] is True
+
+    # aligned config -> no warning
+    env2 = {**env, "QKB_EMBEDDING_MODEL": "fake-8d"}
+    r = run(["status"], env2)
+    assert "⚠" not in r.output
+    d = json.loads(run(["status", "--json"], env2).output)
+    assert d["model_mismatch"] is False

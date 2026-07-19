@@ -255,7 +255,15 @@ def status(as_json: bool) -> None:
     cfg = _cfg()
     config_path = Path(os.environ.get("QKB_CONFIG", str(DEFAULT_CONFIG_PATH)))
     db_exists = cfg.db_path.exists()
-    st = Storage(_conn(cfg)).stats() if db_exists else None
+    storage = Storage(_conn(cfg)) if db_exists else None
+    st = storage.stats() if storage else None
+    # What the existing index was embedded with — may differ from the
+    # *configured* model (e.g. after a provider switch), in which case the
+    # next ingest requires --full. Surface that here instead of letting the
+    # user discover it as an ingest error.
+    stored = storage.stored_embedding_config() if storage else None
+    mismatch = stored is not None and stored != (cfg.embedding_model, cfg.embedding_dim)
+    interrupted = storage.is_ingest_in_progress() if storage else False
 
     if as_json:
         payload: dict = {
@@ -268,6 +276,10 @@ def status(as_json: bool) -> None:
             "provider": cfg.embedding_provider,
             "model": cfg.embedding_model,
             "dimension": cfg.embedding_dim,
+            "index_model": stored[0] if stored else None,
+            "index_dim": stored[1] if stored else None,
+            "model_mismatch": mismatch,
+            "ingest_interrupted": interrupted,
         }
         payload.update(
             st
@@ -312,10 +324,25 @@ def status(as_json: bool) -> None:
         out.append(f"  Documents: {st['documents']}")
         out.append(f"  Chunks:    {st['chunks']}")
         out.append(f"  Vectors:   {st['vectors']} embedded  (dim {st['dim']})")
+        if stored is not None:
+            out.append(f"  Built with: {stored[0]}  (dim {stored[1]})")
         out.append(f"  Last:      {st['last_indexed_at'] or '—'}")
         ctxs = st["contexts"]
         names = ", ".join(c["context"] for c in ctxs[:6])
         out.append(f"  Contexts:  {len(ctxs)}" + (f"  ({names})" if names else ""))
+    if mismatch and stored is not None:
+        out += [
+            "",
+            f"⚠ Index was built with '{stored[0]}' (dim {stored[1]}) but config now says",
+            f"  '{cfg.embedding_model}' (dim {cfg.embedding_dim}).",
+            "  Run `qkb ingest --full` to re-embed with the configured model.",
+        ]
+    if interrupted:
+        out += [
+            "",
+            "⚠ A previous --full re-embed did not complete.",
+            "  Run `qkb ingest --full` to finish re-embedding.",
+        ]
     click.echo("\n".join(out))
 
 
