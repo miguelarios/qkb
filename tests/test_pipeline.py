@@ -612,16 +612,18 @@ def test_on_skip_reasons_and_on_progress(conn, provider, cfg, vault):
     (vault / "opt-out.md").write_text("---\ntitle: just a note\n---\nbody\n")
 
     skips: list[tuple[str, str]] = []
-    progress: list[tuple[int, int]] = []
+    progress: list[tuple[int, int, str | None]] = []
     stats = ingest_vault(
         conn,
         cfg,
         provider,
         on_skip=lambda p, r: skips.append((p.name, r)),
-        on_progress=lambda done, total: progress.append((done, total)),
+        on_progress=lambda done, total, current: progress.append((done, total, current)),
     )
 
     reasons = {name: reason for name, reason in skips}
     assert reasons == {"no-id.md": "no id", "no-date.md": "no date"}  # opt-out not reported
     assert stats.indexed == 1
-    assert progress[-1] == (4, 4)  # advanced to completion over all scanned files
+    assert progress[-1] == (4, 4, None)  # advanced to completion over all scanned files
+    # the current file is surfaced during the run (a relative posix path)
+    assert any(cur == "good.md" for _, _, cur in progress)
