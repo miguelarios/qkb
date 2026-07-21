@@ -1,0 +1,43 @@
+# npm release for the TypeScript rewrite. Fires ONLY on `v*` tag pushes
+# (owner-only — tags are never pushed by CI or by an agent, see CLAUDE.md's
+# "Don't tag releases" hard rule). Publishes to npm via **Trusted
+# Publishing/OIDC** — no NODE_AUTH_TOKEN/NPM_TOKEN secret exists in this repo
+# at all, so there is nothing for CI to leak and no token that would let a
+# plain `npm publish` from `ci.yml` (which never runs this workflow) succeed.
+name: Release (npm)
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # npm trusted publishing (OIDC) + provenance attestation
+      contents: write # create the GitHub Release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+      # Trusted Publishing needs a recent npm CLI (>=11.5.1); the version
+      # bundled with setup-node's Node build can lag behind, so pin explicitly
+      # rather than trust whatever ships with the runner image.
+      - run: npm install -g npm@latest
+      - run: npm ci
+      - run: npm test
+      - run: npx tsc --noEmit
+      - run: npx biome check .
+      - run: npm run build
+      - run: npm pack
+      # No `NODE_AUTH_TOKEN`/`NPM_TOKEN` env here — Trusted Publishing
+      # authenticates via the `id-token: write` OIDC token above, not a
+      # secret. `--provenance` attaches a Sigstore-signed build attestation.
+      - run: npm publish --provenance --access public
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: "*.tgz"
+          generate_release_notes: true

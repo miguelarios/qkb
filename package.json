@@ -6,6 +6,10 @@
   "bin": {
     "qkb": "./dist/cli.js"
   },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "engines": {
     "node": ">=20"
   },
@@ -15,7 +19,9 @@
     "test:watch": "vitest",
     "test:integration": "QKB_INTEGRATION=1 vitest run",
     "lint": "biome check .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "golden-queries": "tsx scripts/golden-queries.ts",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "obsidian",
@@ -45,12 +51,14 @@
     "@types/cli-progress": "^3.11.6",
     "@types/js-yaml": "^3.12.10",
     "@types/node": "^26.1.1",
+    "tsx": "^4.23.1",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
   },
   "allowScripts": {
     "better-sqlite3@13.0.1": true,
     "node-llama-cpp@3.19.1": true,
-    "fsevents@2.3.3": true
+    "fsevents@2.3.3": true,
+    "esbuild@0.28.1": true
   }
 }
