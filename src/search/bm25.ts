@@ -7,12 +7,31 @@
 import type Database from "better-sqlite3";
 import { buildFilterClause, type Filters } from "./filters.js";
 
-// Matches Python's `re.findall(r"\w+", query, flags=re.UNICODE)`: any run of
-// Unicode letters/digits/underscore. Approximates CPython's Unicode-aware
-// `\w` (letters, digits, underscore) closely enough for query tokenization —
-// both treat punctuation and FTS5 operator keywords (AND/OR/NOT/NEAR) as
-// plain tokens once split out.
+// Matches Python's `re.findall(r"\w+", query, flags=re.UNICODE)` — `re.UNICODE`
+// is a no-op for str patterns in Python 3 (already the default), so this is
+// really just `\w+`. `\p{L}\p{N}_` is not an approximation: CPython's `\w`
+// resolves per-character to `Py_UNICODE_ISALNUM(ch) || ch == '_'`, and
+// ISALNUM covers exactly the Lu/Ll/Lt/Lm/Lo (`\p{L}`) and Nd/Nl/No (`\p{N}`)
+// categories — it does NOT extend to the Unicode "Alphabetic" derived
+// property some regex engines use, so combining marks (Mn/Mc — accents in
+// NFD text, Devanagari matras/virama) and connector punctuation other than
+// ASCII `_` (Pc, e.g. U+203F UNDERTIE) are excluded from `\w` in both
+// CPython and here. Verified empirically against CPython 3.14
+// (`python3 -c "import re; re.findall(r'\w+', ...)"`) across representative
+// Mn/Mc/Pc/Nl/No characters and NFD-normalized Latin/Devanagari/Vietnamese
+// text — see the "NFD/Unicode word-boundary parity" tests in bm25.test.ts,
+// which assert byte-identical tokenization against those same probes.
 const WORD_RE = /[\p{L}\p{N}_]+/gu;
+
+// Renders a number the way Python's `str(float)` would, for byte-identical
+// SQL text against `bm25.py`'s f-string-interpolated weights (e.g. `5.0`,
+// not JS's default `5`). Only exercised on the small literal weight list
+// (`fts_weights` + the trailing `0.0`), so no exponential-notation handling
+// is needed — `String(x)` never produces `e`/`E` for those magnitudes.
+function formatSqlFloat(x: number): string {
+  const s = String(x);
+  return s.includes(".") ? s : `${s}.0`;
+}
 
 /**
  * Tokenize a raw user query into a safely-quoted FTS5 MATCH expression.
@@ -66,7 +85,7 @@ export function searchBm25(
   // numeric arguments.
   const sql = `
     SELECT documents_fts.doc_id AS doc_id,
-           -bm25(documents_fts, ${w.map((x) => String(x)).join(",")}) AS score,
+           -bm25(documents_fts, ${w.map(formatSqlFloat).join(",")}) AS score,
            snippet(documents_fts, 3, '[', ']', '…', 12) AS snip
     FROM documents_fts
     JOIN documents d ON d.id = documents_fts.doc_id

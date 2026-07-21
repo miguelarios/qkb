@@ -83,6 +83,45 @@ describe("search/bm25", () => {
     it("returns empty string when no word tokens are present", () => {
       expect(sanitizeQuery("!!!")).toBe("");
     });
+
+    // Fix round 1 (reviewer flag): verify tokenization is byte-identical to
+    // CPython's `re.findall(r"\w+", query, flags=re.UNICODE)` for exactly the
+    // character classes the reviewer named — combining marks (Mn/Mc) and
+    // connector punctuation (Pc) — plus NFD-normalized text. Expected values
+    // below are the literal output of `python3 -c "import re; ..."` probes
+    // against CPython 3.14 (see ts-task-11-report.md "Fix round 1" for the
+    // full probe transcript), not hand-derived — CPython's `\w` does NOT
+    // extend to Mn/Mc or to Pc characters other than ASCII `_`, so it
+    // excludes combining marks and connector punctuation exactly as
+    // `[\p{L}\p{N}_]+` does.
+    it("NFD-decomposed accents: combining mark (Mn) breaks the run, is dropped", () => {
+      // "café" as NFD: c,a,f,e + COMBINING ACUTE ACCENT (U+0301, category Mn).
+      // Python: re.findall(r"\w+", "café") == ["cafe"] (accent dropped,
+      // "cafe" NOT split at the combining mark's position since it simply
+      // isn't part of any run).
+      const nfdCafe = "café".normalize("NFD");
+      expect(sanitizeQuery(nfdCafe)).toBe('"cafe"');
+    });
+
+    it("Devanagari word: Mc/Mn matras and virama break the run into single-letter tokens", () => {
+      // "हिन्दी" (Devanagari "Hindi"): Lo,Mc,Lo,Mn,Lo,Mc. Python:
+      // re.findall(r"\w+", "हिन्दी") == ["ह", "न", "द"] — the three Lo
+      // (letter) codepoints each isolated by a following Mc/Mn character.
+      expect(sanitizeQuery("हिन्दी")).toBe('"ह" "न" "द"');
+    });
+
+    it("connector punctuation other than ASCII underscore (Pc, U+203F) splits the run", () => {
+      // U+203F UNDERTIE is category Pc but is NOT \w in CPython. Python:
+      // re.findall(r"\w+", "a‿b") == ["a", "b"].
+      expect(sanitizeQuery("a‿b")).toBe('"a" "b"');
+    });
+
+    it("ASCII underscore (also Pc) does NOT split the run", () => {
+      // Python: re.findall(r"\w+", "a_b") == ["a_b"] — underscore is \w by
+      // the explicit `|| ch == '_'` in CPython's word-char test, not because
+      // it's Pc (other Pc chars, per the case above, are excluded).
+      expect(sanitizeQuery("a_b")).toBe('"a_b"');
+    });
   });
 
   describe("searchBm25", () => {
