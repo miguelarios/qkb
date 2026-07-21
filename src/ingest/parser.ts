@@ -128,6 +128,112 @@ function validateTimeAndOffset(rest: string): boolean {
   return true;
 }
 
+function pad2(s: string): string {
+  return s.padStart(2, "0");
+}
+
+// Mirrors PyYAML's SafeLoader implicit timestamp resolver (the exact regex
+// pulled from `yaml.resolver.Resolver.yaml_implicit_resolvers` at the Python
+// REPL), which is what `frontmatter.load()` (parser.py's `frontmatter.load`)
+// uses. A `created`/`date` value shaped like this is auto-parsed by PyYAML
+// into a `datetime`/`date` *before* parser.py's `parse_date_lenient` ever
+// sees it - so its acceptance surface and its `.isoformat()` rendering both
+// need to be emulated as a *first-chance* path, ahead of the
+// fromisoformat-parity parser above. This is a different grammar from
+// fromisoformat: the date-only branch requires exactly 2-digit month/day
+// with no time part; the time-bearing branch allows 1-2 digit month/day/hour
+// but mandates 2-digit `:MM:SS`, and the offset has no basic (no-colon) or
+// seconds-bearing form.
+const YAML_DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const YAML_DATETIME_RE =
+  /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[Tt]|[ \t]+)(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d*))?(?:[ \t]*(?:(Z)|([+-])(\d{1,2})(?::(\d{2}))?))?$/;
+
+/** Formats a PyYAML-resolver offset the way `datetime.timezone(delta).
+ * __str__` / `.isoformat()` would: magnitude-based, always `±HH:MM`, and a
+ * zero-magnitude offset (e.g. `-00:00`) always renders as `+00:00` (no
+ * negative zero) - verified empirically against real PyYAML. */
+function formatYamlOffset(sign: string, hourStr: string, minuteStr: string | undefined): string {
+  const totalMinutes = Number(hourStr) * 60 + Number(minuteStr ?? "0");
+  const signedMinutes = sign === "-" ? -totalMinutes : totalMinutes;
+  if (signedMinutes === 0) return "+00:00";
+  const neg = signedMinutes < 0;
+  const abs = Math.abs(signedMinutes);
+  return `${neg ? "-" : "+"}${pad2(String(Math.floor(abs / 60)))}:${pad2(String(abs % 60))}`;
+}
+
+/** Renders a captured fraction string the way `datetime.isoformat()` would:
+ * truncated/padded to exactly 6 digits (microseconds), and omitted entirely
+ * if that resolves to zero - even for an explicit `.000000` - verified
+ * empirically against real PyYAML + `.isoformat()`. */
+function formatYamlFraction(fracDigits: string | undefined): string {
+  if (fracDigits === undefined) return "";
+  const micros = fracDigits.slice(0, 6).padEnd(6, "0");
+  return Number(micros) === 0 ? "" : `.${micros}`;
+}
+
+/** Emulates PyYAML's implicit timestamp resolver + the `.isoformat()` call
+ * parser.py makes on whatever it produces: returns the effective date and
+ * the full canonical rendering if (and only if) `raw` is shaped like
+ * something PyYAML would have auto-parsed into a `date`/`datetime`, else
+ * `null` (meaning: treat `raw` as PyYAML would have left it - a plain
+ * string, to be tried against the fromisoformat-parity parser instead).
+ *
+ * Range/magnitude validation (hour 0-23, minute/second 0-59, offset
+ * magnitude < 24h) mirrors what the underlying `datetime`/`timezone`
+ * constructors would raise ValueError for. Real PyYAML would let that
+ * exception escape `yaml.safe_load()` uncaught (parse_date_lenient's
+ * try/except only wraps the *string* fromisoformat path, never executed for
+ * an already-parsed object) - crashing the whole document load rather than
+ * returning null. Reproducing an uncaught-exception crash from here isn't
+ * practical (or worth it: a real vault is exceedingly unlikely to contain
+ * `created: 2026-03-15T99:00:00` unquoted), so this deliberately returns
+ * null instead, falling through to the ordinary parser - which independently
+ * rejects genuinely out-of-range values too, so the net "unparseable"
+ * outcome still matches. */
+function matchYamlTimestamp(raw: string): { date: string; isoformat: string } | null {
+  let m = YAML_DATE_ONLY_RE.exec(raw);
+  if (m) {
+    const [, y, mo, d] = m as unknown as [string, string, string, string];
+    if (!isValidCalendarDate(Number(y), Number(mo), Number(d))) return null;
+    const date = `${y}-${mo}-${d}`;
+    return { date, isoformat: date };
+  }
+  m = YAML_DATETIME_RE.exec(raw);
+  if (!m) return null;
+  const [, y, mo, d, hh, mm, ss, frac, z, tzSign, tzHour, tzMinute] = m as unknown as [
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string | undefined,
+    string | undefined,
+    string | undefined,
+    string | undefined,
+    string | undefined,
+  ];
+  if (!isValidCalendarDate(Number(y), Number(mo), Number(d))) return null;
+  const hhNum = Number(hh);
+  const mmNum = Number(mm);
+  const ssNum = Number(ss);
+  if (hhNum < 0 || hhNum > 23 || mmNum < 0 || mmNum > 59 || ssNum < 0 || ssNum > 59) return null;
+  let offset = "";
+  if (z !== undefined) {
+    offset = "+00:00";
+  } else if (tzSign !== undefined) {
+    const tzHourNum = Number(tzHour ?? "0");
+    const tzMinuteNum = Number(tzMinute ?? "0");
+    const magnitudeMinutes = tzHourNum * 60 + tzMinuteNum;
+    if (magnitudeMinutes >= 24 * 60) return null;
+    offset = formatYamlOffset(tzSign, tzHour ?? "0", tzMinute);
+  }
+  const date = `${y}-${pad2(mo)}-${pad2(d)}`;
+  const isoformat = `${date}T${pad2(hh)}:${mm}:${ss}${formatYamlFraction(frac)}${offset}`;
+  return { date, isoformat };
+}
+
 export function parseDateLenient(value: unknown): string | null {
   if (value instanceof Date) {
     // Defensive: the yaml engine below (CORE_SCHEMA) never produces Date
@@ -143,6 +249,11 @@ export function parseDateLenient(value: unknown): string | null {
   if (typeof value === "string") {
     const v = value.trim();
     if (!v || v.startsWith("<%")) return null;
+    // First-chance: emulates meta[key] already being a PyYAML-parsed
+    // date/datetime object, exactly as parser.py's isinstance branches see
+    // it - bypassing fromisoformat's (different) grammar entirely.
+    const yamlMatch = matchYamlTimestamp(v);
+    if (yamlMatch) return yamlMatch.date;
     const dateMatch = matchDatePrefix(v);
     if (!dateMatch) return null;
     const { y, mo, d, restIndex } = dateMatch;
@@ -153,42 +264,14 @@ export function parseDateLenient(value: unknown): string | null {
   return null;
 }
 
-// Mirrors PyYAML's SafeLoader implicit timestamp resolver, which is what
-// `frontmatter.load()` (parser.py's `frontmatter.load`) uses. A `created`
-// value shaped like this is auto-parsed by PyYAML into a `datetime`, and
-// Python's `.isoformat()` always renders the date/time separator as "T" -
-// even when the frontmatter author wrote a space. This is a *narrower*
-// grammar than fromisoformat above (month/day may be 1-2 digits but MM:SS
-// are both mandatory, no basic/no-dash date, no bare-Z-less hour-only time),
-// so it's kept separate rather than reusing matchDatePrefix/validateTimeAndOffset.
-const YAML_TIMESTAMP_RE =
-  /^(\d{4}-\d{1,2}-\d{1,2})([Tt]|[ \t]+)\d{1,2}:\d{2}:\d{2}(?:\.\d*)?(?:[ \t]*(?:Z|[+-]\d{1,2}(?::\d{2})?))?$/;
-
 /** Canonicalizes a raw `created`/`date` frontmatter string the way Python's
  * `datetime.isoformat()` would, IF (and only if) PyYAML would have auto-
- * parsed it into a `datetime` in the first place (see YAML_TIMESTAMP_RE).
- * Only the separator changes - offset, fraction, and digit widths are left
- * exactly as written, matching the "keep the raw string" philosophy CORE_SCHEMA
- * already commits to for this value.
- *
- * Known narrow gap (intentionally out of scope): PyYAML's resolver allows a
- * 1-2 digit month/day/hour here, and real Python's `.isoformat()` would
- * zero-pad those too. A value shaped that way never reaches this function in
- * the TS port anyway - `parseDateLenient`'s fromisoformat-parity date prefix
- * requires 2-digit month/day, so such a `created` value fails to parse
- * upstream (throwing NoteDataError, absent a valid `date` alias) before
- * canonicalization would matter. Real Python avoids this because PyYAML
- * already parsed and validated the value before `parse_date_lenient` ever
- * sees it. Reconciling that would mean re-adding a YAML-timestamp-shaped
- * acceptance path to parseDateLenient - which is exactly the complexity
- * CORE_SCHEMA's "keep it a raw string" decision was meant to avoid. */
+ * parsed it into a `datetime`/`date` in the first place (see
+ * `matchYamlTimestamp`). Values PyYAML would have left as a plain string
+ * (e.g. `2026-03-15T13`, hour-only - `:MM:SS` isn't optional in PyYAML's
+ * resolver) pass through unchanged, matching `str(created_raw)` in Python. */
 function canonicalizeCreatedAt(raw: string): string {
-  const m = YAML_TIMESTAMP_RE.exec(raw);
-  if (!m) return raw;
-  const datePart = m[1] ?? "";
-  const sep = m[2] ?? "";
-  if (sep === "T") return raw;
-  return `${datePart}T${raw.slice(datePart.length + sep.length)}`;
+  return matchYamlTimestamp(raw)?.isoformat ?? raw;
 }
 
 export function normalizeContext(value: unknown): string | null {

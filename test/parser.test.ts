@@ -110,6 +110,22 @@ describe("ingest/parser", () => {
     it("accepts any single character as the date/time separator", () => {
       expect(parseDateLenient("2026-03-15_13:50:19")).toBe("2026-03-15");
     });
+
+    // Review finding 2, residual gap 2: PyYAML's implicit timestamp resolver
+    // (narrower/more lenient than fromisoformat in a different way - see
+    // matchYamlTimestamp) accepts single-digit month/day/hour when a time
+    // part is present, and auto-parses the value into a datetime *before*
+    // parser.py's parse_date_lenient ever runs its string branch. A
+    // date-only value with single-digit fields is NOT auto-parsed by PyYAML
+    // (its date-only branch requires 2-digit month/day) and both Python and
+    // this port correctly reject it - no change there.
+    it("accepts single-digit month/day/hour when a time part is present (PyYAML resolver shape)", () => {
+      expect(parseDateLenient("2026-3-16 9:00:00")).toBe("2026-03-16");
+    });
+
+    it("still rejects single-digit month/day with no time part", () => {
+      expect(parseDateLenient("2026-3-16")).toBeNull();
+    });
   });
 
   describe("normalizeContext", () => {
@@ -300,6 +316,98 @@ describe("ingest/parser", () => {
     const n = parseNote(p, tmpDir, FM);
     expect(n).not.toBeNull();
     expect(n?.createdAt).toBe("2026-03-16");
+  });
+
+  // Review finding 2, residual gap 1: Python builds a datetime via PyYAML's
+  // implicit timestamp resolver and calls `.isoformat()`, which normalizes
+  // the offset representation (Z -> +00:00, short offsets get zero-padded
+  // and colonized) - not just the separator.
+  it("normalizes a 'Z' suffix to '+00:00' (T-separated)", () => {
+    const p = note(
+      "z-suffix-t.md",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d410\n" +
+        "context: homelab\n" +
+        "created: 2026-03-16T09:00:00Z",
+    );
+    const n = parseNote(p, tmpDir, FM);
+    expect(n).not.toBeNull();
+    expect(n?.createdAt).toBe("2026-03-16T09:00:00+00:00");
+  });
+
+  it("normalizes a 'Z' suffix to '+00:00' (space-separated)", () => {
+    const p = note(
+      "z-suffix-space.md",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d411\n" +
+        "context: homelab\n" +
+        "created: 2026-03-16 09:00:00Z",
+    );
+    const n = parseNote(p, tmpDir, FM);
+    expect(n).not.toBeNull();
+    expect(n?.createdAt).toBe("2026-03-16T09:00:00+00:00");
+  });
+
+  it("zero-pads and colonizes a short (hour-only) offset", () => {
+    const p = note(
+      "short-offset.md",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d412\n" +
+        "context: homelab\n" +
+        "created: 2026-03-16T09:00:00-06",
+    );
+    const n = parseNote(p, tmpDir, FM);
+    expect(n).not.toBeNull();
+    expect(n?.createdAt).toBe("2026-03-16T09:00:00-06:00");
+  });
+
+  it("zero-pads a single-digit offset hour", () => {
+    const p = note(
+      "single-digit-offset.md",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d413\n" +
+        "context: homelab\n" +
+        "created: 2026-03-16T09:00:00+6:00",
+    );
+    const n = parseNote(p, tmpDir, FM);
+    expect(n).not.toBeNull();
+    expect(n?.createdAt).toBe("2026-03-16T09:00:00+06:00");
+  });
+
+  it("renders fractional seconds the way Python's isoformat would (padded to 6 digits)", () => {
+    const p = note(
+      "fraction.md",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d414\n" +
+        "context: homelab\n" +
+        "created: 2026-03-16T09:00:00.5",
+    );
+    const n = parseNote(p, tmpDir, FM);
+    expect(n).not.toBeNull();
+    expect(n?.createdAt).toBe("2026-03-16T09:00:00.500000");
+  });
+
+  it("leaves a naive (no-offset) timestamp with 'T' already unchanged", () => {
+    const p = note(
+      "naive.md",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d415\n" +
+        "context: homelab\n" +
+        "created: 2026-03-16T09:00:00",
+    );
+    const n = parseNote(p, tmpDir, FM);
+    expect(n).not.toBeNull();
+    expect(n?.createdAt).toBe("2026-03-16T09:00:00");
+  });
+
+  // Review finding 2, residual gap 2: single-digit month/day/hour with a
+  // time part must still resolve to an effective date and a canonicalized
+  // createdAt, matching PyYAML's more lenient (for this one grammar) resolver.
+  it("resolves single-digit month/day/hour with a time part (PyYAML resolver shape)", () => {
+    const p = note(
+      "single-digit-with-time.md",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d416\n" +
+        "context: homelab\n" +
+        "created: 2026-3-16 9:00:00",
+    );
+    const n = parseNote(p, tmpDir, FM);
+    expect(n).not.toBeNull();
+    expect(n?.effectiveDate).toBe("2026-03-16");
+    expect(n?.createdAt).toBe("2026-03-16T09:00:00");
   });
 
   it("honors a remapped alias key from the frontmatter map", () => {
