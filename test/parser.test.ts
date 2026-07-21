@@ -59,6 +59,57 @@ describe("ingest/parser", () => {
       expect(parseDateLenient(null)).toBeNull();
       expect(parseDateLenient(undefined)).toBeNull();
     });
+
+    // Review finding 1: ISO_DATE_RE over-accepts out-of-range clock fields
+    // that Python's `datetime.fromisoformat` rejects with ValueError.
+    it("rejects an out-of-range hour/minute/second (Python raises ValueError)", () => {
+      expect(parseDateLenient("2026-03-15T99:99:99")).toBeNull();
+      expect(parseDateLenient("2026-03-15T13:61:00")).toBeNull();
+      expect(parseDateLenient("2026-03-15T24:00:00")).toBeNull();
+    });
+
+    it("rejects an offset whose magnitude is 24h or more", () => {
+      expect(parseDateLenient("2026-03-15T13:50:19+24:00")).toBeNull();
+      expect(parseDateLenient("2026-03-15T13:50:19+99:00")).toBeNull();
+    });
+
+    it("rejects year 0000 (Python's MINYEAR is 1)", () => {
+      expect(parseDateLenient("0000-01-01")).toBeNull();
+    });
+
+    // Review finding 1: ISO_DATE_RE under-accepts formats Python's
+    // `datetime.fromisoformat` (3.11+) does accept.
+    it("accepts basic-format date (no dashes)", () => {
+      expect(parseDateLenient("20260315")).toBe("2026-03-15");
+    });
+
+    it("accepts hour-only time", () => {
+      expect(parseDateLenient("2026-03-15T13")).toBe("2026-03-15");
+    });
+
+    it("accepts a comma decimal separator for fractional seconds", () => {
+      expect(parseDateLenient("2026-03-15T13:50:19,123456")).toBe("2026-03-15");
+    });
+
+    it("accepts a 2-digit (hour-only) UTC offset", () => {
+      expect(parseDateLenient("2026-03-15T13:50:19+06")).toBe("2026-03-15");
+    });
+
+    it("accepts basic-format time (no colons)", () => {
+      expect(parseDateLenient("2026-03-15T135019")).toBe("2026-03-15");
+    });
+
+    it("accepts a bare 'Z' UTC suffix", () => {
+      expect(parseDateLenient("2026-03-15T13:50:19Z")).toBe("2026-03-15");
+    });
+
+    it("accepts a seconds-bearing offset", () => {
+      expect(parseDateLenient("2026-03-15T13:50:19+06:00:30")).toBe("2026-03-15");
+    });
+
+    it("accepts any single character as the date/time separator", () => {
+      expect(parseDateLenient("2026-03-15_13:50:19")).toBe("2026-03-15");
+    });
   });
 
   describe("normalizeContext", () => {
@@ -220,6 +271,35 @@ describe("ingest/parser", () => {
     expect(n).not.toBeNull();
     expect(n?.effectiveDate).toBe("2026-02-02");
     expect(n?.createdAt).toBe("2026-02-02T08:00:00-06:00");
+  });
+
+  it("canonicalizes a space-separated created timestamp to use 'T' (Finding 2)", () => {
+    // Python's PyYAML SafeLoader auto-parses this shape into a datetime, and
+    // `.isoformat()` always renders "T" - even though the frontmatter used a
+    // space. gray-matter's CORE_SCHEMA keeps it a raw string (intentional -
+    // see parser.ts), so the parser must canonicalize the separator itself.
+    const p = note(
+      "space-sep.md",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d40d\n" +
+        "context: homelab\n" +
+        "created: 2026-03-16 09:00:00-06:00",
+    );
+    const n = parseNote(p, tmpDir, FM);
+    expect(n).not.toBeNull();
+    expect(n?.createdAt).toBe("2026-03-16T09:00:00-06:00");
+  });
+
+  it("does not canonicalize a created value with no time component", () => {
+    // Regression guard: a date-only `created` value (no hour/min/sec) is
+    // never auto-parsed by PyYAML into a datetime with a "T", so it must
+    // pass through unchanged.
+    const p = note(
+      "date-only-created.md",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d40e\n" + "context: homelab\n" + "created: 2026-03-16",
+    );
+    const n = parseNote(p, tmpDir, FM);
+    expect(n).not.toBeNull();
+    expect(n?.createdAt).toBe("2026-03-16");
   });
 
   it("honors a remapped alias key from the frontmatter map", () => {
