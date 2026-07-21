@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Command, CommanderError } from "commander";
@@ -101,8 +101,26 @@ export async function main(argv: string[]): Promise<void> {
   }
 }
 
-const isMainModule =
-  process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url;
+/** Resolves `process.argv[1]` to a `file://` URL comparable against
+ * `import.meta.url`, following symlinks first. `npm i -g` installs the
+ * `qkb` bin as a symlink into dist/cli.js; Node's ESM loader resolves the
+ * *entry point* to its realpath before setting `import.meta.url`, but
+ * `process.argv[1]` stays the symlink path — so comparing the raw path
+ * (as the previous `file://${process.argv[1]}` string-concat did too)
+ * always misses for a global install, silently skipping `main()` (exit 0,
+ * no output, no error). `realpathSync` closes that gap; on the rare
+ * realpath failure (e.g. the file vanished between exec and this line) or
+ * a genuinely non-symlinked path, fall back to the unresolved path rather
+ * than throwing here. */
+function argv1Url(argv1: string): string {
+  try {
+    return pathToFileURL(realpathSync(argv1)).href;
+  } catch {
+    return pathToFileURL(argv1).href;
+  }
+}
+
+const isMainModule = process.argv[1] !== undefined && argv1Url(process.argv[1]) === import.meta.url;
 
 if (isMainModule) {
   main(process.argv);

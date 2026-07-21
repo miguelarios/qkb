@@ -1,5 +1,13 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -160,6 +168,27 @@ describe("qkb CLI (subprocess)", () => {
     );
     return p;
   }
+
+  it("runs when invoked through a symlink to dist/cli.js — the npm global-install shape", () => {
+    // `npm i -g` installs the `qkb` bin as a SYMLINK into dist/cli.js.
+    // Node's ESM loader resolves the *entry point* to its realpath before
+    // setting import.meta.url, but process.argv[1] stays the symlink path
+    // — so src/cli.ts's main-module check must resolve the symlink too
+    // (realpathSync), or `main()` silently never runs: exit 0, no output,
+    // no error, and a globally-installed `qkb` does nothing at all.
+    // Empirically confirmed failing (silent no-op) before that fix.
+    const binDir = join(tmpDir, "bin");
+    mkdirSync(binDir, { recursive: true });
+    const symlinkPath = join(binDir, "qkb");
+    symlinkSync(distCli, symlinkPath);
+
+    const result = spawnSync(process.execPath, [symlinkPath, "--version"], {
+      env: { ...process.env, ...env },
+      encoding: "utf-8",
+    });
+    expect(result.status).toBe(0);
+    expect((result.stdout ?? "").trim()).toBe(packageJson.version);
+  });
 
   it("ingest then query --json", () => {
     writeNote("a.md", ID1, { body: "Renewing traefik certificates." });
@@ -338,18 +367,18 @@ describe("qkb CLI (subprocess)", () => {
     expect(d2.model_mismatch).toBe(false);
   });
 
-  it("qkb embed with nothing pending never constructs/warms the provider — safe offline even with provider=llama (the network-touching default)", () => {
+  it("qkb embed with nothing pending never warms the provider — safe offline even with provider=llama (the network-touching default)", () => {
     // Deliberately builds its own env WITHOUT `QKB_EMBEDDING_PROVIDER: fake`
     // (every other test in this file sets it) and pins `provider: llama`
     // explicitly instead — llama is also config.ts's actual default, so this
     // doubles as "the out-of-the-box config never surprises a fully-embedded
-    // vault with a model load/download". LlamaProvider only resolves/
+    // vault with a model load/download". Provider CONSTRUCTION
+    // (`getProvider()`) is always I/O-free; LlamaProvider only resolves/
     // downloads its GGUF on the first real `embed()`/warmup call (see
-    // src/embed/llama.ts's docstring) — never at construction — so this test
-    // would hang/fail offline in CI without the pending-check-before-
-    // provider-construction fix, since the old code unconditionally called
-    // `provider.embed(["warmup"])` before checking whether there was
-    // anything to embed.
+    // src/embed/llama.ts's docstring) — so this test would hang/fail offline
+    // in CI without the pending-check-before-warmup fix, since the old code
+    // unconditionally called `provider.embed(["warmup"])` before checking
+    // whether there was anything to embed.
     const envWithLlama: Record<string, string> = {
       QKB_VAULT_PATH: vault,
       QKB_DB_PATH: join(tmpDir, "qkb.db"),
@@ -364,6 +393,30 @@ describe("qkb CLI (subprocess)", () => {
     expect(embedded.exitCode).toBe(0);
     expect(embedded.output).toContain("✓ all chunks already embedded");
     expect(embedded.output).not.toContain("Loading embedding model");
+  });
+
+  it("qkb embed with nothing pending but a CHANGED model still fails the model/dim guard (exit 1, --full remedy) — no warmup attempted", () => {
+    // The pending-work optimization above must never shortcut the
+    // model/dim consistency guard: it lives inside embedPending() and has
+    // to run unconditionally (mirrors pipeline.py's embed_pending
+    // ordering — guard first, then the 0-pending no-op), so a config
+    // change with nothing NEW to embed still surfaces as a loud error
+    // instead of a silent, wrong "already embedded". Uses the `fake`
+    // provider on both sides purely so the guard failure itself is
+    // reachable offline in CI; changing `QKB_EMBEDDING_DIM` changes
+    // FakeProvider's reported modelName (`fake-${dim}d`), which is enough
+    // to trigger the same mismatch a real model swap would.
+    writeNote("a.md", ID1, { body: "Renewing traefik certificates." });
+    run(["ingest"]);
+    const firstEmbed = run(["embed"]); // commits "fake-8d" @ dim 8, 0 pending left
+    expect(firstEmbed.exitCode).toBe(0);
+
+    const changedModelEnv = { ...env, QKB_EMBEDDING_DIM: "16" };
+    const result = run(["embed"], changedModelEnv);
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain("Embedding model/dim changed");
+    expect(result.output).toContain("qkb embed --full");
+    expect(result.output).not.toContain("Loading embedding model");
   });
 
   it("ingest -v lists every skipped note; without -v it prints a hint instead", () => {

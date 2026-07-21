@@ -134,36 +134,36 @@ export async function runIngest(opts: { full?: boolean; verbose?: boolean }): Pr
 export async function runEmbed(opts: { full?: boolean }): Promise<void> {
   const cfgObj = cfg();
   const conn = openDb(cfgObj);
-
-  if (!opts.full) {
-    // Check for pending work BEFORE constructing/warming the provider: on a
-    // fully-embedded index this is the common case (e.g. `qkb ingest && qkb
-    // embed` twice in a row, or a CI/cron re-run). `getProvider()` itself is
-    // lazy (see src/embed/llama.ts's docstring — resolving/downloading the
-    // GGUF and loading the model are deferred to the first real `embed()`
-    // call), but the warmup call just below is exactly that first call, so
-    // reaching it unconditionally used to mean every `qkb embed` invocation
-    // triggered a model load/download even with nothing to do. Only the
-    // no-pending-and-not-`--full` case is safe to skip early — `--full`
-    // always needs the provider (it re-embeds everything regardless of
-    // `pendingChunks()`), and any actual pending work still goes through
-    // `embedPending`'s model/dim consistency guard below exactly as before.
-    const storage = new Storage(conn, cfgObj.vaultName);
-    if (storage.pendingChunks().length === 0) {
-      console.log("✓ all chunks already embedded");
-      return;
-    }
-  }
-
+  // getProvider() is always I/O-free — every provider's constructor only
+  // reads config (see src/embed/*.ts) — so constructing it up front never
+  // triggers a model load/download. The guard against a stale model/dim
+  // (see embedPending() below) relies on `provider.modelName`/`.dimension`
+  // being available unconditionally, so it must always be constructed.
   const provider = await getProvider(cfgObj);
 
-  console.log("Loading embedding model (first run downloads it)…");
-  try {
-    await provider.embed(["warmup"]);
-  } catch (e) {
-    throw new Error(
-      `could not load embedding model: ${e instanceof Error ? e.message : String(e)}`,
-    );
+  // Skip the warmup call — the actual first real `embed()` call, and the
+  // thing that resolves/downloads/loads a model (e.g. llama's GGUF; see
+  // src/embed/llama.ts's docstring) — when there's nothing to embed and no
+  // `--full`: on a fully-embedded index (e.g. `qkb embed` run twice in a
+  // row) that would otherwise trigger a model load for zero benefit.
+  // `--full` always needs a live provider (it re-embeds everything
+  // regardless of `pendingChunks()`); real pending work needs it too.
+  // Deliberately NOT skipping `embedPending()` itself below: its model/dim
+  // consistency guard must always run, pending work or not, so a `qkb
+  // embed` against a changed model still fails fast with the `--full`
+  // remedy message even when there's nothing new to embed — mirrors
+  // pipeline.py's `embed_pending` ordering (guard first, then the
+  // 0-pending no-op).
+  const needsWarmup = opts.full || new Storage(conn, cfgObj.vaultName).pendingChunks().length > 0;
+  if (needsWarmup) {
+    console.log("Loading embedding model (first run downloads it)…");
+    try {
+      await provider.embed(["warmup"]);
+    } catch (e) {
+      throw new Error(
+        `could not load embedding model: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   }
 
   const renderer = createProgressRenderer();
