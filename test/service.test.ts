@@ -11,9 +11,9 @@ import type { ParsedNote } from "../src/types.js";
 
 // Ports legacy/python/tests/test_service.py — the shared "resolve limit ->
 // validate -> guard (ingest-in-progress / dimension mismatch) -> run tiered
-// search" pipeline that both the CLI and MCP call. Result hydration lands in
-// Task 14, so executeSearch here returns run_search's ranked tuples; every
-// ported case asserts result COUNT or a raised error, exactly as Python does.
+// search -> hydrate" pipeline that both the CLI and MCP call. Every ported
+// case asserts result COUNT or a raised error, exactly as Python does —
+// hydrated-shape assertions live in test/hydrate.test.ts.
 
 const DIM = 8;
 

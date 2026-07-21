@@ -2,14 +2,10 @@
  * `legacy/python/src/qkb/search/service.py`.
  *
  * Both the CLI query path and the MCP `qkb` tool call `executeSearch` so the
- * "resolve limit -> validate -> guard -> run tiered search" pipeline can't
- * diverge between them (Python review finding: the MCP tool had drifted from
- * the CLI — hardcoded limit, duplicated the tiered-search call inline).
- *
- * Result hydration (siblings, Obsidian URIs, context descriptions, the full
- * result-dict shape) is Task 14 (`hydrate.ts`); Python's `execute_search`
- * returns `hydrate(...)`, and until that lands this returns `run_search`'s
- * ranked tuples — the exact list `hydrate` consumes.
+ * "resolve limit -> validate -> guard -> run tiered search -> hydrate"
+ * pipeline can't diverge between them (Python review finding: the MCP tool
+ * had drifted from the CLI — hardcoded limit, duplicated the tiered-search
+ * call inline).
  */
 
 import type Database from "better-sqlite3";
@@ -18,7 +14,8 @@ import { vectorTableDimension } from "../db/schema.js";
 import { Storage } from "../db/storage.js";
 import type { EmbeddingProvider } from "../embed/types.js";
 import type { Filters } from "./filters.js";
-import { type RankedResult, search as runSearch } from "./hybrid.js";
+import { search as runSearch } from "./hybrid.js";
+import { type HydratedResult, hydrate } from "./hydrate.js";
 
 /**
  * Resolve `limit` (`null` -> `cfg.defaultLimit`), reject a resolved limit below
@@ -45,7 +42,7 @@ export async function executeSearch(
   filters: Filters,
   limit: number | null,
   tier: string,
-): Promise<RankedResult[]> {
+): Promise<HydratedResult[]> {
   if (new Storage(conn).isIngestInProgress()) {
     throw new Error(
       "index rebuild in progress or interrupted — re-run `qkb ingest --full` " +
@@ -66,5 +63,6 @@ export async function executeSearch(
       );
     }
   }
-  return runSearch(conn, cfg, provider, query, filters, resolvedLimit, tier);
+  const ranked = await runSearch(conn, cfg, provider, query, filters, resolvedLimit, tier);
+  return hydrate(conn, ranked);
 }
