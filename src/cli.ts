@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Command, CommanderError } from "commander";
 import { registerContextsCommands } from "./cli/contexts.js";
 import { registerGetCommand } from "./cli/get.js";
@@ -102,7 +102,7 @@ export async function main(argv: string[]): Promise<void> {
 }
 
 const isMainModule =
-  process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`;
+  process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url;
 
 if (isMainModule) {
   main(process.argv);

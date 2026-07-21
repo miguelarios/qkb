@@ -19,3 +19,4 @@ jobs:
       - run: npm test
       - run: npx biome check .
       - run: npx tsc --noEmit
+      - run: npm run build

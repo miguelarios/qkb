@@ -58,6 +58,11 @@ describe("ci.yml", () => {
     const text = JSON.stringify(doc);
     expect(text).not.toMatch(/npm publish/);
   });
+
+  it("runs npm run build so build-config regressions surface in PR CI", () => {
+    const text = JSON.stringify(doc);
+    expect(text).toMatch(/npm run build/);
+  });
 });
 
 describe("release.yml", () => {

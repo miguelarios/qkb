@@ -43,10 +43,12 @@ async function doSearch(
       tier,
     );
   } catch (e) {
-    // executeSearch/buildFilterClause throw plain Error for bad user input
-    // (limit < 1, empty filter values, unparseable dates, index rebuild in
-    // progress, dimension mismatch) — mirrors cli.py wrapping ValueError in
-    // click.UsageError (exit code 2).
+    // executeSearch/buildFilterClause throw SearchValidationError (extends
+    // Error) for bad user input (limit < 1, empty filter values, unparseable
+    // dates, index rebuild in progress, dimension mismatch) — mirrors cli.py
+    // wrapping ValueError in click.UsageError (exit code 2). The
+    // `instanceof Error` catch below covers it since SearchValidationError
+    // extends Error.
     failUsage(e instanceof Error ? e.message : String(e));
   }
   emit(results, Boolean(opts.json), Boolean(opts.files));

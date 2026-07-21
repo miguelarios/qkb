@@ -338,6 +338,34 @@ describe("qkb CLI (subprocess)", () => {
     expect(d2.model_mismatch).toBe(false);
   });
 
+  it("qkb embed with nothing pending never constructs/warms the provider — safe offline even with provider=llama (the network-touching default)", () => {
+    // Deliberately builds its own env WITHOUT `QKB_EMBEDDING_PROVIDER: fake`
+    // (every other test in this file sets it) and pins `provider: llama`
+    // explicitly instead — llama is also config.ts's actual default, so this
+    // doubles as "the out-of-the-box config never surprises a fully-embedded
+    // vault with a model load/download". LlamaProvider only resolves/
+    // downloads its GGUF on the first real `embed()`/warmup call (see
+    // src/embed/llama.ts's docstring) — never at construction — so this test
+    // would hang/fail offline in CI without the pending-check-before-
+    // provider-construction fix, since the old code unconditionally called
+    // `provider.embed(["warmup"])` before checking whether there was
+    // anything to embed.
+    const envWithLlama: Record<string, string> = {
+      QKB_VAULT_PATH: vault,
+      QKB_DB_PATH: join(tmpDir, "qkb.db"),
+      QKB_CONFIG: join(tmpDir, "missing.toml"),
+      QKB_EMBEDDING_PROVIDER: "llama",
+    };
+    // Empty vault -> `ingest` produces zero chunks -> nothing pending.
+    const ingested = run(["ingest"], envWithLlama);
+    expect(ingested.exitCode).toBe(0);
+
+    const embedded = run(["embed"], envWithLlama);
+    expect(embedded.exitCode).toBe(0);
+    expect(embedded.output).toContain("✓ all chunks already embedded");
+    expect(embedded.output).not.toContain("Loading embedding model");
+  });
+
   it("ingest -v lists every skipped note; without -v it prints a hint instead", () => {
     // No `id:` -> NoteDataError -> skipped ("no id"), since the note is
     // opted in (has context) but unindexable.

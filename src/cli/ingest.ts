@@ -134,6 +134,27 @@ export async function runIngest(opts: { full?: boolean; verbose?: boolean }): Pr
 export async function runEmbed(opts: { full?: boolean }): Promise<void> {
   const cfgObj = cfg();
   const conn = openDb(cfgObj);
+
+  if (!opts.full) {
+    // Check for pending work BEFORE constructing/warming the provider: on a
+    // fully-embedded index this is the common case (e.g. `qkb ingest && qkb
+    // embed` twice in a row, or a CI/cron re-run). `getProvider()` itself is
+    // lazy (see src/embed/llama.ts's docstring — resolving/downloading the
+    // GGUF and loading the model are deferred to the first real `embed()`
+    // call), but the warmup call just below is exactly that first call, so
+    // reaching it unconditionally used to mean every `qkb embed` invocation
+    // triggered a model load/download even with nothing to do. Only the
+    // no-pending-and-not-`--full` case is safe to skip early — `--full`
+    // always needs the provider (it re-embeds everything regardless of
+    // `pendingChunks()`), and any actual pending work still goes through
+    // `embedPending`'s model/dim consistency guard below exactly as before.
+    const storage = new Storage(conn, cfgObj.vaultName);
+    if (storage.pendingChunks().length === 0) {
+      console.log("✓ all chunks already embedded");
+      return;
+    }
+  }
+
   const provider = await getProvider(cfgObj);
 
   console.log("Loading embedding model (first run downloads it)…");
