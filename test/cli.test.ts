@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   EMBED_ABORT_MESSAGE,
@@ -397,12 +399,42 @@ describe("qkb CLI (subprocess)", () => {
     expect(final.documents).toBe(1500);
   }, 20_000);
 
-  it("mcp fails cleanly with a 'not implemented yet' message (Task 16 seam)", () => {
-    const result = run(["mcp"]);
-    expect(result.exitCode).not.toBe(0);
-    expect(result.output.toLowerCase()).not.toContain("traceback");
-    expect(result.output.toLowerCase()).toContain("not implemented");
-  });
+  // Task 16 replaced the seam stub with the real MCP server (src/server/mcp.ts)
+  // — test/mcp.test.ts covers tool behavior in-process over an InMemoryTransport
+  // pair (fast, no subprocess). This test instead proves the OTHER half of the
+  // acceptance criterion — "`qkb mcp` starts the stdio server" — by spawning
+  // the real compiled CLI and talking to it as a genuine MCP client would:
+  // over stdio, real JSON-RPC framing, real process boundary. `run()`
+  // (spawnSync) can't drive this: `qkb mcp` is long-lived and never exits on
+  // its own, so this uses the SDK's own `StdioClientTransport` (spawns the
+  // command, speaks the wire protocol) instead.
+  it("qkb mcp starts a real stdio server exposing qkb/qkb_get/qkb_status (Task 16)", async () => {
+    const childEnv: Record<string, string> = {};
+    for (const [k, v] of Object.entries({ ...process.env, ...env })) {
+      if (v !== undefined) childEnv[k] = v;
+    }
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [distCli, "mcp"],
+      env: childEnv,
+    });
+    const client = new Client({ name: "qkb-cli-test-client", version: "0.1.0" });
+    try {
+      await client.connect(transport);
+      const { tools } = await client.listTools();
+      const names = new Set(tools.map((t) => t.name));
+      expect(names.has("qkb")).toBe(true);
+      expect(names.has("qkb_get")).toBe(true);
+      expect(names.has("qkb_status")).toBe(true);
+
+      const result = await client.callTool({ name: "qkb_status", arguments: {} });
+      const content = result.content as { type: string; text: string }[];
+      const payload = JSON.parse(content[0]?.text ?? "null") as { documents: number };
+      expect(payload.documents).toBe(0);
+    } finally {
+      await client.close();
+    }
+  }, 15_000);
 });
 
 // Unit tests for the CLI-level half of Ctrl-C handling: once the pipeline
