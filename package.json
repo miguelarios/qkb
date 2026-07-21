@@ -1,0 +1,64 @@
+{
+  "name": "@miguelarios/qkb",
+  "version": "0.1.0",
+  "description": "Hybrid BM25 + vector search for Obsidian vaults with frontmatter awareness",
+  "type": "module",
+  "bin": {
+    "qkb": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "QKB_INTEGRATION=1 vitest run",
+    "lint": "biome check .",
+    "typecheck": "tsc --noEmit",
+    "golden-queries": "tsx scripts/golden-queries.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "obsidian",
+    "search",
+    "rag",
+    "sqlite",
+    "mcp"
+  ],
+  "license": "MIT",
+  "author": "Miguel Rios",
+  "homepage": "https://github.com/miguelarios/qkb",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "better-sqlite3": "^12.11.1",
+    "cli-progress": "^3.12.0",
+    "commander": "^14.0.2",
+    "gray-matter": "^4.0.3",
+    "js-yaml": "^3.15.0",
+    "node-llama-cpp": "^3.19.1",
+    "smol-toml": "^1.7.0",
+    "sqlite-vec": "^0.1.9",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.5",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/cli-progress": "^3.11.6",
+    "@types/js-yaml": "^3.12.10",
+    "@types/node": "^26.1.1",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "node-llama-cpp@3.19.1": true,
+    "fsevents@2.3.3": true,
+    "esbuild@0.28.1": true
+  }
+}
