@@ -13,6 +13,7 @@
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:integration": "QKB_INTEGRATION=1 vitest run",
     "lint": "biome check .",
     "typecheck": "tsc --noEmit"
   },
