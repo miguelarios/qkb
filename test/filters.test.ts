@@ -68,8 +68,26 @@ describe("search/filters", () => {
     });
 
     it("source not case folded", () => {
-      const [clause, params] = buildFilterClause(new Filters({ source: " MixedCase-Source " }));
+      const [_clause, params] = buildFilterClause(new Filters({ source: " MixedCase-Source " }));
       expect(params[0]).toBe("MixedCase-Source");
+    });
+
+    it("docType empty string produces no clause", () => {
+      const [clause, params] = buildFilterClause(new Filters({ docType: "" }));
+      expect(clause).not.toContain("d.type = ?");
+      expect(params).toEqual([]);
+    });
+
+    it("docType none produces no clause", () => {
+      const [clause, params] = buildFilterClause(new Filters({ docType: undefined }));
+      expect(clause).not.toContain("d.type = ?");
+      expect(params).toEqual([]);
+    });
+
+    it("tags empty array produces no clause", () => {
+      const [clause, params] = buildFilterClause(new Filters({ tags: [] }));
+      expect(clause).not.toContain("HAVING COUNT(DISTINCT tag)");
+      expect(params).toEqual([]);
     });
 
     it("date_from normalizes datetime to canonical date", () => {

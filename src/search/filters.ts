@@ -132,7 +132,8 @@ export function buildFilterClause(f: Filters): [string, unknown[]] {
     params.push(source);
   }
 
-  if (f.docType !== undefined && f.docType !== null) {
+  if (f.docType) {
+    // Truthiness check: skip undefined, null, and empty string (matching Python's `if f.doc_type:`)
     conditions.push("d.type = ?");
     params.push(f.docType);
   }
