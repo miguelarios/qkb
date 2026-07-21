@@ -17,6 +17,18 @@ export interface ParsedNote {
   filePath: string; // vault-relative, POSIX separators
 }
 
+/** A structurally-scored slice of a note's body, ready for embedding.
+ * Ported from `qkb.models.Chunk` (`legacy/python/src/qkb/models.py`). Python's
+ * Chunk carries only these three fields — chunk storage there is keyed by
+ * `document_id` (see `legacy/python/src/qkb/ingest/storage.py`), not by a
+ * per-chunk `source`, so none is added here (parity with the authoritative
+ * Python spec over the plan's illustrative field list). */
+export interface Chunk {
+  index: number;
+  text: string;
+  tokenCount: number;
+}
+
 // Reserved frontmatter key for the Storage layer's metadata-change hash row
 // (`src/db/storage.ts`, Task 7 — not yet ported). Defined here rather than in
 // storage.ts (which doesn't exist yet) so `src/ingest/parser.ts` can strip it
