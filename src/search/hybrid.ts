@@ -24,6 +24,7 @@ import type Database from "better-sqlite3";
 import type { Config } from "../config.js";
 import type { EmbeddingProvider } from "../embed/types.js";
 import { searchBm25 } from "./bm25.js";
+import { SearchValidationError } from "./errors.js";
 import type { Filters } from "./filters.js";
 import { searchVector } from "./vector.js";
 
@@ -51,8 +52,8 @@ export function rrfMerge(
 ): Array<[string, number]> {
   const w = weights ?? new Array<number>(resultLists.length).fill(1.0);
   if (w.length !== resultLists.length) {
-    // Parity with Python's `zip(..., strict=True)`.
-    throw new Error("weights and result_lists must be the same length");
+    // Parity with Python's `zip(..., strict=True)`, which raises ValueError.
+    throw new SearchValidationError("weights and result_lists must be the same length");
   }
   const scores = new Map<string, number>();
   for (let i = 0; i < resultLists.length; i++) {
@@ -94,7 +95,7 @@ export async function search(
     return rows.map(([d, s, snip]) => [d, s, snip] as RankedResult);
   }
   if (provider === null) {
-    throw new Error(`tier '${tier}' requires an embedding provider`);
+    throw new SearchValidationError(`tier '${tier}' requires an embedding provider`);
   }
   if (tier === "vector") {
     const rows = await searchVector(conn, query, filters, limit, cfg.vecCandidates, provider);
@@ -128,5 +129,5 @@ export async function search(
         [docId, score, (chunkText.get(docId) || snippet.get(docId)) ?? null] as RankedResult,
     );
   }
-  throw new Error(`unknown tier: '${tier}'`);
+  throw new SearchValidationError(`unknown tier: '${tier}'`);
 }

@@ -32,6 +32,7 @@ import { connect } from "../db/schema.js";
 import { Storage } from "../db/storage.js";
 import { getProvider } from "../embed/provider.js";
 import type { EmbeddingProvider } from "../embed/types.js";
+import { SearchValidationError } from "../search/errors.js";
 import { Filters } from "../search/filters.js";
 import {
   AmbiguousDocumentPrefixError,
@@ -48,10 +49,6 @@ import { executeSearch } from "../search/service.js";
  * part; this SDK expects the tool body to build that content part itself). */
 function jsonResult(payload: unknown): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(payload) }] };
-}
-
-function errorMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }
 
 /** Tiny promise-chain mutex — see module docstring for why the async tool
@@ -141,7 +138,18 @@ export async function buildServer(cfg?: Config): Promise<McpServer> {
           );
           return jsonResult({ result: results });
         } catch (e) {
-          return jsonResult({ error: errorMessage(e) });
+          // Mirrors mcp.py's `except ValueError as e`: executeSearch (and
+          // everything it calls — buildFilterClause, hybrid.search) throws
+          // SearchValidationError for every expected validation failure
+          // (bad limit, empty/whitespace filter values, unparseable dates,
+          // ingest-in-progress, dimension mismatch). Anything else (a real
+          // bug, a SQLite error) is NOT a validation failure and must
+          // propagate uncaught, same as Python — packaging it into
+          // `{"error": ...}` here would silently mask it instead.
+          if (e instanceof SearchValidationError) {
+            return jsonResult({ error: e.message });
+          }
+          throw e;
         }
       });
     },

@@ -13,6 +13,7 @@ import type { Config } from "../config.js";
 import { vectorTableDimension } from "../db/schema.js";
 import { Storage } from "../db/storage.js";
 import type { EmbeddingProvider } from "../embed/types.js";
+import { SearchValidationError } from "./errors.js";
 import type { Filters } from "./filters.js";
 import { search as runSearch } from "./hybrid.js";
 import { type HydratedResult, hydrate } from "./hydrate.js";
@@ -21,7 +22,7 @@ import { type HydratedResult, hydrate } from "./hydrate.js";
  * Resolve `limit` (`null` -> `cfg.defaultLimit`), reject a resolved limit below
  * 1, guard against an untrustworthy index, then run the tiered search.
  *
- * Throws (all as `Error`, mirroring Python's `ValueError`) if:
+ * Throws (all as `SearchValidationError`, mirroring Python's `ValueError`) if:
  * - a `--full` re-embed is in progress or was interrupted — an untrustworthy
  *   index must not be searched silently (Python finding 2); every tier is
  *   blocked, bm25 included.
@@ -44,19 +45,19 @@ export async function executeSearch(
   tier: string,
 ): Promise<HydratedResult[]> {
   if (new Storage(conn).isIngestInProgress()) {
-    throw new Error(
+    throw new SearchValidationError(
       "index rebuild in progress or interrupted — re-run `qkb ingest --full` " +
         "to finish re-embedding before searching",
     );
   }
   const resolvedLimit = limit ?? cfg.defaultLimit;
   if (resolvedLimit < 1) {
-    throw new Error(`limit must be >= 1, got ${resolvedLimit}`);
+    throw new SearchValidationError(`limit must be >= 1, got ${resolvedLimit}`);
   }
   if (tier !== "bm25") {
     const tableDim = vectorTableDimension(conn);
     if (tableDim !== null && tableDim !== cfg.embeddingDim) {
-      throw new Error(
+      throw new SearchValidationError(
         `embedding dimension changed since last ingest ` +
           `(index is ${tableDim}-d, config is ${cfg.embeddingDim}-d) — ` +
           `run \`qkb ingest --full\` to re-embed the whole vault`,

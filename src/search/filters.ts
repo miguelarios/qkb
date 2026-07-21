@@ -7,6 +7,7 @@
 
 import { placeholders } from "../db/schema.js";
 import { normalizeContext, parseDateLenient } from "../ingest/parser.js";
+import { SearchValidationError } from "./errors.js";
 
 /**
  * Search filter criteria. All fields optional; omitted/null fields generate no
@@ -53,7 +54,7 @@ function normalizeBound(label: string, value: string | undefined, upper: boolean
   }
   const v = value.trim();
   if (!v) {
-    throw new Error(`${label}: unparseable date ${JSON.stringify(value)}`);
+    throw new SearchValidationError(`${label}: unparseable date ${JSON.stringify(value)}`);
   }
 
   if (YEAR_RE.test(v)) {
@@ -70,7 +71,7 @@ function normalizeBound(label: string, value: string | undefined, upper: boolean
     const y = parseInt(yStr, 10);
     const mo = parseInt(moStr, 10);
     if (mo < 1 || mo > 12) {
-      throw new Error(`${label}: unparseable date ${JSON.stringify(value)}`);
+      throw new SearchValidationError(`${label}: unparseable date ${JSON.stringify(value)}`);
     }
     // Get the last day of the month if upper bound, else day 1
     let day: number;
@@ -86,7 +87,7 @@ function normalizeBound(label: string, value: string | undefined, upper: boolean
   // Try lenient parsing (handles full ISO dates, timestamps, etc.)
   const parsed = parseDateLenient(v);
   if (parsed === null) {
-    throw new Error(`${label}: unparseable date ${JSON.stringify(value)}`);
+    throw new SearchValidationError(`${label}: unparseable date ${JSON.stringify(value)}`);
   }
   return parsed;
 }
@@ -116,7 +117,7 @@ export function buildFilterClause(f: Filters): [string, unknown[]] {
   if (f.context !== undefined && f.context !== null) {
     const normalized = normalizeContext(f.context);
     if (normalized === null) {
-      throw new Error("context filter is empty or whitespace-only");
+      throw new SearchValidationError("context filter is empty or whitespace-only");
     }
     conditions.push("d.context = ?");
     params.push(normalized);
@@ -126,7 +127,7 @@ export function buildFilterClause(f: Filters): [string, unknown[]] {
     // Mirror ingest-time treatment: strip but NOT lowercase (unlike context)
     const source = f.source.trim();
     if (!source) {
-      throw new Error("source filter is empty or whitespace-only");
+      throw new SearchValidationError("source filter is empty or whitespace-only");
     }
     conditions.push("d.source = ?");
     params.push(source);

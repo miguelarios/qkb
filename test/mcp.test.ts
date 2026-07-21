@@ -225,6 +225,12 @@ describe("server/mcp build_server tools", () => {
     vi.mocked(embedProvider.getProvider).mockImplementationOnce(async (c) =>
       Promise.resolve(new ClosingFakeProvider(c.embeddingDim)),
     );
+    // ingestOne opened (and closed) its own setup connection above via
+    // schema.connect — clear that call before buildServer so `mock.results[0]`
+    // below is unambiguously buildServer's connection, not ingestOne's
+    // already-closed one (see test_connection_built_once_no_per_call_bootstrap
+    // for the same pattern).
+    vi.mocked(schema.connect).mockClear();
 
     const server = await buildServer(cfg);
     // schema.connect's mock wraps the real implementation (see the vi.mock
