@@ -2,6 +2,21 @@
  * `embed` from `legacy/python/src/qkb/cli.py`, including progress rendering,
  * grouped skip reporting, and graceful Ctrl-C.
  *
+ * Ctrl-C design (fix round 1 — see ts-task-15-report.md): a SIGINT handler
+ * calling `process.exit()` directly cannot reliably run at all during a
+ * synchronous, no-real-yield-point loop (structural ingest with the `fake`
+ * provider never truly returns to the event loop) — Node just never gets a
+ * chance to invoke it until the pipeline call's promise settles, by which
+ * point the whole thing has already finished. Fixed by making this
+ * cooperative instead of signal-driven-and-abrupt: SIGINT here only calls
+ * `AbortController.abort()`; `ingestVault`/`embedPending` (src/ingest/
+ * pipeline.ts) do the actual work of yielding to the event loop and checking
+ * `signal.aborted` between iterations, so the abort request is guaranteed a
+ * chance to be observed regardless of provider/loop synchronicity. Once the
+ * pipeline call returns, this checks whether it stopped early and only then
+ * prints the abort message and exits 130 — a plain, deterministic
+ * post-hoc decision, not a race against when the OS delivers the signal.
+ *
  * Unexpected errors from `ingestVault`/`embedPending` are not caught here —
  * they propagate to the `action()` wrapper each command is registered with
  * (see `./shared.ts`), which prints a clean one-line message and exits 1
@@ -11,29 +26,20 @@ import type { Command } from "commander";
 import { Storage } from "../db/storage.js";
 import { getProvider } from "../embed/provider.js";
 import { embedPending, ingestVault } from "../ingest/pipeline.js";
-import { createProgressRenderer, type ProgressRenderer } from "./progress.js";
+import { createProgressRenderer } from "./progress.js";
 import { action, cfg, openDb, shorten } from "./shared.js";
 
 export const INGEST_ABORT_MESSAGE = "\nAborted. Re-run `qkb ingest` to continue.";
 export const EMBED_ABORT_MESSAGE = "\nAborted. Progress is saved — re-run `qkb embed` to resume.";
 
-/** Builds the SIGINT handler `ingest`/`embed` register for the duration of
- * the pipeline call: stop the progress renderer (so a live bar doesn't
- * leave a half-drawn line), print the command-specific abort message, exit
- * 130 (the standard 128+SIGINT convention). Exported standalone — not
- * inlined into `runIngest`/`runEmbed` — so its message/exit-code contract
- * is directly unit-testable without needing to actually deliver a signal
- * (see test/cli.test.ts: true mid-loop interruption isn't reliably
- * testable here — both `ingestVault`'s structural pass and the fake
- * provider's `embed()` are fully synchronous, so there is no real event-loop
- * yield point during a run for an OS signal to land on; this is a Node
- * execution-model constraint, not a gap in this handler). */
-export function makeAbortHandler(message: string, renderer: ProgressRenderer): () => void {
-  return () => {
-    renderer.stop();
-    console.log(message);
-    process.exit(130);
-  };
+/** Prints the command-specific abort message and exits 130 (the standard
+ * 128+SIGINT convention) — the "we actually stopped early" half of Ctrl-C
+ * handling. Exported standalone so its message/exit-code contract is
+ * directly unit-testable without needing a real signal or a real pipeline
+ * run (see test/cli.test.ts). */
+export function reportAbortAndExit(message: string): never {
+  console.log(message);
+  process.exit(130);
 }
 
 /** Group skips by reason (most-frequent first, ties in first-seen order —
@@ -83,15 +89,25 @@ export async function runIngest(opts: { full?: boolean; verbose?: boolean }): Pr
     renderer.tick(done, total, desc);
   };
 
-  const onSigint = makeAbortHandler(INGEST_ABORT_MESSAGE, renderer);
+  const controller = new AbortController();
+  const onSigint = (): void => controller.abort();
   process.on("SIGINT", onSigint);
 
   let stats: Awaited<ReturnType<typeof ingestVault>>;
   try {
-    stats = await ingestVault(conn, cfgObj, { full: opts.full, onProgress, onSkip });
+    stats = await ingestVault(conn, cfgObj, {
+      full: opts.full,
+      onProgress,
+      onSkip,
+      signal: controller.signal,
+    });
   } finally {
     process.off("SIGINT", onSigint);
     renderer.stop();
+  }
+
+  if (controller.signal.aborted) {
+    reportAbortAndExit(INGEST_ABORT_MESSAGE);
   }
 
   let summary = `✓ indexed ${stats.indexed}  updated ${stats.updated}  unchanged ${stats.unchanged}`;
@@ -134,15 +150,24 @@ export async function runEmbed(opts: { full?: boolean }): Promise<void> {
     renderer.tick(done, total, "Embedding");
   };
 
-  const onSigint = makeAbortHandler(EMBED_ABORT_MESSAGE, renderer);
+  const controller = new AbortController();
+  const onSigint = (): void => controller.abort();
   process.on("SIGINT", onSigint);
 
   let n: number;
   try {
-    n = await embedPending(conn, cfgObj, provider, { full: opts.full, onProgress });
+    n = await embedPending(conn, cfgObj, provider, {
+      full: opts.full,
+      onProgress,
+      signal: controller.signal,
+    });
   } finally {
     process.off("SIGINT", onSigint);
     renderer.stop();
+  }
+
+  if (controller.signal.aborted) {
+    reportAbortAndExit(EMBED_ABORT_MESSAGE);
   }
 
   if (n === 0) {

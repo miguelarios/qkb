@@ -797,3 +797,105 @@ describe("ingest/pipeline (provider path + embedPending)", () => {
     }
   });
 });
+
+// Fix round 1 (CLI review): `qkb ingest`'s SIGINT handling was a no-op in
+// practice — a `process.on("SIGINT", ...)` handler calling `process.exit()`
+// directly can't fire mid-loop when the loop never yields to the event loop
+// (structural ingest, provider=null, has zero internal `await`s). The fix
+// is this cooperative `options.signal` seam: each loop yields via a real
+// macrotask (`setImmediate`) and checks `signal.aborted` once per
+// file/batch. These tests exercise that seam directly and deterministically
+// — no real OS signal, no timing race — verifying the two properties that
+// matter: the loop actually stops early, and (for ingestVault specifically)
+// the deletion sweep is skipped entirely on abort, exactly like Python's
+// KeyboardInterrupt propagating out of ingest_vault before ever reaching the
+// sweep (pipeline.py has no try/except around its file loop).
+describe("ingest/pipeline (cooperative abort — options.signal)", () => {
+  let conn: Database.Database;
+  let vault: string;
+  let cfg: Config;
+
+  beforeEach(() => {
+    conn = connect(":memory:", DIM);
+    vault = mkdtempSync(join(tmpdir(), "qkb-vault-"));
+    cfg = loadConfig("/nonexistent/qkb-test-config.toml", {});
+    cfg.vaultPath = vault;
+  });
+
+  afterEach(() => {
+    conn.close();
+    rmSync(vault, { recursive: true, force: true });
+  });
+
+  it("ingestVault stops the file loop, skips the deletion sweep, and keeps already-committed work", async () => {
+    // Pre-existing doc whose file gets deleted before the aborted run: if
+    // the deletion sweep ran, it would be de-indexed. It must NOT be — the
+    // signal aborts before the loop even finishes, let alone reaches the
+    // sweep.
+    writeNote(vault, "will-be-deleted.md", ID1);
+    await ingestVault(conn, cfg);
+    unlinkSync(join(vault, "will-be-deleted.md"));
+
+    // Two new notes so the second run's file loop has more than one
+    // iteration to abort partway through.
+    writeNote(vault, "b.md", ID2, { body: "note b" });
+    writeNote(vault, "c.md", "f47ac10b-58cc-4372-a567-0e02b2c3d403", { body: "note c" });
+
+    const controller = new AbortController();
+    let progressCalls = 0;
+    const stats = await ingestVault(conn, cfg, {
+      signal: controller.signal,
+      onProgress: () => {
+        progressCalls++;
+        if (progressCalls === 1) {
+          controller.abort(); // fires after the first file was already seen
+        }
+      },
+    });
+
+    expect(progressCalls).toBe(1); // the loop never reached the second file
+    expect(stats.scanned).toBe(1); // only the first file counted
+    expect(stats.indexed).toBe(1); // that file's work is real and committed
+
+    // The deletion sweep never ran: the doc whose file is gone is still
+    // indexed.
+    const stillIndexed = (
+      conn.prepare("SELECT COUNT(*) c FROM documents WHERE id = ?").get(ID1) as { c: number }
+    ).c;
+    expect(stillIndexed).toBe(1);
+  });
+
+  it("ingestVault aborted before the first iteration scans zero files", async () => {
+    writeNote(vault, "a.md", ID1);
+    const controller = new AbortController();
+    controller.abort();
+    const stats = await ingestVault(conn, cfg, { signal: controller.signal });
+    expect(stats.scanned).toBe(0);
+    expect(stats.indexed).toBe(0);
+  });
+
+  it("embedPending stops before the next batch, keeping already-written vectors and leaving the rest resumable", async () => {
+    writeNote(vault, "a.md", ID1, { body: "alpha" });
+    writeNote(vault, "b.md", ID2, { body: "beta" });
+    writeNote(vault, "c.md", "f47ac10b-58cc-4372-a567-0e02b2c3d403", { body: "gamma" });
+    await ingestVault(conn, cfg); // structural only: 3 pending chunks, no vectors yet
+
+    const provider = new FakeProvider(DIM);
+    const controller = new AbortController();
+    let batches = 0;
+    const n = await embedPending(conn, cfg, provider, {
+      batchSize: 1,
+      signal: controller.signal,
+      onProgress: () => {
+        batches++;
+        if (batches === 1) {
+          controller.abort();
+        }
+      },
+    });
+
+    expect(batches).toBe(1);
+    expect(n).toBe(1); // only the first batch's vector was actually written
+    expect(new Storage(conn).pendingChunks().length).toBe(2); // rest resumable
+  });
+});

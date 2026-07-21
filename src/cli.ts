@@ -86,7 +86,16 @@ export async function main(argv: string[]): Promise<void> {
     await program.parseAsync(argv);
   } catch (err) {
     if (err instanceof CommanderError) {
-      process.exit(err.exitCode);
+      // Commander's own parsing/usage errors (unknown option, unknown
+      // command, missing argument, ...) all default to exitCode 1 (verified
+      // by reading commander/lib/command.js's `error()`: `exitCode =
+      // config.exitCode || 1` for every one of those call sites). Click's
+      // UsageError — which cli.py relies on for the equivalent cases, e.g.
+      // `context describe` with no description/--remove — exits 2. Remap so
+      // the whole "bad usage" error class matches Python's convention;
+      // commander's only other exit code is the explicit 0 for
+      // `--version`/`--help`, which this leaves untouched.
+      process.exit(err.exitCode === 1 ? 2 : err.exitCode);
     }
     throw err;
   }

@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -7,7 +7,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import {
   EMBED_ABORT_MESSAGE,
   INGEST_ABORT_MESSAGE,
-  makeAbortHandler,
+  reportAbortAndExit,
   summarizeSkips,
 } from "../src/cli/ingest.js";
 import { createProgram, readVersion } from "../src/cli.js";
@@ -121,6 +121,33 @@ describe("qkb CLI (subprocess)", () => {
     extra?: string;
   }
 
+  /** Spawns `node dist/cli.js ...args`, sends SIGINT after `delayMs`, and
+   * resolves with the exit code + merged output once the process exits.
+   * Unlike `run()` (spawnSync), this needs the child running concurrently
+   * with the timer, hence a real `spawn` + Promise. */
+  function runWithSigintAfter(
+    args: string[],
+    delayMs: number,
+    runEnv: Record<string, string> = env,
+  ): Promise<RunResult> {
+    const child = spawn(process.execPath, [distCli, ...args], {
+      env: { ...process.env, ...runEnv },
+    });
+    let output = "";
+    child.stdout?.on("data", (d: Buffer) => {
+      output += d.toString();
+    });
+    child.stderr?.on("data", (d: Buffer) => {
+      output += d.toString();
+    });
+    setTimeout(() => child.kill("SIGINT"), delayMs);
+    return new Promise((resolve) => {
+      child.on("exit", (code) => {
+        resolve({ exitCode: code ?? -1, output });
+      });
+    });
+  }
+
   function writeNote(name: string, noteId: string, opts: WriteOpts = {}): string {
     const { context = "homelab", body = "Some body text.", extra = "" } = opts;
     const p = join(vault, name);
@@ -196,22 +223,28 @@ describe("qkb CLI (subprocess)", () => {
     expect(rows[0]?.description).toBe("Home server notes");
   });
 
-  it("context describe rejects an empty/whitespace-only label", () => {
+  it("context describe rejects an empty/whitespace-only label (exit code 2, like Click's UsageError)", () => {
     const result = run(["context", "describe", "   ", "desc"]);
-    expect(result.exitCode).not.toBe(0);
+    expect(result.exitCode).toBe(2);
   });
 
-  it("get rejects the removed --json flag; status still accepts it", () => {
+  it("get rejects the removed --json flag (exit code 2, like Click's UsageError); status still accepts it", () => {
     writeNote("a.md", ID1);
     run(["ingest"]);
 
     const got = run(["get", ID1.slice(0, 8), "--json"]);
-    expect(got.exitCode).not.toBe(0);
+    expect(got.exitCode).toBe(2);
     expect(got.output.toLowerCase()).toContain("no such option");
 
     const status = run(["status", "--json"]);
     expect(status.exitCode).toBe(0);
     expect((JSON.parse(status.output) as { documents: number }).documents).toBe(1);
+  });
+
+  it("an unknown command exits with code 2, like Click's UsageError (fix round 1)", () => {
+    const result = run(["nonexistent-command"]);
+    expect(result.exitCode).toBe(2);
+    expect(result.output.toLowerCase()).not.toContain("traceback");
   });
 
   it("--rerank is rejected as not-yet-configured (exit code 2)", () => {
@@ -244,11 +277,11 @@ describe("qkb CLI (subprocess)", () => {
     run(["ingest"]);
 
     const zero = run(["search", "traefik", "--limit", "0"]);
-    expect(zero.exitCode).not.toBe(0);
+    expect(zero.exitCode).toBe(2);
     expect(zero.output.toLowerCase()).not.toContain("traceback");
 
     const negative = run(["search", "traefik", "--limit", "-1"]);
-    expect(negative.exitCode).not.toBe(0);
+    expect(negative.exitCode).toBe(2);
     expect(negative.output.toLowerCase()).not.toContain("traceback");
   });
 
@@ -270,7 +303,7 @@ describe("qkb CLI (subprocess)", () => {
     unlinkSync(notePath);
 
     const result = run(["get", ID1.slice(0, 8), "--raw"]);
-    expect(result.exitCode).not.toBe(0);
+    expect(result.exitCode).toBe(1); // typed retrieval error, not a usage error — Click's ClickException convention
     expect(result.output.toLowerCase()).not.toContain("traceback");
     expect(result.output.toLowerCase()).toContain("qkb ingest");
   });
@@ -325,6 +358,45 @@ describe("qkb CLI (subprocess)", () => {
     expect(verbose.output).toContain("no-id2.md");
   });
 
+  // Fix round 1 (CLI review, IMPORTANT finding): a real SIGINT during
+  // structural ingest used to never be observed at all — the old handler
+  // called process.exit() directly, but the file loop had no event-loop
+  // yield point for Node to ever run that handler during a run. Fixed via
+  // a cooperative `AbortSignal` the pipeline checks (with a real yield)
+  // once per file — see src/ingest/pipeline.ts. This is a genuine,
+  // non-flaky real-process/real-signal test (not just the deterministic
+  // pipeline-level ones in test/pipeline.test.ts): 1500 files makes
+  // structural ingest take long enough (several hundred ms) that a SIGINT
+  // sent after a fixed 400ms delay reliably lands mid-run — verified by
+  // hand across 5 repeated runs with zero flakes before landing this
+  // delay/count pair (see ts-task-15-report.md's "Fix round 1" section).
+  it("real SIGINT during a large ingest run stops it partway, exits 130, and is resumable", async () => {
+    for (let i = 0; i < 1500; i++) {
+      writeNote(`note-${i}.md`, `aaaaaaaa-bbbb-cccc-dddd-${String(i).padStart(12, "0")}`, {
+        body: `Note number ${i}.`,
+      });
+    }
+
+    const aborted = await runWithSigintAfter(["ingest"], 400);
+    expect(aborted.exitCode).toBe(130);
+    expect(aborted.output).toContain("Aborted");
+    expect(aborted.output).toContain("qkb ingest");
+
+    const partial = JSON.parse(run(["status", "--json"]).output) as { documents: number };
+    expect(partial.documents).toBeGreaterThan(0);
+    // Genuinely stopped mid-run, not just slow to print+exit after
+    // finishing everything.
+    expect(partial.documents).toBeLessThan(1500);
+
+    // Resuming with a plain ingest completes the rest — proves the abort
+    // didn't corrupt anything and every already-processed file's commit
+    // survived the interrupt (each upsert is its own transaction).
+    const resumed = run(["ingest"]);
+    expect(resumed.exitCode).toBe(0);
+    const final = JSON.parse(run(["status", "--json"]).output) as { documents: number };
+    expect(final.documents).toBe(1500);
+  }, 20_000);
+
   it("mcp fails cleanly with a 'not implemented yet' message (Task 16 seam)", () => {
     const result = run(["mcp"]);
     expect(result.exitCode).not.toBe(0);
@@ -333,27 +405,20 @@ describe("qkb CLI (subprocess)", () => {
   });
 });
 
-// Unit tests for the pieces of ingest/embed's Ctrl-C handling that ARE
-// reliably testable without racing a real OS signal against the pipeline
-// (see the subprocess describe block's docstring, and src/cli/ingest.ts's
-// `makeAbortHandler` docstring, for why a genuine mid-loop-interruption
-// test isn't practical here: the fake provider and the structural ingest
-// pass are both fully synchronous, so there's no real event-loop yield
-// point during a run for a signal to land on). This covers the brief's
-// "at minimum the handler wiring and message" bar directly and
-// deterministically.
-describe("SIGINT abort handler (unit)", () => {
-  it("ingest's handler stops the renderer, prints the ingest message, and exits 130", () => {
-    const stop = vi.fn();
-    const tick = vi.fn();
+// Unit tests for the CLI-level half of Ctrl-C handling: once the pipeline
+// call (ingestVault/embedPending — see the deterministic cooperative-abort
+// tests in test/pipeline.test.ts for the loop-level half) returns having
+// stopped early, `reportAbortAndExit` is what decides to print the
+// command-specific message and exit 130 instead of the normal success
+// summary. Deterministic, no real signal or timing involved.
+describe("reportAbortAndExit (unit)", () => {
+  it("prints the ingest abort message and exits 130", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
       throw new Error(`__exit:${code}__`);
     }) as never);
 
-    const handler = makeAbortHandler(INGEST_ABORT_MESSAGE, { tick, stop });
-    expect(() => handler()).toThrow("__exit:130__");
-    expect(stop).toHaveBeenCalledOnce();
+    expect(() => reportAbortAndExit(INGEST_ABORT_MESSAGE)).toThrow("__exit:130__");
     expect(logSpy).toHaveBeenCalledWith(INGEST_ABORT_MESSAGE);
     expect(logSpy.mock.calls[0]?.[0]).toContain("Re-run `qkb ingest`");
 
@@ -361,17 +426,13 @@ describe("SIGINT abort handler (unit)", () => {
     exitSpy.mockRestore();
   });
 
-  it("embed's handler prints the resumable-progress embed message and exits 130", () => {
-    const stop = vi.fn();
-    const tick = vi.fn();
+  it("prints the embed abort message and exits 130", () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
       throw new Error(`__exit:${code}__`);
     }) as never);
 
-    const handler = makeAbortHandler(EMBED_ABORT_MESSAGE, { tick, stop });
-    expect(() => handler()).toThrow("__exit:130__");
-    expect(stop).toHaveBeenCalledOnce();
+    expect(() => reportAbortAndExit(EMBED_ABORT_MESSAGE)).toThrow("__exit:130__");
     expect(logSpy.mock.calls[0]?.[0]).toContain("Progress is saved");
     expect(logSpy.mock.calls[0]?.[0]).toContain("qkb embed");
 

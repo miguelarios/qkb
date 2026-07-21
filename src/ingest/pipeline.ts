@@ -23,10 +23,30 @@
  * provider crash) partway through leaves every already-written batch
  * committed, and a re-run resumes from `pendingChunks()` rather than
  * restarting.
+ *
+ * Cooperative cancellation (`options.signal`): both loops below are, in
+ * practice, fully synchronous per-iteration work (structural ingest never
+ * awaits at all; the fake provider's `embed()` resolves without a real
+ * event-loop yield either) — so with no `signal` passed, Node never returns
+ * control to the event loop until the whole loop finishes, and an external
+ * SIGINT-style interruption request would silently never be observed until
+ * then. When a caller passes `signal`, each iteration `await`s a real
+ * macrotask yield (`setImmediate` from `node:timers/promises` — scheduled in
+ * the "check" phase, after the "poll" phase where Node processes pending
+ * signal callbacks) before checking `signal.aborted`, giving a caller's own
+ * `SIGINT` handler (which calls `AbortController.abort()`) an actual chance
+ * to run between iterations. On abort, `ingestVault` stops before touching
+ * another file and returns immediately — skipping the deletion sweep and the
+ * final embedding-config commit entirely, mirroring how Python's
+ * `KeyboardInterrupt` propagates out of `ingest_vault` mid-loop in
+ * `pipeline.py` (nothing after the `for` loop ever runs); `embedPending`
+ * stops before starting another batch (already-written batches stay
+ * committed per its normal resumability contract above).
  */
 
 import { readdirSync } from "node:fs";
 import { basename, join, relative, sep } from "node:path";
+import { setImmediate as setImmediateAsync } from "node:timers/promises";
 import type Database from "better-sqlite3";
 import type { Config } from "../config.js";
 import { vectorTableDimension } from "../db/schema.js";
@@ -54,6 +74,10 @@ export interface IngestOptions {
    * Reasons: `no id`, `no date`, `duplicate id (also …)`, `parse error: …`.
    * A true opt-out (parseNote returns null) is silently ignored, NOT reported. */
   onSkip?: (path: string, reason: string) => void;
+  /** Cooperative cancellation — see the module docstring. Checked (with a
+   * yield first) once per file; when aborted, the loop stops before the next
+   * file and the deletion sweep / embedding-config commit are skipped. */
+  signal?: AbortSignal;
 }
 
 export interface EmbedOptions {
@@ -66,6 +90,10 @@ export interface EmbedOptions {
   batchSize?: number;
   /** Called after each batch with (chunksDoneSoFar, totalPending, null). */
   onProgress?: (done: number, total: number, current: string | null) => void;
+  /** Cooperative cancellation — see the module docstring. Checked (with a
+   * yield first) once per batch; when aborted, the loop stops before the
+   * next batch. Already-written batches stay committed. */
+  signal?: AbortSignal;
 }
 
 /** Recursively collect every `*.md` file under `dir` (absolute paths). */
@@ -125,7 +153,7 @@ export async function ingestVault(
   cfg: Config,
   options: IngestOptions = {},
 ): Promise<IngestStats> {
-  const { provider = null, full = false, onProgress, onSkip } = options;
+  const { provider = null, full = false, onProgress, onSkip, signal } = options;
   const storage = new Storage(conn, cfg.vaultName);
   let rebuilt = false;
 
@@ -205,7 +233,18 @@ export async function ingestVault(
 
   const files = vaultFiles(cfg.vaultPath);
   const total = files.length;
+  let aborted = false;
   for (let i = 0; i < files.length; i++) {
+    if (signal) {
+      // Real macrotask yield (only paid when a caller opted in — see module
+      // docstring) so a pending SIGINT-triggered `abort()` actually gets a
+      // chance to run before we touch another file.
+      await setImmediateAsync();
+      if (signal.aborted) {
+        aborted = true;
+        break;
+      }
+    }
     const path = files[i] as string;
     const relPath = relative(cfg.vaultPath, path).split(sep).join("/");
     onProgress?.(i, total, relPath);
@@ -265,6 +304,18 @@ export async function ingestVault(
     storage.upsert(note, chash, chunks, embeddings);
     if (stored === null || full) stats.indexed++;
     else stats.updated++;
+  }
+
+  if (aborted) {
+    // Mirrors Python's KeyboardInterrupt propagating out of ingest_vault
+    // mid-loop (pipeline.py has no try/except around the for loop): nothing
+    // below this point runs — no final onProgress "done" call, no deletion
+    // sweep (a partial `seen` set would otherwise make it de-index files
+    // simply not reached yet this run), no embedding-config commit. Every
+    // file already processed above is already durably committed (each
+    // upsert()/updateMetadataIfChanged() is its own transaction), so this is
+    // safe to stop at unconditionally.
+    return stats;
   }
 
   onProgress?.(total, total, null);
@@ -341,7 +392,7 @@ export async function embedPending(
   provider: EmbeddingProvider,
   options: EmbedOptions = {},
 ): Promise<number> {
-  const { full = false, batchSize = 64, onProgress } = options;
+  const { full = false, batchSize = 64, onProgress, signal } = options;
   const storage = new Storage(conn, cfg.vaultName);
   const model = provider.modelName;
   const dim = provider.dimension;
@@ -362,6 +413,17 @@ export async function embedPending(
   const total = pending.length;
   let done = 0;
   for (let start = 0; start < total; start += batchSize) {
+    if (signal) {
+      // See ingestVault's equivalent yield for why this is needed even
+      // though `await provider.embed(...)` below is already an `await`: a
+      // synchronous-under-the-hood provider (the `fake` one used in tests)
+      // resolves without a real event-loop yield, so without this a pending
+      // SIGINT-triggered `abort()` would never get a chance to run either.
+      await setImmediateAsync();
+      if (signal.aborted) {
+        break;
+      }
+    }
     const batch = pending.slice(start, start + batchSize);
     const vectors = await provider.embed(batch.map(([, text]) => text));
     storage.writeVectors(batch.map(([cid], i) => [cid, vectors[i] as number[]]));
