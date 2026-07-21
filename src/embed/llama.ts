@@ -36,9 +36,14 @@ interface DisposableModel {
 export interface LlamaProviderOptions {
   docTemplate?: string | null;
   queryTemplate?: string | null;
-  /** Injectable for tests; when omitted, node-llama-cpp lazily resolves and
-   * loads the real model on first embed. */
+  /** A ready-made context — short-circuits real resolution/download/load
+   * entirely. The primary test seam for template/dimension/batching tests. */
   context?: LlamaEmbeddingContextLike;
+  /** A stand-in for the real resolve+download+load pipeline (ensureModel
+   * -> getLlama -> loadModel -> createEmbeddingContext). Lets tests
+   * control timing/concurrency and count invocations without touching the
+   * filesystem or network. Ignored when `context` is set. */
+  contextLoader?: () => Promise<LlamaEmbeddingContextLike>;
 }
 
 export class LlamaProvider implements EmbeddingProvider {
@@ -49,7 +54,9 @@ export class LlamaProvider implements EmbeddingProvider {
   private readonly _model: string;
   private readonly _docFmt: string;
   private readonly _queryFmt: string;
+  private readonly _contextLoader: (() => Promise<LlamaEmbeddingContextLike>) | undefined;
   private _context: LlamaEmbeddingContextLike | undefined;
+  private _contextPromise: Promise<LlamaEmbeddingContextLike> | undefined;
   private _loadedModel: DisposableModel | undefined;
 
   constructor(
@@ -74,6 +81,7 @@ export class LlamaProvider implements EmbeddingProvider {
     this._queryFmt =
       validatedTemplate("query_template", options.queryTemplate ?? null) ?? defaultQueryFmt;
     this._context = options.context;
+    this._contextLoader = options.contextLoader;
   }
 
   get dimension(): number {
@@ -84,18 +92,40 @@ export class LlamaProvider implements EmbeddingProvider {
     return this._model;
   }
 
-  private async getContext(): Promise<LlamaEmbeddingContextLike> {
+  /**
+   * Returns the (possibly not-yet-resolved) embedding context, memoizing
+   * the in-flight load so concurrent `embed()`/`embedQuery()` calls before
+   * the first load completes share one resolve+download+load instead of
+   * each kicking off their own — critical for the real path, where two
+   * parallel `ensureModel()` downloads would race on the same `.gguf.part`
+   * file. The memo is cleared on failure so a failed load can be retried.
+   */
+  private getContext(): Promise<LlamaEmbeddingContextLike> {
     if (this._context) {
-      return this._context;
+      return Promise.resolve(this._context);
     }
+    if (!this._contextPromise) {
+      const loader = this._contextLoader ?? (() => this.loadReal());
+      this._contextPromise = loader()
+        .then((context) => {
+          this._context = context;
+          return context;
+        })
+        .catch((e: unknown) => {
+          this._contextPromise = undefined;
+          throw e;
+        });
+    }
+    return this._contextPromise;
+  }
+
+  private async loadReal(): Promise<LlamaEmbeddingContextLike> {
     const modelPath = await ensureModel(this._ggufRepo, this._ggufFile, this._cacheDir);
     const { getLlama } = await import("node-llama-cpp");
     const llama = await getLlama();
     const model = await llama.loadModel({ modelPath, gpuLayers: -1 });
     this._loadedModel = model;
-    const context = await model.createEmbeddingContext();
-    this._context = context;
-    return context;
+    return model.createEmbeddingContext();
   }
 
   private async embedRaw(inputs: string[]): Promise<number[][]> {
@@ -132,9 +162,12 @@ export class LlamaProvider implements EmbeddingProvider {
 
   /** Free the model. The MCP server duck-types close() on shutdown. Fires
    * disposal without awaiting, matching the interface's synchronous
-   * `close?(): void`. */
+   * `close?(): void`. `dispose()` returns a Promise on the real
+   * node-llama-cpp objects; a rejection there must not become an
+   * unhandled rejection that can crash the process, so it's swallowed —
+   * there's nothing further close() could do with it anyway. */
   close(): void {
-    void this._context?.dispose?.();
-    void this._loadedModel?.dispose();
+    void Promise.resolve(this._context?.dispose?.()).catch(() => {});
+    void Promise.resolve(this._loadedModel?.dispose()).catch(() => {});
   }
 }

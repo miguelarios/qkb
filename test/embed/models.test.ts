@@ -81,6 +81,21 @@ describe("embed/models", () => {
     expect(new Uint8Array(readFileSync(dest))).toEqual(new Uint8Array([1, 2, 3, 4]));
   });
 
+  it("wraps a mid-stream connection drop with the 'download failed' message", async () => {
+    const dest = join(tmpPath, "model.gguf.part");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2]));
+        controller.error(new Error("connection reset"));
+      },
+    });
+    const fakeFetch: typeof fetch = async () => new Response(stream, { status: 200 });
+
+    await expect(
+      download("https://huggingface.co/example/resolve/main/model.gguf", dest, fakeFetch),
+    ).rejects.toThrow(/download failed/);
+  });
+
   it("raises with a 'download failed' message on an HTTP error status", async () => {
     const dest = join(tmpPath, "model.gguf.part");
     const fakeFetch = async () => new Response(null, { status: 404, statusText: "Not Found" });

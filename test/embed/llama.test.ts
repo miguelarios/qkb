@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { LlamaEmbeddingLike } from "../../src/embed/llama.js";
+import type { LlamaEmbeddingContextLike, LlamaEmbeddingLike } from "../../src/embed/llama.js";
 import { LlamaProvider } from "../../src/embed/llama.js";
 
 // Ports legacy/python/tests/test_local_provider.py. Fully offline: a
@@ -92,5 +92,60 @@ describe("embed/llama", () => {
     const { p, context } = makeProvider();
     p.close?.();
     expect(context.disposed).toBe(true);
+  });
+
+  it("close() swallows a rejecting dispose() without an unhandled rejection", async () => {
+    const context = new RecordingContext();
+    context.dispose = () => Promise.reject(new Error("dispose failed"));
+    const p = new LlamaProvider("unused/repo", FILE, "/unused/cache", DIM, { context });
+    expect(() => p.close()).not.toThrow();
+    // Give the microtask queue a chance to surface an unhandled rejection —
+    // without the fix, this would flag as a test failure via Vitest's
+    // unhandled-rejection handling.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  it("shares one in-flight model load across concurrent embed()/embedQuery() calls", async () => {
+    let loadCalls = 0;
+    let resolveLoad!: (context: LlamaEmbeddingContextLike) => void;
+    const deferred = new Promise<LlamaEmbeddingContextLike>((resolve) => {
+      resolveLoad = resolve;
+    });
+    const contextLoader = () => {
+      loadCalls++;
+      return deferred;
+    };
+    const p = new LlamaProvider("unused/repo", FILE, "/unused/cache", DIM, { contextLoader });
+
+    // Two concurrent calls before the (slow) load resolves must not each
+    // kick off their own resolve/download/load — they should share one
+    // in-flight load (regression test for the first-use race: two parallel
+    // ensureModel() downloads racing on the same .part path).
+    const p1 = p.embed(["a"]);
+    const p2 = p.embedQuery("b");
+    resolveLoad(new RecordingContext());
+    const [v1, v2] = await Promise.all([p1, p2]);
+
+    expect(loadCalls).toBe(1);
+    expect(v1).toEqual([Array(DIM).fill(0.1)]);
+    expect(v2).toEqual(Array(DIM).fill(0.1));
+  });
+
+  it("clears the failed load memo so a subsequent embed can retry", async () => {
+    let loadCalls = 0;
+    const contextLoader = () => {
+      loadCalls++;
+      if (loadCalls === 1) {
+        return Promise.reject(new Error("network died"));
+      }
+      return Promise.resolve(new RecordingContext());
+    };
+    const p = new LlamaProvider("unused/repo", FILE, "/unused/cache", DIM, { contextLoader });
+
+    await expect(p.embed(["a"])).rejects.toThrow(/network died/);
+    const vecs = await p.embed(["a"]);
+
+    expect(loadCalls).toBe(2);
+    expect(vecs).toEqual([Array(DIM).fill(0.1)]);
   });
 });

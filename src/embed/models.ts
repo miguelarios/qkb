@@ -39,10 +39,14 @@ export async function download(
   if (!resp.body) {
     throw new Error(`model download failed for ${url}: empty response body`);
   }
-  await pipeline(
-    Readable.fromWeb(resp.body as NodeWebReadableStream<Uint8Array>),
-    createWriteStream(dest),
-  );
+  try {
+    await pipeline(
+      Readable.fromWeb(resp.body as NodeWebReadableStream<Uint8Array>),
+      createWriteStream(dest),
+    );
+  } catch (e) {
+    throw new Error(`model download failed for ${url}: ${e}`);
+  }
 }
 
 /** Returns the local path of the GGUF, downloading it on first use. */
