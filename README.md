@@ -72,7 +72,7 @@ Four interchangeable providers, set via `[embedding].provider` in `config.toml`:
 | `openai` | any OpenAI-compatible `/v1/embeddings` endpoint | OpenAI itself, Azure OpenAI, or a local server (LM Studio, vLLM, llamafile) |
 | `fake` | deterministic hash-based vectors, no model | tests and CI only |
 
-Switching provider or model changes the vectors, so run `qkb ingest --full`
+Switching provider or model changes the vectors, so run `qkb embed --full`
 afterward to re-embed everything.
 
 ```toml
@@ -107,7 +107,9 @@ variable only — it's never stored in `config.toml`.
 
 ## Configuration reference
 
-`~/.config/qkb/config.toml` (all keys optional; shown with their defaults). Every key also has a `QKB_<SECTION>_<KEY>` environment-variable override (e.g. `QKB_EMBEDDING_PROVIDER=ollama`), and `QKB_CONFIG=/path/to/alt-config.toml` points at a different config file entirely.
+`~/.config/qkb/config.toml` (all keys optional; shown with their defaults).
+`QKB_CONFIG=/path/to/alt-config.toml` points at a different config file
+entirely.
 
 ```toml
 [vault]
@@ -145,6 +147,30 @@ fts_weights = [5.0, 3.0, 2.0, 1.0, 0.5]
 # id = ["uuid"]
 # created = ["created", "date created"]
 ```
+
+### Environment-variable overrides
+
+Only the keys below have a `QKB_*` environment-variable override — `[chunking]`, `[search]`, and `[frontmatter]` keys do **not** (config-file-only). An env var always wins over `config.toml`.
+
+| `config.toml` key | env var |
+|---|---|
+| `vault.path` | `QKB_VAULT_PATH` |
+| `vault.name` | `QKB_VAULT_NAME` |
+| `database.path` | `QKB_DB_PATH` |
+| `embedding.provider` | `QKB_EMBEDDING_PROVIDER` |
+| `embedding.model` | `QKB_EMBEDDING_MODEL` |
+| `embedding.dimension` | `QKB_EMBEDDING_DIM` |
+| `embedding.ollama_host` | `QKB_OLLAMA_HOST` |
+| `embedding.doc_template` | `QKB_EMBEDDING_DOC_TEMPLATE` |
+| `embedding.query_template` | `QKB_EMBEDDING_QUERY_TEMPLATE` |
+| `embedding.local_gguf_repo` | `QKB_LOCAL_GGUF_REPO` |
+| `embedding.local_gguf_file` | `QKB_LOCAL_GGUF_FILE` |
+| `embedding.model_cache_dir` | `QKB_MODEL_CACHE_DIR` |
+| `embedding.openai_base_url` | `QKB_OPENAI_BASE_URL` |
+| *(no `config.toml` key — env only)* | `QKB_OPENAI_API_KEY` |
+
+Plus `QKB_CONFIG`, which isn't a per-key override — it points qkb at a
+different `config.toml` path entirely.
 
 ## MCP usage
 
@@ -185,7 +211,7 @@ Inspired by [QMD](https://github.com/tobi/qmd)'s search architecture and its GPU
 
 ## Migrating from the Python version
 
-The original Python implementation (`qkb-search`, PyPI, `v0.3.0`) is kept in this repo at `legacy/python/` and remains installable (`pip install qkb-search` / `uv tool install qkb-search`) but is **superseded by this npm package** — no further Python releases are planned except emergency patches. Both share the same `~/.config/qkb/config.toml`, `~/.local/share/qkb/qkb.db`, and `~/.cache/qkb/models` paths, but switching between them (or between embedding providers) changes the vectors, so run `qkb ingest --full` after switching.
+The original Python implementation (`qkb-search`, PyPI, `v0.3.0`) is kept in this repo at `legacy/python/` and remains installable (`pip install qkb-search` / `uv tool install qkb-search`) but is **superseded by this npm package** — no further Python releases are planned except emergency patches. Both share the same `~/.config/qkb/config.toml`, `~/.local/share/qkb/qkb.db`, and `~/.cache/qkb/models` paths, but switching between them (or between embedding providers) changes the vectors, so run `qkb embed --full` after switching.
 
 ## Development
 
