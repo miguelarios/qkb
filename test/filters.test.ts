@@ -123,18 +123,18 @@ describe("search/filters", () => {
     });
 
     it("date_from year-month expands to first day", () => {
-      const [clause, params] = buildFilterClause(new Filters({ dateFrom: "2026-02" }));
+      const [_clause, params] = buildFilterClause(new Filters({ dateFrom: "2026-02" }));
       expect(params[0]).toBe("2026-02-01");
     });
 
     it("date_to year-month expands to last day non-leap February", () => {
       // 2026 is not a leap year
-      const [clause, params] = buildFilterClause(new Filters({ dateTo: "2026-02" }));
+      const [_clause, params] = buildFilterClause(new Filters({ dateTo: "2026-02" }));
       expect(params[0]).toBe("2026-02-28");
     });
 
     it("date full ISO passes through", () => {
-      const [clause, params] = buildFilterClause(new Filters({ dateFrom: "2026-03-15" }));
+      const [_clause, params] = buildFilterClause(new Filters({ dateFrom: "2026-03-15" }));
       expect(params[0]).toBe("2026-03-15");
     });
 
