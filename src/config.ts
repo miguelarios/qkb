@@ -28,7 +28,7 @@ export interface Config {
   openaiApiKey: string | null;
 }
 
-const DEFAULT_FRONTMATTER: Record<string, string[]> = {
+export const DEFAULT_FRONTMATTER: Record<string, string[]> = {
   id: ["id"],
   type: ["type"],
   title: ["title"],
