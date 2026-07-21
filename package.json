@@ -1,0 +1,50 @@
+{
+  "name": "@miguelarios/qkb",
+  "version": "0.1.0",
+  "description": "Hybrid BM25 + vector search for Obsidian vaults with frontmatter awareness",
+  "type": "module",
+  "bin": {
+    "qkb": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check .",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "obsidian",
+    "search",
+    "rag",
+    "sqlite",
+    "mcp"
+  ],
+  "license": "MIT",
+  "author": "Miguel Rios",
+  "homepage": "https://github.com/miguelarios/qkb",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "better-sqlite3": "^13.0.1",
+    "commander": "^15.0.0",
+    "gray-matter": "^4.0.3",
+    "node-llama-cpp": "^3.19.1",
+    "smol-toml": "^1.7.0",
+    "sqlite-vec": "^0.1.9"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.5",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  },
+  "allowScripts": {
+    "better-sqlite3@13.0.1": true,
+    "node-llama-cpp@3.19.1": true,
+    "fsevents@2.3.3": true
+  }
+}
