@@ -39,7 +39,7 @@ export const DEFAULT_FRONTMATTER: Record<string, string[]> = {
   tags: ["tags"],
 };
 
-const DEFAULT_CONFIG_PATH = join(homedir(), ".config", "qkb", "config.toml");
+export const DEFAULT_CONFIG_PATH = join(homedir(), ".config", "qkb", "config.toml");
 
 // (toml_section, toml_key, Config property, caster)
 type TomlEntry = [string, string, keyof Config, (val: unknown) => unknown];

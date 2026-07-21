@@ -1,10 +1,21 @@
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  EMBED_ABORT_MESSAGE,
+  INGEST_ABORT_MESSAGE,
+  makeAbortHandler,
+  summarizeSkips,
+} from "../src/cli/ingest.js";
 import { createProgram, readVersion } from "../src/cli.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = join(here, "..");
+const distCli = join(repoRoot, "dist", "cli.js");
+
 const packageJson = JSON.parse(readFileSync(join(here, "..", "package.json"), "utf-8")) as {
   version: string;
 };
@@ -38,5 +49,360 @@ describe("qkb --version", () => {
     // real process.exit, which is what makes this testable in-process.
     expect(thrown).toBeDefined();
     expect(output.trim()).toBe(packageJson.version);
+  });
+});
+
+// Ports legacy/python/tests/test_cli.py — runs the REAL compiled CLI as a
+// subprocess (spawnSync of `node dist/cli.js ...`), same spirit as Python's
+// `CliRunner().invoke(cli, args, env=env, catch_exceptions=False)`: an
+// offline, isolated run against a temp vault/db with the `fake` embedding
+// provider (env-only overrides — see src/config.ts's ENV_MAP), asserting on
+// exit code and captured output.
+//
+// Why a real subprocess instead of importing src/cli.ts's exports directly:
+// (1) SIGINT/exit-code behavior is only observable at the process boundary;
+// (2) it exercises the exact artifact a user runs (`npm run build` + `node
+// dist/cli.js`), not just the TS source under vitest's esbuild transform —
+// which matters here: this task's port of parser.ts's `js-yaml` import
+// (`import * as yaml from "js-yaml"`) type-checked fine and passed under
+// vitest, but crashed with a real `TypeError` under plain Node, because
+// esbuild's CJS/ESM interop synthesizes named exports more permissively
+// than Node's own does for this package. See src/ingest/parser.ts's import
+// comment for the fix; this whole test file would not have caught that bug
+// if it drove `createProgram()` in-process instead of a subprocess.
+describe("qkb CLI (subprocess)", () => {
+  beforeAll(() => {
+    execFileSync("npm", ["run", "build"], { cwd: repoRoot, stdio: "inherit" });
+  }, 60_000);
+
+  let tmpDir: string;
+  let vault: string;
+  let env: Record<string, string>;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "qkb-cli-test-"));
+    vault = join(tmpDir, "vault");
+    mkdirSync(vault, { recursive: true });
+    env = {
+      QKB_VAULT_PATH: vault,
+      QKB_DB_PATH: join(tmpDir, "qkb.db"),
+      QKB_EMBEDDING_PROVIDER: "fake",
+      QKB_EMBEDDING_DIM: "8",
+      QKB_CONFIG: join(tmpDir, "missing.toml"),
+    };
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  interface RunResult {
+    exitCode: number;
+    output: string; // stdout + stderr merged, mirroring Click's CliRunner default (mix_stderr=True)
+  }
+
+  function run(args: string[], runEnv: Record<string, string> = env): RunResult {
+    const result = spawnSync(process.execPath, [distCli, ...args], {
+      env: { ...process.env, ...runEnv },
+      encoding: "utf-8",
+    });
+    return {
+      exitCode: result.status ?? -1,
+      output: (result.stdout ?? "") + (result.stderr ?? ""),
+    };
+  }
+
+  const ID1 = "f47ac10b-58cc-4372-a567-0e02b2c3d401";
+  const ID2 = "f47ac10b-58cc-4372-a567-0e02b2c3d402";
+
+  interface WriteOpts {
+    context?: string;
+    body?: string;
+    extra?: string;
+  }
+
+  function writeNote(name: string, noteId: string, opts: WriteOpts = {}): string {
+    const { context = "homelab", body = "Some body text.", extra = "" } = opts;
+    const p = join(vault, name);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(
+      p,
+      `---\nid: ${noteId}\ncontext: ${context}\ncreated: 2026-01-01T00:00:00-06:00\n${extra}---\n\n${body}\n`,
+    );
+    return p;
+  }
+
+  it("ingest then query --json", () => {
+    writeNote("a.md", ID1, { body: "Renewing traefik certificates." });
+    const ingested = run(["ingest"]);
+    expect(ingested.exitCode).toBe(0);
+    expect(ingested.output.toLowerCase()).toContain("indexed");
+
+    const queried = run(["query", "traefik", "--json"]);
+    expect(queried.exitCode).toBe(0);
+    const results = JSON.parse(queried.output) as Array<Record<string, unknown>>;
+    expect(results[0]?.document_id).toBe(ID1);
+    expect(results[0]).toHaveProperty("obsidian_uri");
+  });
+
+  it("search --files format and context filter", () => {
+    writeNote("a.md", ID1, { body: "Renewing traefik certificates." });
+    run(["ingest"]);
+
+    const hit = run(["search", "traefik", "--files", "--context", "homelab"]);
+    expect(hit.exitCode).toBe(0);
+    expect(hit.output.trim().split(",")[0]).toBe(ID1);
+
+    const miss = run(["search", "traefik", "--files", "--context", "nonexistent"]);
+    expect(miss.output.trim()).toBe("");
+  });
+
+  it("get, contexts, and status", () => {
+    writeNote("a.md", ID1);
+    run(["ingest"]);
+
+    // `get` and `status` always emit JSON now (the dead --json flag on
+    // `get` was removed — see the dedicated test below).
+    const got = run(["get", ID1.slice(0, 8)]);
+    expect((JSON.parse(got.output) as { document_id: string }).document_id).toBe(ID1);
+
+    const described = run(["context", "describe", "homelab", "Home server notes"]);
+    expect(described.exitCode).toBe(0);
+
+    const contexts = run(["contexts", "--json"]);
+    const rows = JSON.parse(contexts.output) as Array<{ context: string; description: string }>;
+    expect(rows[0]?.context).toBe("homelab");
+    expect(rows[0]?.description).toBe("Home server notes");
+
+    const statusJson = run(["status", "--json"]);
+    expect((JSON.parse(statusJson.output) as { documents: number }).documents).toBe(1);
+
+    const statusHuman = run(["status"]);
+    expect(statusHuman.exitCode).toBe(0);
+    expect(statusHuman.output).toContain("Provider:");
+    expect(statusHuman.output).toContain("fake");
+  });
+
+  it("context describe normalizes the label (trim + lowercase, via normalizeContext)", () => {
+    writeNote("a.md", ID1);
+    run(["ingest"]);
+
+    const described = run(["context", "describe", "  Homelab  ", "Home server notes"]);
+    expect(described.exitCode).toBe(0);
+
+    const contexts = run(["contexts", "--json"]);
+    const rows = JSON.parse(contexts.output) as Array<{ context: string; description: string }>;
+    expect(rows[0]?.context).toBe("homelab");
+    expect(rows[0]?.description).toBe("Home server notes");
+  });
+
+  it("context describe rejects an empty/whitespace-only label", () => {
+    const result = run(["context", "describe", "   ", "desc"]);
+    expect(result.exitCode).not.toBe(0);
+  });
+
+  it("get rejects the removed --json flag; status still accepts it", () => {
+    writeNote("a.md", ID1);
+    run(["ingest"]);
+
+    const got = run(["get", ID1.slice(0, 8), "--json"]);
+    expect(got.exitCode).not.toBe(0);
+    expect(got.output.toLowerCase()).toContain("no such option");
+
+    const status = run(["status", "--json"]);
+    expect(status.exitCode).toBe(0);
+    expect((JSON.parse(status.output) as { documents: number }).documents).toBe(1);
+  });
+
+  it("--rerank is rejected as not-yet-configured (exit code 2)", () => {
+    writeNote("a.md", ID1);
+    run(["ingest"]);
+    const result = run(["query", "anything", "--rerank"]);
+    expect(result.exitCode).toBe(2);
+  });
+
+  it("--source filter", () => {
+    writeNote("a.md", ID1, { body: "Renewing traefik certificates.", extra: "source: proj-a\n" });
+    writeNote("b.md", ID2, { body: "Renewing traefik certificates.", extra: "source: proj-b\n" });
+    run(["ingest"]);
+
+    const hit = run(["search", "traefik", "--files", "--source", "proj-a"]);
+    expect(hit.exitCode).toBe(0);
+    const lines = hit.output
+      .trim()
+      .split("\n")
+      .filter((l) => l.length > 0);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.split(",")[0]).toBe(ID1);
+
+    const miss = run(["search", "traefik", "--files", "--source", "nonexistent"]);
+    expect(miss.output.trim()).toBe("");
+  });
+
+  it("rejects --limit 0 and negative limits with a clean error (no traceback)", () => {
+    writeNote("a.md", ID1, { body: "Renewing traefik certificates." });
+    run(["ingest"]);
+
+    const zero = run(["search", "traefik", "--limit", "0"]);
+    expect(zero.exitCode).not.toBe(0);
+    expect(zero.output.toLowerCase()).not.toContain("traceback");
+
+    const negative = run(["search", "traefik", "--limit", "-1"]);
+    expect(negative.exitCode).not.toBe(0);
+    expect(negative.output.toLowerCase()).not.toContain("traceback");
+  });
+
+  it("applies config's [search] default_limit when --limit is omitted", () => {
+    writeFileSync(join(tmpDir, "config.toml"), "[search]\ndefault_limit = 1\n");
+    const envWithConfig = { ...env, QKB_CONFIG: join(tmpDir, "config.toml") };
+    writeNote("a.md", ID1, { body: "Renewing traefik certificates." });
+    writeNote("b.md", ID2, { body: "Renewing traefik certificates too." });
+    run(["ingest"], envWithConfig);
+
+    const result = run(["search", "traefik", "--json"], envWithConfig);
+    expect(result.exitCode).toBe(0);
+    expect((JSON.parse(result.output) as unknown[]).length).toBe(1);
+  });
+
+  it("get --raw on a note whose file moved/was deleted since ingest: clean error", () => {
+    const notePath = writeNote("a.md", ID1, { body: "Renewing traefik certificates." });
+    run(["ingest"]);
+    unlinkSync(notePath);
+
+    const result = run(["get", ID1.slice(0, 8), "--raw"]);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.output.toLowerCase()).not.toContain("traceback");
+    expect(result.output.toLowerCase()).toContain("qkb ingest");
+  });
+
+  it("status surfaces the index's built-with model and warns on mismatch", () => {
+    writeNote("a.md", ID1);
+    run(["ingest"]);
+    run(["embed"]); // embedding is what commits the model/dim
+
+    // configured model (default) != the fake provider's committed "fake-8d"
+    const status = run(["status"]);
+    expect(status.output).toContain("Built with: fake-8d");
+    expect(status.output).toContain("qkb ingest --full");
+    expect(status.output).toContain("⚠");
+
+    const d = JSON.parse(run(["status", "--json"]).output) as {
+      index_model: string;
+      index_dim: number;
+      model_mismatch: boolean;
+    };
+    expect(d.index_model).toBe("fake-8d");
+    expect(d.index_dim).toBe(8);
+    expect(d.model_mismatch).toBe(true);
+
+    // aligned config -> no warning
+    const env2 = { ...env, QKB_EMBEDDING_MODEL: "fake-8d" };
+    const status2 = run(["status"], env2);
+    expect(status2.output).not.toContain("⚠");
+    const d2 = JSON.parse(run(["status", "--json"], env2).output) as { model_mismatch: boolean };
+    expect(d2.model_mismatch).toBe(false);
+  });
+
+  it("ingest -v lists every skipped note; without -v it prints a hint instead", () => {
+    // No `id:` -> NoteDataError -> skipped ("no id"), since the note is
+    // opted in (has context) but unindexable.
+    writeFileSync(
+      join(vault, "no-id.md"),
+      "---\ncontext: homelab\ncreated: 2026-01-01T00:00:00-06:00\n---\n\nbody\n",
+    );
+    const quiet = run(["ingest"]);
+    expect(quiet.exitCode).toBe(0);
+    expect(quiet.output).toContain("1 note(s) skipped");
+    expect(quiet.output).toContain("qkb ingest -v");
+    expect(quiet.output).not.toContain("no-id.md");
+
+    writeFileSync(
+      join(vault, "no-id2.md"),
+      "---\ncontext: homelab\ncreated: 2026-01-01T00:00:00-06:00\n---\n\nbody2\n",
+    );
+    const verbose = run(["ingest", "-v"]);
+    expect(verbose.exitCode).toBe(0);
+    expect(verbose.output).toContain("no-id2.md");
+  });
+
+  it("mcp fails cleanly with a 'not implemented yet' message (Task 16 seam)", () => {
+    const result = run(["mcp"]);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.output.toLowerCase()).not.toContain("traceback");
+    expect(result.output.toLowerCase()).toContain("not implemented");
+  });
+});
+
+// Unit tests for the pieces of ingest/embed's Ctrl-C handling that ARE
+// reliably testable without racing a real OS signal against the pipeline
+// (see the subprocess describe block's docstring, and src/cli/ingest.ts's
+// `makeAbortHandler` docstring, for why a genuine mid-loop-interruption
+// test isn't practical here: the fake provider and the structural ingest
+// pass are both fully synchronous, so there's no real event-loop yield
+// point during a run for a signal to land on). This covers the brief's
+// "at minimum the handler wiring and message" bar directly and
+// deterministically.
+describe("SIGINT abort handler (unit)", () => {
+  it("ingest's handler stops the renderer, prints the ingest message, and exits 130", () => {
+    const stop = vi.fn();
+    const tick = vi.fn();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`__exit:${code}__`);
+    }) as never);
+
+    const handler = makeAbortHandler(INGEST_ABORT_MESSAGE, { tick, stop });
+    expect(() => handler()).toThrow("__exit:130__");
+    expect(stop).toHaveBeenCalledOnce();
+    expect(logSpy).toHaveBeenCalledWith(INGEST_ABORT_MESSAGE);
+    expect(logSpy.mock.calls[0]?.[0]).toContain("Re-run `qkb ingest`");
+
+    logSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+
+  it("embed's handler prints the resumable-progress embed message and exits 130", () => {
+    const stop = vi.fn();
+    const tick = vi.fn();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`__exit:${code}__`);
+    }) as never);
+
+    const handler = makeAbortHandler(EMBED_ABORT_MESSAGE, { tick, stop });
+    expect(() => handler()).toThrow("__exit:130__");
+    expect(stop).toHaveBeenCalledOnce();
+    expect(logSpy.mock.calls[0]?.[0]).toContain("Progress is saved");
+    expect(logSpy.mock.calls[0]?.[0]).toContain("qkb embed");
+
+    logSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+});
+
+describe("summarizeSkips (unit)", () => {
+  it("groups by reason, most-frequent first, and hints at -v", () => {
+    const lines = summarizeSkips(
+      [
+        ["a.md", "no id"],
+        ["b.md", "no date"],
+        ["c.md", "no id"],
+      ],
+      false,
+    );
+    expect(lines[0]).toContain("3 note(s) skipped");
+    expect(lines[1]).toContain("2 × no id");
+    expect(lines[2]).toContain("1 × no date");
+    expect(lines.some((l) => l.includes("qkb ingest -v"))).toBe(true);
+    expect(lines.some((l) => l.includes("a.md"))).toBe(false);
+  });
+
+  it("lists every skipped file when verbose", () => {
+    const lines = summarizeSkips([["a.md", "no id"]], true);
+    expect(lines.some((l) => l.includes("a.md"))).toBe(true);
+  });
+
+  it("returns no lines when nothing was skipped", () => {
+    expect(summarizeSkips([], false)).toEqual([]);
   });
 });

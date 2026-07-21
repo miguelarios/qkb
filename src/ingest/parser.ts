@@ -4,7 +4,17 @@
 import { readFileSync } from "node:fs";
 import { basename, extname, relative, sep } from "node:path";
 import matter from "gray-matter";
-import * as yaml from "js-yaml";
+// Default import, not `* as yaml`: js-yaml v3 is CJS with `module.exports =
+// {...}` (not individual `exports.foo = ...` assignments), which Node's
+// real ESM/CJS interop can't statically re-derive named exports from — a
+// namespace import only yields `{ default, "module.exports" }`, so
+// `yaml.load(...)` is `undefined` at runtime (TypeError) despite type-
+// checking fine and working under vitest's esbuild transform, which
+// synthesizes named exports more permissively than Node itself. The
+// default import binds directly to the CJS `module.exports` object in both
+// Node's real interop and (via `esModuleInterop`) TypeScript's types, so
+// `yaml.load`/`yaml.CORE_SCHEMA` resolve correctly in both.
+import yaml from "js-yaml";
 import { type ParsedNote, RESERVED_METADATA_KEY } from "../types.js";
 
 /**
