@@ -17,6 +17,21 @@ export interface ParsedNote {
   filePath: string; // vault-relative, POSIX separators
 }
 
+/** Per-run ingestion tally returned by `ingestVault` (and, later, the embed
+ * pass). Ported verbatim from `qkb.models.IngestStats` — same six counters,
+ * same zero defaults. `scanned` counts every *.md file the vault walk visited
+ * this run; the rest partition what happened to each (indexed = newly added,
+ * updated = body changed, unchanged = body+metadata identical, deindexed =
+ * removed by the deletion sweep, skipped = opt-out/parse-failure/duplicate). */
+export interface IngestStats {
+  scanned: number;
+  indexed: number;
+  updated: number;
+  unchanged: number;
+  deindexed: number;
+  skipped: number;
+}
+
 /** A structurally-scored slice of a note's body, ready for embedding.
  * Ported from `qkb.models.Chunk` (`legacy/python/src/qkb/models.py`). Python's
  * Chunk carries only these three fields — chunk storage there is keyed by
