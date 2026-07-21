@@ -35,9 +35,9 @@
   "homepage": "https://github.com/miguelarios/qkb",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "better-sqlite3": "^13.0.1",
+    "better-sqlite3": "^12.11.1",
     "cli-progress": "^3.12.0",
-    "commander": "^15.0.0",
+    "commander": "^14.0.2",
     "gray-matter": "^4.0.3",
     "js-yaml": "^3.15.0",
     "node-llama-cpp": "^3.19.1",
@@ -56,7 +56,7 @@
     "vitest": "^4.1.10"
   },
   "allowScripts": {
-    "better-sqlite3@13.0.1": true,
+    "better-sqlite3@12.11.1": true,
     "node-llama-cpp@3.19.1": true,
     "fsevents@2.3.3": true,
     "esbuild@0.28.1": true
