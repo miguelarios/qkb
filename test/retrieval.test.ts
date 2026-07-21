@@ -8,6 +8,7 @@ import { contentHash, Storage } from "../src/db/storage.js";
 import { FakeProvider } from "../src/embed/fake.js";
 import { chunkText } from "../src/ingest/chunker.js";
 import {
+  DocumentDecodeError,
   DocumentFileMissing,
   DocumentNotFoundError,
   getDocument,
@@ -136,6 +137,26 @@ describe("search/retrieval getDocument", () => {
     expect(caught).toBeInstanceOf(DocumentFileMissing);
     const message = String((caught as Error).message).toLowerCase();
     expect(message).toContain("cannot read");
+  });
+
+  it('invalid utf-8 bytes raise a typed decode error, not mangled replacement-char text (fix round 1 — reviewer finding: readFileSync(path, "utf-8") silently replaces invalid bytes with U+FFFD where Python\'s read_text raises UnicodeDecodeError)', async () => {
+    const vault = join(tmpDir, "vault");
+    const notePath = join(vault, "02-Areas/Homelab/Traefik Cert Renewal.md");
+    mkdirSync(join(vault, "02-Areas/Homelab"), { recursive: true });
+    // 0xff/0xfe are never valid standalone UTF-8 lead bytes.
+    writeFileSync(notePath, Buffer.from([0x66, 0xff, 0xfe]));
+    await ingestOne(conn, provider, makeNote({ id: ID_A }));
+
+    let caught: unknown;
+    try {
+      getDocument(conn, "aaaaaaaa", vault, true);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(DocumentDecodeError);
+    expect(caught).not.toBeInstanceOf(DocumentFileMissing);
+    const message = String((caught as Error).message).toLowerCase();
+    expect(message).toContain("utf-8");
   });
 
   it("a literal '%' prefix does not match every document (ports test_get_percent_prefix_does_not_match_all)", async () => {

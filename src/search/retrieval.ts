@@ -32,6 +32,24 @@ export class AmbiguousDocumentPrefixError extends Error {}
  */
 export class DocumentFileMissing extends Error {}
 
+/**
+ * Raised when a document's on-disk file exists and is readable but its bytes
+ * are not valid UTF-8.
+ *
+ * Python's `Path.read_text(encoding="utf-8")` raises the builtin
+ * `UnicodeDecodeError` (a `ValueError` subclass) here, uncaught — it
+ * propagates straight out of `get_document` to the caller. Node's
+ * `readFileSync(path, "utf-8")` has no equivalent failure mode: it silently
+ * substitutes U+FFFD for invalid byte sequences instead of raising, so a
+ * corrupted/non-UTF-8 vault file would otherwise return mangled text instead
+ * of failing loudly like Python does. This class exists to restore that
+ * fail-loud behavior — it is deliberately its own type (not
+ * `DocumentFileMissing`, which mirrors `FileNotFoundError`/`OSError` only)
+ * since Node has no `ValueError`-family error to reuse for the decode
+ * failure the way Python does.
+ */
+export class DocumentDecodeError extends Error {}
+
 /** Escape LIKE metacharacters so `raw` matches only literally, then append
  * the trailing wildcard for prefix matching. Ported from
  * `retrieval.py`'s `_escape_like_prefix`. */
@@ -97,9 +115,9 @@ export function getDocument(
       throw new Error("include_raw requires vault_path");
     }
     const filePath = join(vaultPath, doc.file_path);
-    let text: string;
+    let raw: Buffer;
     try {
-      text = readFileSync(filePath, "utf-8");
+      raw = readFileSync(filePath);
     } catch (e) {
       const err = e as NodeJS.ErrnoException;
       if (err.code === "ENOENT") {
@@ -115,6 +133,21 @@ export function getDocument(
       // than a raw exception.
       throw new DocumentFileMissing(
         `cannot read file ${JSON.stringify(doc.file_path)} (document ${JSON.stringify(doc.document_id)}): ${err.message}`,
+      );
+    }
+    // `{ fatal: true }` makes TextDecoder throw on invalid byte sequences
+    // instead of silently substituting U+FFFD — the plain-string
+    // `readFileSync(path, "utf-8")` overload used before this fix would
+    // never fail on a corrupted/non-UTF-8 file, returning mangled
+    // replacement-char text where Python's `read_text(encoding="utf-8")`
+    // raises `UnicodeDecodeError` (see `DocumentDecodeError`'s docstring).
+    let text: string;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+    } catch {
+      throw new DocumentDecodeError(
+        `file is not valid utf-8: ${JSON.stringify(doc.file_path)} ` +
+          `(document ${JSON.stringify(doc.document_id)}) — vault content must be UTF-8 text`,
       );
     }
     const desc = contextDescription(conn, doc.context);
