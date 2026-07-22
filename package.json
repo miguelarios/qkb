@@ -1,6 +1,6 @@
 {
   "name": "@miguelarios/qkb",
-  "version": "0.1.2",
+  "version": "0.4.0",
   "description": "Hybrid BM25 + vector search for Obsidian vaults with frontmatter awareness",
   "type": "module",
   "bin": {
@@ -32,7 +32,7 @@
   ],
   "license": "MIT",
   "author": "Miguel Rios",
-  "homepage": "https://github.com/miguelarios/qkb",
+  "homepage": "https://github.com/miguelarios/qkb#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^12.11.1",
@@ -60,5 +60,12 @@
     "node-llama-cpp@3.19.1": true,
     "fsevents@2.3.3": true,
     "esbuild@0.28.1": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/miguelarios/qkb.git"
+  },
+  "bugs": {
+    "url": "https://github.com/miguelarios/qkb/issues"
   }
 }
