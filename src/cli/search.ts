@@ -4,6 +4,7 @@
 import type { Command } from "commander";
 import { getProvider } from "../embed/provider.js";
 import { executeSearch } from "../search/service.js";
+import { createDownloadProgressRenderer } from "./progress.js";
 import {
   action,
   addSearchOptions,
@@ -30,7 +31,20 @@ async function doSearch(
     process.exit(2);
   }
   const conn = openDb(cfgObj);
-  const provider = tier === "bm25" ? null : await getProvider(cfgObj);
+  // A vector/hybrid search's first call to provider.embedQuery() can trigger
+  // the same first-run GGUF download `qkb embed` does (llama provider only)
+  // — this is an interactive terminal command, so it gets live progress too
+  // (unlike the MCP server; see src/server/mcp.ts's docstring / the
+  // provider construction in buildServer(), which deliberately does NOT
+  // wire this callback: stderr progress writes would be inappropriate
+  // output for an MCP stdio server to emit mid-tool-call).
+  const downloadRenderer = tier === "bm25" ? null : createDownloadProgressRenderer();
+  const provider =
+    tier === "bm25"
+      ? null
+      : await getProvider(cfgObj, {
+          onDownloadProgress: (received, total) => downloadRenderer?.update(received, total),
+        });
   let results: Awaited<ReturnType<typeof executeSearch>>;
   try {
     results = await executeSearch(
@@ -50,6 +64,8 @@ async function doSearch(
     // `instanceof Error` catch below covers it since SearchValidationError
     // extends Error.
     failUsage(e instanceof Error ? e.message : String(e));
+  } finally {
+    downloadRenderer?.stop();
   }
   emit(results, Boolean(opts.json), Boolean(opts.files));
 }

@@ -12,6 +12,7 @@
  * `getProvider()` and `modelName` never touch the filesystem or network.
  */
 import { parse } from "node:path";
+import type { DownloadProgressFn } from "./models.js";
 import { ensureModel } from "./models.js";
 import { applyTemplate, defaultFormats, validatedTemplate } from "./templates.js";
 import type { EmbeddingProvider } from "./types.js";
@@ -44,6 +45,11 @@ export interface LlamaProviderOptions {
    * control timing/concurrency and count invocations without touching the
    * filesystem or network. Ignored when `context` is set. */
   contextLoader?: () => Promise<LlamaEmbeddingContextLike>;
+  /** Forwarded to `ensureModel` on the real (no `context`/`contextLoader`)
+   * path — fired as the GGUF streams down on first use. Never touched at
+   * construction time; only `loadReal()` (called lazily from `getContext()`)
+   * reads it, so passing it stays I/O-free like the rest of the options. */
+  onDownloadProgress?: DownloadProgressFn;
 }
 
 export class LlamaProvider implements EmbeddingProvider {
@@ -55,6 +61,7 @@ export class LlamaProvider implements EmbeddingProvider {
   private readonly _docFmt: string;
   private readonly _queryFmt: string;
   private readonly _contextLoader: (() => Promise<LlamaEmbeddingContextLike>) | undefined;
+  private readonly _onDownloadProgress: DownloadProgressFn | undefined;
   private _context: LlamaEmbeddingContextLike | undefined;
   private _contextPromise: Promise<LlamaEmbeddingContextLike> | undefined;
   private _loadedModel: DisposableModel | undefined;
@@ -82,6 +89,7 @@ export class LlamaProvider implements EmbeddingProvider {
       validatedTemplate("query_template", options.queryTemplate ?? null) ?? defaultQueryFmt;
     this._context = options.context;
     this._contextLoader = options.contextLoader;
+    this._onDownloadProgress = options.onDownloadProgress;
   }
 
   get dimension(): number {
@@ -120,7 +128,13 @@ export class LlamaProvider implements EmbeddingProvider {
   }
 
   private async loadReal(): Promise<LlamaEmbeddingContextLike> {
-    const modelPath = await ensureModel(this._ggufRepo, this._ggufFile, this._cacheDir);
+    const modelPath = await ensureModel(
+      this._ggufRepo,
+      this._ggufFile,
+      this._cacheDir,
+      undefined,
+      this._onDownloadProgress,
+    );
     const { getLlama } = await import("node-llama-cpp");
     const llama = await getLlama();
     const model = await llama.loadModel({ modelPath, gpuLayers: -1 });

@@ -10,6 +10,7 @@
 import type { Config } from "../config.js";
 import { FakeProvider } from "./fake.js";
 import { LlamaProvider } from "./llama.js";
+import type { DownloadProgressFn } from "./models.js";
 import { OllamaProvider } from "./ollama.js";
 import { OpenAIProvider } from "./openai.js";
 import type { EmbeddingProvider } from "./types.js";
@@ -18,7 +19,16 @@ export type { EmbeddingProvider } from "./types.js";
 
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com";
 
-export async function getProvider(cfg: Config): Promise<EmbeddingProvider> {
+export interface GetProviderOptions {
+  /** Forwarded to `LlamaProvider` (ignored by every other provider — only
+   * `llama` downloads a model on first use). See src/embed/models.ts. */
+  onDownloadProgress?: DownloadProgressFn;
+}
+
+export async function getProvider(
+  cfg: Config,
+  opts: GetProviderOptions = {},
+): Promise<EmbeddingProvider> {
   switch (cfg.embeddingProvider) {
     case "fake":
       return new FakeProvider(cfg.embeddingDim);
@@ -31,6 +41,7 @@ export async function getProvider(cfg: Config): Promise<EmbeddingProvider> {
         {
           docTemplate: cfg.embeddingDocTemplate,
           queryTemplate: cfg.embeddingQueryTemplate,
+          onDownloadProgress: opts.onDownloadProgress,
         },
       );
     case "ollama":

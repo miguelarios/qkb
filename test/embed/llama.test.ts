@@ -1,6 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { LlamaEmbeddingContextLike, LlamaEmbeddingLike } from "../../src/embed/llama.js";
 import { LlamaProvider } from "../../src/embed/llama.js";
+import * as models from "../../src/embed/models.js";
+
+// Mocks the ensureModel seam so the "no context/contextLoader" (real) path
+// can be exercised without a network call or a real node-llama-cpp load:
+// ensureModel is forced to reject immediately, before loadReal() ever
+// reaches `getLlama()`, while still letting the test assert exactly what
+// LlamaProvider passed through. Matches the wrap-the-real-export mocking
+// pattern already used for getProvider/connect in test/mcp.test.ts.
+vi.mock("../../src/embed/models.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/embed/models.js")>();
+  return { ...actual, ensureModel: vi.fn(actual.ensureModel) };
+});
 
 // Ports legacy/python/tests/test_local_provider.py. Fully offline: a
 // recording fake stands in for the node-llama-cpp embedding context (the
@@ -147,5 +159,27 @@ describe("embed/llama", () => {
 
     expect(loadCalls).toBe(2);
     expect(vecs).toEqual([Array(DIM).fill(0.1)]);
+  });
+
+  it("forwards onDownloadProgress to ensureModel on the real (no context/contextLoader) path", async () => {
+    vi.mocked(models.ensureModel).mockClear();
+    vi.mocked(models.ensureModel).mockImplementationOnce(() =>
+      Promise.reject(new Error("stop before node-llama-cpp")),
+    );
+    const onDownloadProgress = vi.fn();
+    const p = new LlamaProvider("some-org/repo", FILE, "/unused/cache", DIM, {
+      onDownloadProgress,
+    });
+
+    await expect(p.embed(["a"])).rejects.toThrow("stop before node-llama-cpp");
+
+    expect(models.ensureModel).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(models.ensureModel).mock.calls[0];
+    expect(call?.[0]).toBe("some-org/repo");
+    expect(call?.[1]).toBe(FILE);
+    expect(call?.[2]).toBe("/unused/cache");
+    // 4th positional arg is the fetchFn (left at its default); the callback
+    // is threaded through as the 5th.
+    expect(call?.[4]).toBe(onDownloadProgress);
   });
 });
