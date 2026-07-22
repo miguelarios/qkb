@@ -24,15 +24,43 @@ export interface LlamaEmbeddingLike {
 
 /** Structural shape of node-llama-cpp's `LlamaEmbeddingContext` we depend
  * on — the injection seam for tests (mirrors Python's injectable `llama`
- * param in `LlamaCppProvider.__init__`). */
+ * param in `LlamaCppProvider.__init__`). The real `LlamaEmbeddingContext`
+ * doesn't expose `contextSize`/`tokenize`/`detokenize` itself (those live on
+ * `.model`, and `contextSize` is a private field on its internal
+ * `LlamaContext`) — `loadReal()` below adapts the real object to this
+ * richer shape so `embedRaw()`'s truncation logic (see its docstring) works
+ * identically against the real context and the test fakes. */
 export interface LlamaEmbeddingContextLike {
   getEmbeddingFor(input: string): Promise<LlamaEmbeddingLike>;
   dispose?(): void | Promise<void>;
+  /** The token budget `getEmbeddingFor` was created with. The real
+   * node-llama-cpp implementation THROWS ("Input is longer than the
+   * context size...") instead of truncating when this is exceeded, so
+   * `embedRaw()` must never call `getEmbeddingFor` with more than this
+   * (minus `EMBEDDING_SAFETY_MARGIN`) many tokens. */
+  contextSize: number;
+  tokenize(text: string): readonly number[];
+  detokenize(tokens: readonly number[]): string;
 }
 
 interface DisposableModel {
   dispose(): void | Promise<void>;
 }
+
+/** Tokens of slack subtracted from `contextSize` to get the truncation
+ * budget: the real `getEmbeddingFor` re-tokenizes whatever string it's
+ * given and, if that's under budget, silently prepends a BOS token and/or
+ * appends an EOS token when the tokenized input doesn't already end/start
+ * with one (see node-llama-cpp's `LlamaEmbeddingContext.getEmbeddingFor` —
+ * up to 2 extra tokens). The rest of the margin absorbs the fact that
+ * `truncateToContext` below detokenizes a *sliced* token list back to a
+ * string, which `getEmbeddingFor` then re-tokenizes from scratch — BPE
+ * merge behavior at that new boundary can occasionally produce a token or
+ * two more than the slice length. Verified empirically against the real
+ * embeddinggemma-300M-Q8_0 GGUF (see ts-dlprogress-report.md's integration
+ * section): re-tokenizing a truncated ~20k-word input produced exactly the
+ * slice length back, so 8 is a generous, not a bare-minimum, cushion. */
+const EMBEDDING_SAFETY_MARGIN = 8;
 
 export interface LlamaProviderOptions {
   docTemplate?: string | null;
@@ -139,7 +167,55 @@ export class LlamaProvider implements EmbeddingProvider {
     const llama = await getLlama();
     const model = await llama.loadModel({ modelPath, gpuLayers: -1 });
     this._loadedModel = model;
-    return model.createEmbeddingContext();
+    // Request the context explicitly at the model's own trained size
+    // (2048 for embeddinggemma-300M — matches the Python provider's
+    // hardcoded `_N_CTX`, legacy/python/src/qkb/embed/local.py) rather than
+    // leaving it at node-llama-cpp's default `"auto"`, which adapts to
+    // available VRAM and can silently come out SMALLER than trained size.
+    // `embedRaw`'s truncation math below needs to know the real ceiling
+    // `getEmbeddingFor` will enforce; requesting a specific number makes
+    // that ceiling exactly what we asked for, instead of something we'd
+    // otherwise have no public way to read back (the real
+    // `LlamaEmbeddingContext` doesn't expose `contextSize` — it's a
+    // private field on its internal `LlamaContext`). A 2048-token context
+    // is a trivial VRAM cost for a 300M-parameter model, so there's no
+    // real downside to pinning it.
+    const contextSize = model.trainContextSize;
+    const embeddingContext = await model.createEmbeddingContext({ contextSize });
+    return {
+      contextSize,
+      tokenize: (text) => model.tokenize(text),
+      detokenize: (tokens) => model.detokenize(tokens as Parameters<typeof model.detokenize>[0]),
+      getEmbeddingFor: (input) => embeddingContext.getEmbeddingFor(input),
+      dispose: () => embeddingContext.dispose(),
+    };
+  }
+
+  /** Truncates `text` to fit `context.contextSize` (minus
+   * `EMBEDDING_SAFETY_MARGIN`) tokens, keeping a prefix. No-op when it
+   * already fits. Mirrors ollama's `/api/embed` default (`truncate: true`)
+   * — the parity baseline the owner's golden-query index was actually
+   * built against — rather than node-llama-cpp's real behavior of
+   * THROWING on an over-long input (`"Input is longer than the context
+   * size..."`), which crashed real `qkb embed --full` runs on vault chunks
+   * whose token count (after template application, see below) exceeded
+   * the model's 2048-token context.
+   *
+   * Called from `embedRaw()`, i.e. AFTER `embed()`/`embedQuery()` apply the
+   * doc/query template — deliberately, not before: the template adds its
+   * own tokens ("title: none | text: ", "task: search result | query: ",
+   * etc.), and it's the *templated* string that actually gets tokenized and
+   * fed to `getEmbeddingFor`, so truncating the raw chunk text first could
+   * still overflow once the template wraps it. Truncating the final,
+   * template-applied string is the only point that's guaranteed correct
+   * regardless of template length. */
+  private truncateToContext(text: string, context: LlamaEmbeddingContextLike): string {
+    const tokens = context.tokenize(text);
+    const budget = Math.max(0, context.contextSize - EMBEDDING_SAFETY_MARGIN);
+    if (tokens.length <= budget) {
+      return text;
+    }
+    return context.detokenize(tokens.slice(0, budget));
   }
 
   private async embedRaw(inputs: string[]): Promise<number[][]> {
@@ -149,7 +225,8 @@ export class LlamaProvider implements EmbeddingProvider {
     const context = await this.getContext();
     const vectors: number[][] = [];
     for (const input of inputs) {
-      const embedding = await context.getEmbeddingFor(input);
+      const truncated = this.truncateToContext(input, context);
+      const embedding = await context.getEmbeddingFor(truncated);
       const v = Array.from(embedding.vector);
       if (v.length !== this._dim) {
         throw new Error(
