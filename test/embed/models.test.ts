@@ -106,6 +106,35 @@ describe("embed/models", () => {
     ).rejects.toThrow(/download failed/);
   });
 
+  it("still completes the download and lands the bytes when onDownloadProgress throws", async () => {
+    // Regression: the progress callback runs inside the pipeline()'s
+    // Transform step. An unguarded call meant a bug in the renderer would
+    // reject the whole pipeline(), get wrapped as "model download failed",
+    // and the caller (ensureModel) would then rm the still-good .part file
+    // — silently discarding a real ~310MB download over what's often just
+    // a cosmetic rendering bug. Progress reporting must be best-effort.
+    const dest = join(tmpPath, "model.gguf.part");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+        controller.enqueue(new Uint8Array([4, 5]));
+        controller.close();
+      },
+    });
+    const fakeFetch: typeof fetch = async () => new Response(stream, { status: 200 });
+
+    await download(
+      "https://huggingface.co/example/resolve/main/model.gguf",
+      dest,
+      fakeFetch,
+      () => {
+        throw new Error("renderer bug");
+      },
+    );
+
+    expect(new Uint8Array(readFileSync(dest))).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
+  });
+
   it("reports progress with increasing received bytes and the content-length total", async () => {
     const dest = join(tmpPath, "model.gguf.part");
     const stream = new ReadableStream<Uint8Array>({

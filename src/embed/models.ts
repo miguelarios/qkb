@@ -61,7 +61,18 @@ export async function download(
     const trackProgress = new Transform({
       transform(chunk: Buffer, _encoding, callback) {
         receivedBytes += chunk.length;
-        onDownloadProgress?.(receivedBytes, totalBytes);
+        // Best-effort only: this Transform sits inside the pipeline()
+        // below, so an uncaught throw here would reject the whole
+        // pipeline(), get wrapped as "model download failed" by the catch
+        // below, and ensureModel()'s finally would then rm the still-good
+        // .part file — a bug in the progress renderer must never look
+        // indistinguishable from a real network failure and discard a
+        // ~310MB download over it.
+        try {
+          onDownloadProgress?.(receivedBytes, totalBytes);
+        } catch {
+          // swallowed — see above.
+        }
         callback(null, chunk);
       },
     });

@@ -180,6 +180,16 @@ export class LlamaProvider implements EmbeddingProvider {
     // private field on its internal `LlamaContext`). A 2048-token context
     // is a trivial VRAM cost for a 300M-parameter model, so there's no
     // real downside to pinning it.
+    //
+    // Minor/follow-up: this is uncapped — if [embedding].local_gguf_repo/
+    // local_gguf_file is ever pointed at a GGUF with a much larger trained
+    // context (e.g. a multi-thousand-token LLM-scale context window
+    // instead of embeddinggemma's 2048), requesting that full size as a
+    // hard `number` here (vs `"auto"`) could exceed available VRAM.
+    // node-llama-cpp's own docs note a hard number "throw[s] an error" in
+    // that case rather than degrading — which is a clear, loud failure
+    // (not silent corruption), so left as-is for now rather than adding a
+    // cap/clamp with no real GGUF to validate it against.
     const contextSize = model.trainContextSize;
     const embeddingContext = await model.createEmbeddingContext({ contextSize });
     return {

@@ -63,10 +63,23 @@ async function doSearch(
     // wrapping ValueError in click.UsageError (exit code 2). The
     // `instanceof Error` catch below covers it since SearchValidationError
     // extends Error.
-    failUsage(e instanceof Error ? e.message : String(e));
-  } finally {
+    //
+    // downloadRenderer.stop() is called HERE, deliberately not in a
+    // `finally` below: failUsage() calls process.exit(2) synchronously, and
+    // Node does NOT run a pending `finally` before an explicit
+    // process.exit() (verified empirically) — a `finally` here would only
+    // ever fire on the success path, leaving a dangling in-place `\r`
+    // progress line (no trailing newline) on every error exit, with the
+    // next shell prompt landing mid-line. Contrast src/cli/ingest.ts's
+    // runEmbed(): its warmup catch does a normal `throw new Error(...)`
+    // that propagates up to the `action()` wrapper (./shared.ts), which is
+    // what actually calls `process.exit(1)` — by then runEmbed's `finally`
+    // has already run as part of ordinary exception unwinding, so that
+    // `finally` genuinely is safe.
     downloadRenderer?.stop();
+    failUsage(e instanceof Error ? e.message : String(e));
   }
+  downloadRenderer?.stop();
   emit(results, Boolean(opts.json), Boolean(opts.files));
 }
 
