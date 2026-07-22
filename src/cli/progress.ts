@@ -15,6 +15,7 @@
  * animation).
  */
 import cliProgress from "cli-progress";
+import { humanSize } from "./shared.js";
 
 export interface ProgressRenderer {
   tick(done: number, total: number, description: string): void;
@@ -59,5 +60,87 @@ export function createProgressRenderer(): ProgressRenderer {
         bar.stop();
       }
     },
+  };
+}
+
+/** Pure formatter for a single download-progress line — the thing that
+ * changes on every tick, kept separate from the TTY plumbing below so it's
+ * directly unit-testable. Mirrors the "MB / MB (pct%)" shape when the
+ * server sent `content-length`; falls back to a running byte counter
+ * ("N MB downloaded") when it didn't (or sent something bogus). */
+export function formatDownloadProgress(receivedBytes: number, totalBytes: number | null): string {
+  if (totalBytes === null || totalBytes <= 0) {
+    return `${humanSize(receivedBytes)} downloaded`;
+  }
+  const pct = Math.min(100, Math.floor((receivedBytes / totalBytes) * 100));
+  return `${humanSize(receivedBytes)} / ${humanSize(totalBytes)} (${pct}%)`;
+}
+
+export interface DownloadProgressRenderer {
+  update(receivedBytes: number, totalBytes: number | null): void;
+  stop(): void;
+}
+
+const NOOP_DOWNLOAD_RENDERER: DownloadProgressRenderer = {
+  update() {
+    // no-op: non-TTY output — see module docstring
+  },
+  stop() {
+    // no-op
+  },
+};
+
+/** Minimum time between rendered updates — `onDownloadProgress` fires once
+ * per network chunk (can be hundreds/sec on a fast link), so this is the
+ * "consumer throttles rendering" half of that contract. */
+const DOWNLOAD_RENDER_THROTTLE_MS = 100;
+
+/** Live single-line renderer for the first-run GGUF download
+ * (`onDownloadProgress` in src/embed/models.ts / src/embed/llama.ts) — the
+ * only progress feedback for a ~310 MB fetch that otherwise sits silent for
+ * minutes. Renders on stderr (matching the plain "downloading..."/"model
+ * cached" lines already printed by `ensureModel`, which this complements
+ * rather than replaces — those remain the only feedback in the non-TTY
+ * case). Writes an in-place `\r`-updated line while total bytes is known,
+ * ensuring a trailing newline is flushed the moment the transfer completes
+ * (`receivedBytes >= totalBytes`) so it never collides with `ensureModel`'s
+ * subsequent "model cached" line. Non-TTY: NOOP, same rationale as
+ * `createProgressRenderer` above. */
+export function createDownloadProgressRenderer(): DownloadProgressRenderer {
+  if (process.stderr.isTTY !== true) {
+    return NOOP_DOWNLOAD_RENDERER;
+  }
+  let lastLineLength = 0;
+  let inLine = false;
+  let lastRenderAt = 0;
+
+  const writeLine = (text: string): void => {
+    const pad = lastLineLength > text.length ? " ".repeat(lastLineLength - text.length) : "";
+    process.stderr.write(`\r${text}${pad}`);
+    lastLineLength = text.length;
+    inLine = true;
+  };
+  const finish = (): void => {
+    if (inLine) {
+      process.stderr.write("\n");
+      inLine = false;
+      lastLineLength = 0;
+    }
+  };
+
+  return {
+    update(receivedBytes, totalBytes) {
+      const complete = totalBytes !== null && totalBytes > 0 && receivedBytes >= totalBytes;
+      const now = Date.now();
+      if (!complete && now - lastRenderAt < DOWNLOAD_RENDER_THROTTLE_MS) {
+        return;
+      }
+      lastRenderAt = now;
+      writeLine(`qkb: ${formatDownloadProgress(receivedBytes, totalBytes)}`);
+      if (complete) {
+        finish();
+      }
+    },
+    stop: finish,
   };
 }

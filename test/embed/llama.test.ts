@@ -1,6 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { LlamaEmbeddingContextLike, LlamaEmbeddingLike } from "../../src/embed/llama.js";
 import { LlamaProvider } from "../../src/embed/llama.js";
+import * as models from "../../src/embed/models.js";
+
+// Mocks the ensureModel seam so the "no context/contextLoader" (real) path
+// can be exercised without a network call or a real node-llama-cpp load:
+// ensureModel is forced to reject immediately, before loadReal() ever
+// reaches `getLlama()`, while still letting the test assert exactly what
+// LlamaProvider passed through. Matches the wrap-the-real-export mocking
+// pattern already used for getProvider/connect in test/mcp.test.ts.
+vi.mock("../../src/embed/models.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/embed/models.js")>();
+  return { ...actual, ensureModel: vi.fn(actual.ensureModel) };
+});
 
 // Ports legacy/python/tests/test_local_provider.py. Fully offline: a
 // recording fake stands in for the node-llama-cpp embedding context (the
@@ -8,13 +20,30 @@ import { LlamaProvider } from "../../src/embed/llama.js";
 const DIM = 4;
 const FILE = "embeddinggemma-300M-Q8_0.gguf";
 
+// Word-level fake tokenizer: each "token" is a word's index into the most
+// recently tokenized word list, which detokenize() reads back from — good
+// enough to exercise LlamaProvider's truncate-then-embed logic (slice N
+// tokens, detokenize, embed) without needing a real tokenizer. contextSize
+// defaults large enough that no existing short-input test below is affected.
 class RecordingContext {
   dim: number;
   calls: string[][] = [];
   disposed = false;
+  contextSize: number;
+  private _lastWords: string[] = [];
 
-  constructor(dim = DIM) {
+  constructor(dim = DIM, contextSize = 1000) {
     this.dim = dim;
+    this.contextSize = contextSize;
+  }
+
+  tokenize(text: string): readonly number[] {
+    this._lastWords = text.length === 0 ? [] : text.split(" ");
+    return this._lastWords.map((_, i) => i);
+  }
+
+  detokenize(tokens: readonly number[]): string {
+    return tokens.map((i) => this._lastWords[i]).join(" ");
   }
 
   async getEmbeddingFor(text: string): Promise<LlamaEmbeddingLike> {
@@ -28,9 +57,15 @@ class RecordingContext {
 }
 
 function makeProvider(
-  opts: { dim?: number; dimension?: number; docTemplate?: string; queryTemplate?: string } = {},
+  opts: {
+    dim?: number;
+    dimension?: number;
+    docTemplate?: string;
+    queryTemplate?: string;
+    contextSize?: number;
+  } = {},
 ) {
-  const context = new RecordingContext(opts.dim ?? DIM);
+  const context = new RecordingContext(opts.dim ?? DIM, opts.contextSize);
   const p = new LlamaProvider("unused/repo", FILE, "/unused/cache", opts.dimension ?? DIM, {
     context,
     docTemplate: opts.docTemplate,
@@ -147,5 +182,66 @@ describe("embed/llama", () => {
 
     expect(loadCalls).toBe(2);
     expect(vecs).toEqual([Array(DIM).fill(0.1)]);
+  });
+
+  it("forwards onDownloadProgress to ensureModel on the real (no context/contextLoader) path", async () => {
+    vi.mocked(models.ensureModel).mockClear();
+    vi.mocked(models.ensureModel).mockImplementationOnce(() =>
+      Promise.reject(new Error("stop before node-llama-cpp")),
+    );
+    const onDownloadProgress = vi.fn();
+    const p = new LlamaProvider("some-org/repo", FILE, "/unused/cache", DIM, {
+      onDownloadProgress,
+    });
+
+    await expect(p.embed(["a"])).rejects.toThrow("stop before node-llama-cpp");
+
+    expect(models.ensureModel).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(models.ensureModel).mock.calls[0];
+    expect(call?.[0]).toBe("some-org/repo");
+    expect(call?.[1]).toBe(FILE);
+    expect(call?.[2]).toBe("/unused/cache");
+    // 4th positional arg is the fetchFn (left at its default); the callback
+    // is threaded through as the 5th.
+    expect(call?.[4]).toBe(onDownloadProgress);
+  });
+
+  // Regression: node-llama-cpp's real getEmbeddingFor() THROWS ("Input is
+  // longer than the context size...") rather than truncating, unlike
+  // ollama's /api/embed (truncate: true by default) which the owner's
+  // golden-query baseline was built against. LlamaProvider must truncate
+  // before calling getEmbeddingFor so long vault chunks don't blow up
+  // `qkb embed --full` (see src/embed/llama.ts's embedRaw()/truncateToContext()
+  // docstrings for the exact budget math).
+  it("passes input through untouched when it fits the context budget", async () => {
+    const { p, context } = makeProvider({ contextSize: 100, docTemplate: "{t}" });
+    await p.embed(["short text"]);
+    expect(context.calls).toEqual([["short text"]]);
+  });
+
+  it("truncates input exceeding the context budget before calling getEmbeddingFor", async () => {
+    const { p, context } = makeProvider({ contextSize: 20, docTemplate: "{t}" });
+    const words = Array.from({ length: 50 }, (_, i) => `word${i}`);
+
+    const vecs = await p.embed([words.join(" ")]);
+
+    expect(vecs).toEqual([Array(DIM).fill(0.1)]); // succeeds instead of throwing
+    expect(context.calls.length).toBe(1);
+    const sentWords = context.calls[0]?.[0]?.split(" ") ?? [];
+    expect(sentWords.length).toBeGreaterThan(0);
+    expect(sentWords.length).toBeLessThan(words.length);
+    // Truncation keeps a prefix of the original tokens (not a random slice).
+    expect(words.slice(0, sentWords.length)).toEqual(sentWords);
+  });
+
+  it("truncates a long embedQuery() input the same way", async () => {
+    const { p, context } = makeProvider({ contextSize: 20, queryTemplate: "{t}" });
+    const words = Array.from({ length: 50 }, (_, i) => `word${i}`);
+
+    await p.embedQuery(words.join(" "));
+
+    const sentWords = context.calls[0]?.[0]?.split(" ") ?? [];
+    expect(sentWords.length).toBeLessThan(words.length);
+    expect(words.slice(0, sentWords.length)).toEqual(sentWords);
   });
 });

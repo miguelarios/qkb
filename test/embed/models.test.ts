@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { FetchFn } from "../../src/embed/models.js";
 import { download, ensureModel, ggufUrl } from "../../src/embed/models.js";
 
 // Ports legacy/python/tests/test_embed_models.py. Offline: the network fetch
@@ -103,5 +104,100 @@ describe("embed/models", () => {
     await expect(
       download("https://huggingface.co/example/missing", dest, fakeFetch),
     ).rejects.toThrow(/download failed/);
+  });
+
+  it("still completes the download and lands the bytes when onDownloadProgress throws", async () => {
+    // Regression: the progress callback runs inside the pipeline()'s
+    // Transform step. An unguarded call meant a bug in the renderer would
+    // reject the whole pipeline(), get wrapped as "model download failed",
+    // and the caller (ensureModel) would then rm the still-good .part file
+    // — silently discarding a real ~310MB download over what's often just
+    // a cosmetic rendering bug. Progress reporting must be best-effort.
+    const dest = join(tmpPath, "model.gguf.part");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+        controller.enqueue(new Uint8Array([4, 5]));
+        controller.close();
+      },
+    });
+    const fakeFetch: typeof fetch = async () => new Response(stream, { status: 200 });
+
+    await download(
+      "https://huggingface.co/example/resolve/main/model.gguf",
+      dest,
+      fakeFetch,
+      () => {
+        throw new Error("renderer bug");
+      },
+    );
+
+    expect(new Uint8Array(readFileSync(dest))).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
+  });
+
+  it("reports progress with increasing received bytes and the content-length total", async () => {
+    const dest = join(tmpPath, "model.gguf.part");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2]));
+        controller.enqueue(new Uint8Array([3, 4, 5]));
+        controller.close();
+      },
+    });
+    const fakeFetch: typeof fetch = async () =>
+      new Response(stream, { status: 200, headers: { "content-length": "5" } });
+
+    const calls: Array<[number, number | null]> = [];
+    await download(
+      "https://huggingface.co/example/resolve/main/model.gguf",
+      dest,
+      fakeFetch,
+      (received, total) => calls.push([received, total]),
+    );
+
+    expect(calls).toEqual([
+      [2, 5],
+      [5, 5],
+    ]);
+  });
+
+  it("reports a null total when content-length is absent", async () => {
+    const dest = join(tmpPath, "model.gguf.part");
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+        controller.close();
+      },
+    });
+    const fakeFetch: typeof fetch = async () => new Response(stream, { status: 200 });
+
+    const calls: Array<[number, number | null]> = [];
+    await download(
+      "https://huggingface.co/example/resolve/main/model.gguf",
+      dest,
+      fakeFetch,
+      (received, total) => calls.push([received, total]),
+    );
+
+    expect(calls).toEqual([[3, null]]);
+  });
+
+  it("forwards onDownloadProgress through ensureModel to the injected fetch", async () => {
+    const cache = join(tmpPath, "models3");
+    const received: Array<[number, number | null]> = [];
+    const fetchFn: FetchFn = async (_url, dest, onProgress) => {
+      onProgress?.(1, 2);
+      onProgress?.(2, 2);
+      writeFileSync(dest, "GGUF-bytes");
+    };
+
+    await ensureModel("example-org/x", "model.gguf", cache, fetchFn, (received_, total) =>
+      received.push([received_, total]),
+    );
+
+    expect(received).toEqual([
+      [1, 2],
+      [2, 2],
+    ]);
   });
 });

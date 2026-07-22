@@ -26,7 +26,7 @@ import type { Command } from "commander";
 import { Storage } from "../db/storage.js";
 import { getProvider } from "../embed/provider.js";
 import { embedPending, ingestVault } from "../ingest/pipeline.js";
-import { createProgressRenderer } from "./progress.js";
+import { createDownloadProgressRenderer, createProgressRenderer } from "./progress.js";
 import { action, cfg, openDb, shorten } from "./shared.js";
 
 export const INGEST_ABORT_MESSAGE = "\nAborted. Re-run `qkb ingest` to continue.";
@@ -139,7 +139,14 @@ export async function runEmbed(opts: { full?: boolean }): Promise<void> {
   // triggers a model load/download. The guard against a stale model/dim
   // (see embedPending() below) relies on `provider.modelName`/`.dimension`
   // being available unconditionally, so it must always be constructed.
-  const provider = await getProvider(cfgObj);
+  // The download renderer is likewise safe to build unconditionally
+  // (createDownloadProgressRenderer() does no I/O either) — it only ever
+  // renders anything if the `llama` provider actually downloads a GGUF
+  // during the warmup call below.
+  const downloadRenderer = createDownloadProgressRenderer();
+  const provider = await getProvider(cfgObj, {
+    onDownloadProgress: (received, total) => downloadRenderer.update(received, total),
+  });
 
   // Skip the warmup call — the actual first real `embed()` call, and the
   // thing that resolves/downloads/loads a model (e.g. llama's GGUF; see
@@ -163,6 +170,8 @@ export async function runEmbed(opts: { full?: boolean }): Promise<void> {
       throw new Error(
         `could not load embedding model: ${e instanceof Error ? e.message : String(e)}`,
       );
+    } finally {
+      downloadRenderer.stop();
     }
   }
 
