@@ -14,6 +14,18 @@ vi.mock("../../src/embed/models.js", async (importOriginal) => {
   return { ...actual, ensureModel: vi.fn(actual.ensureModel) };
 });
 
+// Mocks node-llama-cpp itself so the gpuLayers regression test below can
+// drive loadReal() all the way through loadModel() (past the ensureModel
+// seam above) without touching the real native addon/GPU — vi.hoisted()
+// per Vitest's documented pattern for referencing shared state from inside
+// a vi.mock() factory.
+const { loadModelMock, getLlamaMock } = vi.hoisted(() => {
+  const loadModelMock = vi.fn();
+  const getLlamaMock = vi.fn(async () => ({ loadModel: loadModelMock }));
+  return { loadModelMock, getLlamaMock };
+});
+vi.mock("node-llama-cpp", () => ({ getLlama: getLlamaMock }));
+
 // Ports legacy/python/tests/test_local_provider.py. Fully offline: a
 // recording fake stands in for the node-llama-cpp embedding context (the
 // injection seam), so these pass without downloading or loading a GGUF.
@@ -243,5 +255,51 @@ describe("embed/llama", () => {
     const sentWords = context.calls[0]?.[0]?.split(" ") ?? [];
     expect(sentWords.length).toBeLessThan(words.length);
     expect(words.slice(0, sentWords.length)).toEqual(sentWords);
+  });
+
+  // Regression: loadReal() used to pass `gpuLayers: -1` — llama-cpp-python's
+  // "offload all layers" convention that the original plan text carried
+  // over from the Python provider, but node-llama-cpp v3 treats -1 as "not
+  // 'auto'/'max'/a valid layer count", which resolved to 0 layers offloaded
+  // (pure CPU inference). Confirmed on real hardware: `model.gpuLayers`
+  // came back `0 of 24` with `-1`, and the owner's full embed ran at
+  // ~4 chunks/s (CPU-band). `"auto"` (node-llama-cpp's own default — see
+  // the `gpuLayers` doc comment on `LlamaModelOptions` in
+  // node_modules/node-llama-cpp/dist/evaluator/LlamaModel/LlamaModel.d.ts)
+  // offloads as many layers as fit in available VRAM and gracefully
+  // degrades on lower-memory machines instead of throwing, unlike `"max"`
+  // ("If there's not enough VRAM, an error will be thrown"). Pinned here so
+  // nobody reintroduces `-1` (or any other negative number) by muscle
+  // memory from the Python original.
+  it("loads the model with GPU offload enabled (gpuLayers: 'auto'), never -1 or negative", async () => {
+    vi.mocked(models.ensureModel).mockImplementationOnce(
+      async () => "/unused/cache/embeddinggemma-300M-Q8_0.gguf",
+    );
+    const fakeEmbeddingContext = {
+      getEmbeddingFor: vi.fn(async () => ({ vector: Array(DIM).fill(0.1) })),
+      dispose: vi.fn(async () => undefined),
+    };
+    const fakeModel = {
+      trainContextSize: 2048,
+      tokenize: vi.fn((text: string) => text.split(" ").map((_, i) => i)),
+      detokenize: vi.fn((tokens: readonly number[]) => tokens.join(" ")),
+      createEmbeddingContext: vi.fn(async () => fakeEmbeddingContext),
+      dispose: vi.fn(async () => undefined),
+    };
+    loadModelMock.mockClear();
+    loadModelMock.mockResolvedValueOnce(fakeModel);
+
+    const p = new LlamaProvider("some-org/repo", FILE, "/unused/cache", DIM);
+    const vecs = await p.embed(["hello world"]);
+
+    expect(vecs).toEqual([Array(DIM).fill(0.1)]);
+    expect(loadModelMock).toHaveBeenCalledTimes(1);
+    const opts = loadModelMock.mock.calls[0]?.[0] as { modelPath: string; gpuLayers: unknown };
+    expect(opts.modelPath).toBe("/unused/cache/embeddinggemma-300M-Q8_0.gguf");
+    expect(opts.gpuLayers).toBe("auto");
+    expect(opts.gpuLayers).not.toBe(-1);
+    if (typeof opts.gpuLayers === "number") {
+      expect(opts.gpuLayers).toBeGreaterThanOrEqual(0);
+    }
   });
 });

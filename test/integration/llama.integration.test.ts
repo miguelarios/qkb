@@ -55,4 +55,65 @@ describe("embed/llama integration (real model)", () => {
       provider.close?.();
     }
   }, 120_000);
+
+  // Regression for the gpuLayers: -1 bug (src/embed/llama.ts's loadReal()
+  // docstring): -1 isn't a value node-llama-cpp v3 recognizes as "offload
+  // everything" (that's llama-cpp-python's convention, not this library's),
+  // and empirically resolved to 0 layers offloaded — pure CPU inference.
+  // LlamaProvider doesn't expose its internal `Llama`/`LlamaModel` objects,
+  // so this drives getLlama()/loadModel() directly (the same two calls
+  // loadReal() makes) to inspect `llama.gpu` and `model.gpuLayers` for
+  // real, on whatever backend is actually available in this environment —
+  // skips the assertion (rather than failing) on a machine with no GPU
+  // backend at all, where 0 offloaded layers is correct, not a regression.
+  it("offloads layers to the GPU when one is available", async () => {
+    const { getLlama } = await import("node-llama-cpp");
+    const llama = await getLlama();
+    const model = await llama.loadModel({
+      modelPath: `${process.env.HOME}/.cache/qkb/models/${FILE}`,
+      gpuLayers: "auto",
+    });
+    try {
+      console.log(`llama.gpu = ${String(llama.gpu)}, model.gpuLayers = ${model.gpuLayers}`);
+      if (llama.gpu) {
+        expect(model.gpuLayers).toBeGreaterThan(0);
+      }
+    } finally {
+      await model.dispose();
+    }
+  }, 120_000);
+
+  // Evidence of the Metal speedup over the prior CPU-band run (owner's
+  // production `qkb embed --full`: 3838 chunks in 15m59s at 576% CPU ≈
+  // 4 chunks/s under the -1/CPU-only bug). ~100 realistic-length chunk-ish
+  // texts (a handful of sentences each, similar order of magnitude to the
+  // ~500-token chunk_target_tokens default) through the real doc-template +
+  // truncate + embed path, timed end to end (first call pays the one-time
+  // model load, same as any real `qkb embed` run).
+  it("embeds a batch of realistic-length texts and reports throughput", async () => {
+    const provider = new LlamaProvider(REPO, FILE, `${process.env.HOME}/.cache/qkb/models`, DIM);
+    try {
+      const sentence =
+        "The quick brown fox jumps over the lazy dog near the old stone bridge " +
+        "while the autumn leaves drift slowly across the quiet, winding path. ";
+      const texts = Array.from({ length: 100 }, (_, i) =>
+        `Document ${i}: ${sentence.repeat(6)}`.trim(),
+      );
+
+      const start = performance.now();
+      const vecs = await provider.embed(texts);
+      const elapsedMs = performance.now() - start;
+
+      expect(vecs).toHaveLength(100);
+      for (const v of vecs) expect(v).toHaveLength(DIM);
+
+      const chunksPerSec = (100 / elapsedMs) * 1000;
+      console.log(
+        `embedded 100 chunks in ${(elapsedMs / 1000).toFixed(2)}s ` +
+          `(${chunksPerSec.toFixed(1)} chunks/s, incl. one-time model load)`,
+      );
+    } finally {
+      provider.close?.();
+    }
+  }, 120_000);
 });

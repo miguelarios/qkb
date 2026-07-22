@@ -165,7 +165,22 @@ export class LlamaProvider implements EmbeddingProvider {
     );
     const { getLlama } = await import("node-llama-cpp");
     const llama = await getLlama();
-    const model = await llama.loadModel({ modelPath, gpuLayers: -1 });
+    // `gpuLayers: "auto"` (node-llama-cpp's own default — offload as many
+    // layers as fit in available VRAM, computed against the model's actual
+    // size). Do NOT use `-1`: that's llama-cpp-python's "offload all
+    // layers" convention (the PLAN text this was ported from carried it
+    // over from the Python provider), but node-llama-cpp v3 does not
+    // special-case -1 — it isn't `"auto"`/`"max"`/a valid non-negative
+    // layer count, and empirically resolves to 0 layers offloaded, i.e.
+    // pure CPU inference (confirmed on real hardware: `model.gpuLayers`
+    // came back `0 of 24` with `-1`, and a real `qkb embed --full` ran at
+    // CPU-band throughput, ~4 chunks/s). `"auto"` was chosen over the
+    // alternative explicit `"max"` ("store all layers in VRAM. If there's
+    // not enough VRAM, an error will be thrown. Use with caution." — see
+    // node_modules/node-llama-cpp/dist/evaluator/LlamaModel/LlamaModel.d.ts)
+    // specifically for `"auto"`'s graceful degradation on machines with
+    // less VRAM than this one; `"max"` would hard-fail there instead.
+    const model = await llama.loadModel({ modelPath, gpuLayers: "auto" });
     this._loadedModel = model;
     // Request the context explicitly at the model's own trained size
     // (2048 for embeddinggemma-300M — matches the Python provider's
