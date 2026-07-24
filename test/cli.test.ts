@@ -203,6 +203,292 @@ describe("qkb CLI (subprocess)", () => {
     expect(results[0]).toHaveProperty("obsidian_uri");
   });
 
+  // Issue #14: human search output shows per-result match evidence, a
+  // relative-percentage score column, and a context-name tip — all
+  // presentation-only; --json/--files must stay byte-identical (pinned
+  // separately below).
+  describe("human search output (issue #14)", () => {
+    it("shows a clipped evidence line with [markers] kept for a real body match", () => {
+      writeNote("a.md", ID1, {
+        body: "Renewing traefik certificates for the homelab reverse proxy.",
+      });
+      run(["ingest"]);
+
+      const result = run(["search", "traefik", "--context", "homelab"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain("[traefik]");
+      // no raw-score column and no old "Title: snippet" trailing block
+      expect(result.output).not.toMatch(/^a: /m);
+    });
+
+    it("shows a match attribution (not document-head noise) for a metadata-column-only match", () => {
+      // "homelab-traefik" only appears in frontmatter (context), never in
+      // the body, so the FTS5 body snippet degrades to the document's
+      // opening words with no [markers] — the old behavior printed that
+      // noise verbatim; the new behavior must attribute the hit instead.
+      writeNote("a.md", ID1, {
+        context: "homelab-traefik",
+        body: "Some unrelated body text about DNS and adguard configuration.",
+      });
+      run(["ingest"]);
+
+      const result = run(["search", "homelab-traefik"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain('matched: context "homelab-traefik"');
+      // must NOT print the useless body-head snippet
+      expect(result.output).not.toContain("Some unrelated body text");
+    });
+
+    it("does not mistake a body's literal markdown brackets for match markers (checklist + wikilink opening, context-only match)", () => {
+      // Reviewer-proven bracket-sniffing bug: a body that legitimately
+      // OPENS with `- [ ]` checklist syntax and a `[[wikilink]]` contains
+      // literal `[`/`]` that have nothing to do with the actual match (the
+      // query only matches the context column) — bracket-sniffing
+      // `matched_text` for "was this a real hit" printed that checklist
+      // text as if it were highlighted evidence. Real match markers must be
+      // an internal signal the document's own content can never produce.
+      writeNote("a.md", ID1, {
+        context: "homelab-traefik",
+        body: "- [ ] buy milk\nSee [[grocery list]] for more.",
+      });
+      run(["ingest"]);
+
+      const result = run(["search", "homelab-traefik"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain('matched: context "homelab-traefik"');
+      // must NOT print the checklist/wikilink body text as if it were
+      // real match evidence.
+      expect(result.output).not.toContain("buy milk");
+      expect(result.output).not.toContain("grocery list");
+    });
+
+    it("strips marker brackets around stopwords in a natural-language query, keeping brackets only on content words", () => {
+      // Owner-feedback follow-up: a real-vault natural-language query like
+      // "what did the doctor say about alice" highlights EVERY matched
+      // token, including function words — `[what] [the] [doctor] [did]
+      // [say] [about] [alice]` — most of which are informationless
+      // confetti. Only "doctor", "say", and "alice" are content words; the
+      // rest (what/did/the/about) are on the stopword list and should lose
+      // their markers at render time while keeping their own text.
+      writeNote("a.md", ID1, {
+        body: "What the doctor did say about Alice was concerning.",
+      });
+      run(["ingest"]);
+
+      const result = run(["search", "what did the doctor say about alice"]);
+      expect(result.exitCode).toBe(0);
+      // content words keep their markers
+      expect(result.output).toContain("[doctor]");
+      expect(result.output).toContain("[say]");
+      expect(result.output).toContain("[Alice]");
+      // stopwords lose theirs (case-insensitive: body capitalizes "What")
+      expect(result.output).not.toMatch(/\[what\]/i);
+      expect(result.output).not.toMatch(/\[did\]/i);
+      expect(result.output).not.toMatch(/\[the\]/i);
+      expect(result.output).not.toMatch(/\[about\]/i);
+      // the stopwords' own text is still there, just unmarked
+      expect(result.output).toContain("What the");
+    });
+
+    it("an inflected form of a stopword (not itself on the list) keeps its markers — exact-token match only, no stemming", () => {
+      // Deliberate conservative-stripping decision: "saying" is an
+      // inflection of "say", but "saying" itself is not in the stopword
+      // list, so it must stay marked. Only an exact (lowercased) token
+      // match on the list strips a marker.
+      writeNote("a.md", ID1, { body: "Alice keeps saying the same thing about the doctor." });
+      run(["ingest"]);
+
+      const result = run(["search", "saying"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain("[saying]");
+    });
+
+    it("a query matching ONLY stopwords falls back exactly like a marker-less match: attribution when identifiable, otherwise nothing — never prints the stopword-only snippet as evidence", () => {
+      writeNote("a.md", ID1, {
+        context: "homelab-traefik",
+        body: "What is that on the counter over there.",
+      });
+      run(["ingest"]);
+
+      // None of "what"/"is"/"that" appear in title/context/type/tags, so
+      // there's no attribution either — the fallback path (issue #14's
+      // existing marker-less behavior) prints nothing for bm25.
+      const result = run(["search", "what is that"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).not.toContain("matched:");
+      expect(result.output).not.toMatch(/\[what\]/i);
+      expect(result.output).not.toMatch(/\[is\]/i);
+      expect(result.output).not.toMatch(/\[that\]/i);
+      // the obsidian URI line still prints regardless (see below) — this
+      // isn't "no output for the result", just "no evidence line".
+      expect(result.output).toContain("obsidian://open");
+    });
+
+    it("prints the full obsidian:// URI as an indented line under each result (human output only)", () => {
+      writeNote("a.md", ID1, { body: "Renewing traefik certificates." });
+      run(["ingest"]);
+
+      const result = run(["search", "traefik"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toMatch(/^\s{2}obsidian:\/\/open\?vault=.*&file=.*$/m);
+    });
+
+    it("prints relative percentage scores (top result = 100%), not raw scores", () => {
+      writeNote("a.md", ID1, { body: "traefik traefik traefik certificate renewal notes" });
+      writeNote("b.md", ID2, { body: "a passing mention of traefik once" });
+      run(["ingest"]);
+
+      const result = run(["search", "traefik"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain("100%");
+      // no raw BM25 float (e.g. "0.0000") anywhere in the table
+      expect(result.output).not.toMatch(/\b\d+\.\d{4,}\b/);
+    });
+
+    it('prints the "is a context" tip on stderr when the query exactly equals a context name', () => {
+      writeNote("a.md", ID1, { context: "homelab-traefik", body: "Renewing certificates." });
+      run(["ingest"]);
+
+      const result = run(["search", "homelab-traefik"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain(
+        'tip: "homelab-traefik" is a context — use --context homelab-traefik to browse it',
+      );
+    });
+
+    it("does NOT print the context tip for an ordinary query that isn't a context name", () => {
+      writeNote("a.md", ID1, { context: "homelab-traefik", body: "Renewing certificates." });
+      run(["ingest"]);
+
+      const result = run(["search", "certificates"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).not.toContain("is a context");
+    });
+
+    it("does NOT print the context tip when the query matches a context name but there are zero results", () => {
+      writeNote("a.md", ID1, { context: "homelab-traefik", body: "Renewing certificates." });
+      run(["ingest"]);
+
+      // "empty-context" isn't a real context and matches nothing.
+      const result = run(["search", "empty-context"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).not.toContain("is a context");
+    });
+
+    it("does NOT print the context tip for --json or --files output", () => {
+      writeNote("a.md", ID1, { context: "homelab-traefik", body: "Renewing certificates." });
+      run(["ingest"]);
+
+      const asJson = run(["search", "homelab-traefik", "--json"]);
+      expect(asJson.output).not.toContain("is a context");
+      JSON.parse(asJson.output); // still valid, unadorned JSON
+
+      const asFiles = run(["search", "homelab-traefik", "--files"]);
+      expect(asFiles.output).not.toContain("is a context");
+    });
+
+    it("--json output is unaffected by the evidence/score/tip changes (byte-identical contract)", () => {
+      writeNote("a.md", ID1, {
+        context: "homelab-traefik",
+        body: "Renewing traefik certificates for the homelab reverse proxy.",
+      });
+      run(["ingest"]);
+
+      const result = run(["search", "traefik", "--json"]);
+      expect(result.exitCode).toBe(0);
+      const results = JSON.parse(result.output) as Array<Record<string, unknown>>;
+      expect(results).toHaveLength(1);
+      expect(results[0]?.document_id).toBe(ID1);
+      // raw score still a plain unbounded float, never a "NN%" string
+      expect(typeof results[0]?.score).toBe("number");
+      expect(results[0]?.matched_text).toContain("[traefik]");
+      // `obsidian_uri` was already part of the --json contract before the
+      // human-output URI line was added — same key, same value, unaffected
+      // by that addition (owner-feedback follow-up).
+      expect(results[0]?.obsidian_uri).toMatch(/^obsidian:\/\/open\?vault=.*&file=.*$/);
+      // the result's key set is exactly hydrate's contract — no stray key
+      // leaked in from either the URI line or stopword-marker stripping.
+      expect(Object.keys(results[0] as object).sort()).toEqual(
+        [
+          "context",
+          "context_description",
+          "document_id",
+          "effective_date",
+          "file_path",
+          "matched_text",
+          "obsidian_uri",
+          "score",
+          "siblings",
+          "source",
+          "tags",
+          "title",
+          "type",
+        ].sort(),
+      );
+      // nothing besides valid JSON on stdout+stderr
+      expect(result.output.trim().startsWith("[")).toBe(true);
+    });
+
+    it("--json matched_text round-trips a real match byte-exact to public [markers], with no internal control-char markers leaked, even with unrelated literal brackets in the body (checklist/wikilink)", () => {
+      // searchBm25 marks a real hit internally with control chars, not
+      // literal `[`/`]` (issue #14 critical fix), specifically so a body's
+      // own literal brackets (checklist/wikilink markdown, here placed
+      // right next to the real match so both land in the same snippet
+      // window) can never be confused with a match marker. The public
+      // `--json` contract must still show plain `[traefik]` (Python
+      // parity) — and must never leak the raw internal control bytes.
+      writeNote("a.md", ID1, {
+        context: "homelab-traefik",
+        body: "- [ ] buy milk. Renewing traefik [[cert-tracker]] certificates for the homelab reverse proxy.",
+      });
+      run(["ingest"]);
+
+      const result = run(["search", "traefik", "--json"]);
+      expect(result.exitCode).toBe(0);
+      const results = JSON.parse(result.output) as Array<{ matched_text: string }>;
+      expect(results[0]?.matched_text).toContain("[traefik]");
+      // the body's own literal brackets pass through untouched too
+      expect(results[0]?.matched_text).toContain("[[cert-tracker]]");
+      // No raw internal control-char markers ever leak into public bytes.
+      // Plain substring checks built via String.fromCharCode, not a regex
+      // literal -- biome's noControlCharactersInRegex rule (rightly)
+      // disallows control chars inside a regex pattern.
+      expect(result.output.includes(String.fromCharCode(1))).toBe(false);
+      expect(result.output.includes(String.fromCharCode(2))).toBe(false);
+    });
+
+    it("--json matched_text for a marker-less (metadata-only) match stays the plain document-head snippet — no stray brackets inserted, no leaked control chars", () => {
+      writeNote("a.md", ID1, {
+        context: "homelab-traefik",
+        body: "Some unrelated body text about DNS and adguard configuration.",
+      });
+      run(["ingest"]);
+
+      const result = run(["search", "homelab-traefik", "--json"]);
+      expect(result.exitCode).toBe(0);
+      const results = JSON.parse(result.output) as Array<{ matched_text: string | null }>;
+      expect(results[0]?.matched_text).toContain("Some unrelated body text");
+      const text = results[0]?.matched_text ?? "";
+      expect(text.includes(String.fromCharCode(1))).toBe(false);
+      expect(text.includes(String.fromCharCode(2))).toBe(false);
+    });
+
+    it("--files output is unaffected by the evidence/score/tip changes (byte-identical contract)", () => {
+      writeNote("a.md", ID1, {
+        context: "homelab-traefik",
+        body: "Renewing traefik certificates for the homelab reverse proxy.",
+      });
+      run(["ingest"]);
+
+      const result = run(["search", "traefik", "--files"]);
+      expect(result.exitCode).toBe(0);
+      const line = result.output.trim();
+      expect(line.split(",")[0]).toBe(ID1);
+      expect(line).not.toContain("%");
+      expect(line).not.toContain("matched:");
+    });
+  });
+
   it("search --files format and context filter", () => {
     writeNote("a.md", ID1, { body: "Renewing traefik certificates." });
     run(["ingest"]);

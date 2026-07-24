@@ -23,6 +23,68 @@ import { buildFilterClause, type Filters } from "./filters.js";
 // which assert byte-identical tokenization against those same probes.
 const WORD_RE = /[\p{L}\p{N}_]+/gu;
 
+// INTERNAL match-marker delimiters `snippet()` wraps around a hit — control
+// chars (U+0001/U+0002), not the public `[`/`]` Python parity requires.
+// Obsidian markdown bodies routinely open with `- [ ] checklist` items or
+// `[[wikilinks]]`, so literal brackets can appear in a snippet's opening
+// words even when nothing actually matched there (a metadata-column-only
+// hit, e.g. context matched but body didn't) — bracket-sniffing for "was
+// there a real match" is therefore unsound (issue #14 critical fix; proven
+// with a body starting `- [ ] buy milk…` and a context-only match, which
+// used to print the checklist as if it were highlighted match evidence).
+// Control chars can't collide with real markdown content, so `hasMatchMarkers`
+// below is collision-proof. These never leave the process as-is: every
+// public boundary that serializes `matched_text` (CLI `--json`, the MCP
+// `qkb` tool's result, and the human evidence renderer's display string —
+// see src/cli/shared.ts and src/server/mcp.ts) must call `toPublicMarkers`
+// first to translate back to `[`/`]`, keeping `--json`/`--files`/MCP bytes
+// byte-identical to before this change (Python parity). `--files` never
+// carries `matched_text` at all, so it needs no translation call.
+const MATCH_START = "\u0001";
+const MATCH_END = "\u0002";
+
+/** True when `text` carries `snippet()`'s internal match-marker control
+ * chars — i.e. a real body-column hit, not just an unrelated `[`/`]` in the
+ * document's opening words (markdown checklists/wikilinks). See the
+ * `MATCH_START`/`MATCH_END` comment above for why bracket-sniffing doesn't
+ * work here. */
+export function hasMatchMarkers(text: string): boolean {
+  return text.includes(MATCH_START);
+}
+
+/** Translates internal control-char match markers back to the public `[`/`]`
+ * bracket markers every external consumer (Python parity, `--json`, MCP)
+ * expects. A no-op on text with no markers (vector chunk text, marker-less
+ * bm25 snippets) — safe to call unconditionally at a serialization
+ * boundary. */
+export function toPublicMarkers(text: string): string {
+  return text.includes(MATCH_START)
+    ? text.replaceAll(MATCH_START, "[").replaceAll(MATCH_END, "]")
+    : text;
+}
+
+/**
+ * Walks every `MATCH_START...MATCH_END`-wrapped span in `text` and, for each
+ * one, calls `shouldStrip(enclosedToken)` — `true` removes just the
+ * surrounding markers (keeping the token's own text in place), `false`
+ * leaves that span untouched. A no-op on text with no markers.
+ *
+ * This is the CLI's hook for stopword-marker stripping (issue #14 follow-up:
+ * a real-vault natural-language query like "what did the doctor say about
+ * alice" highlights markers on stopwords too — `[what] [the] ... [says]` is
+ * informationless confetti) without handing the caller the raw marker
+ * bytes — `src/cli/shared.ts` supplies the stopword predicate, this module
+ * keeps sole ownership of what a "marker" actually is (same reasoning as
+ * `hasMatchMarkers`/`toPublicMarkers` above).
+ */
+export function stripMarkersWhere(text: string, shouldStrip: (token: string) => boolean): string {
+  if (!text.includes(MATCH_START)) {
+    return text;
+  }
+  const pattern = new RegExp(`${MATCH_START}([^${MATCH_END}]*)${MATCH_END}`, "g");
+  return text.replace(pattern, (whole, token: string) => (shouldStrip(token) ? token : whole));
+}
+
 // Renders a number the way Python's `str(float)` would, for byte-identical
 // SQL text against `bm25.py`'s f-string-interpolated weights (e.g. `5.0`,
 // not JS's default `5`). Only exercised on the small literal weight list
@@ -31,6 +93,17 @@ const WORD_RE = /[\p{L}\p{N}_]+/gu;
 function formatSqlFloat(x: number): string {
   const s = String(x);
   return s.includes(".") ? s : `${s}.0`;
+}
+
+/**
+ * Split a raw user query into its `\w+` word tokens (same definition `\w+`
+ * uses everywhere else in this module — see `WORD_RE`'s docstring). Shared
+ * by `sanitizeQuery` below and by the CLI's marker-less-match attribution
+ * (src/cli/shared.ts's `matchAttribution`), which needs the same token set
+ * to check a result's metadata columns without re-deriving FTS5 query syntax.
+ */
+export function queryTokens(query: string): string[] {
+  return query.match(WORD_RE) ?? [];
 }
 
 /**
@@ -46,8 +119,9 @@ function formatSqlFloat(x: number): string {
  * Ported from `bm25.py`'s `sanitize_query`.
  */
 export function sanitizeQuery(query: string): string {
-  const tokens = query.match(WORD_RE) ?? [];
-  return tokens.map((t) => `"${t}"`).join(" ");
+  return queryTokens(query)
+    .map((t) => `"${t}"`)
+    .join(" ");
 }
 
 /**
@@ -82,11 +156,14 @@ export function searchBm25(
   const w = [...weights, 0.0]; // 6th weight for doc_id UNINDEXED
   // NOTE: no table alias on documents_fts — FTS5 MATCH needs the real table
   // name. Weights are inlined (not bound) — SQLite's bm25() requires literal
-  // numeric arguments.
+  // numeric arguments. snippet()'s start/end markers are also inlined as
+  // literal SQL string text (not bound params) — same as the weights — using
+  // the internal control-char markers (see MATCH_START/MATCH_END's comment
+  // above), not the public `[`/`]`.
   const sql = `
     SELECT documents_fts.doc_id AS doc_id,
            -bm25(documents_fts, ${w.map(formatSqlFloat).join(",")}) AS score,
-           snippet(documents_fts, 3, '[', ']', '…', 12) AS snip
+           snippet(documents_fts, 3, '${MATCH_START}', '${MATCH_END}', '…', 12) AS snip
     FROM documents_fts
     JOIN documents d ON d.id = documents_fts.doc_id
     WHERE documents_fts MATCH ? AND ${clause}

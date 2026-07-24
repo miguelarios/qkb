@@ -264,6 +264,18 @@ describe("db/storage", () => {
     expect(st.chunks).toBeGreaterThanOrEqual(1);
   });
 
+  it("hasContext: a targeted existence check, not listContexts' full aggregation (issue #14's context-name search tip)", async () => {
+    await ingestOne(conn, provider, makeNote({ context: "homelab-traefik" }));
+    const s = new Storage(conn);
+    expect(s.hasContext("homelab-traefik")).toBe(true);
+    expect(s.hasContext("nonexistent-context")).toBe(false);
+    // exact match only — normalization/casing is the CALLER's job
+    // (src/cli/shared.ts's printContextHint already trims+lowercases the
+    // query before calling this).
+    expect(s.hasContext("Homelab-Traefik")).toBe(false);
+    expect(s.hasContext("")).toBe(false);
+  });
+
   it("set_context_description normalizes the context", async () => {
     await ingestOne(conn, provider, makeNote({ context: "homelab" }));
     const s = new Storage(conn);
