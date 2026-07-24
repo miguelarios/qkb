@@ -3,8 +3,22 @@ import {
   clipAtWordBoundary,
   matchAttribution,
   relativeScorePercents,
+  stripStopwordMarkers,
 } from "../../src/cli/shared.js";
+import { toPublicMarkers } from "../../src/search/bm25.js";
 import type { HydratedResult } from "../../src/search/hydrate.js";
+
+// The internal control-char match markers bm25.ts's searchBm25 emits
+// (MATCH_START/MATCH_END, code points U+0001/U+0002) are not exported --
+// only bm25.ts itself should know the raw bytes; hasMatchMarkers,
+// toPublicMarkers, and stripMarkersWhere are its public surface.
+// Reconstructed here from the documented code points so these tests can
+// build realistic snippet input without a real FTS5 database.
+const M_START = String.fromCharCode(1);
+const M_END = String.fromCharCode(2);
+function marked(token: string): string {
+  return `${M_START}${token}${M_END}`;
+}
 
 // Pure formatting/decision helpers only — the table/evidence-line printing
 // around them is covered end-to-end by the subprocess tests in
@@ -133,5 +147,43 @@ describe("clipAtWordBoundary", () => {
   it("falls back to a hard cut when there is no space to break on", () => {
     const clipped = clipAtWordBoundary("supercalifragilisticexpialidocious", 10);
     expect(clipped).toBe("supercali…");
+  });
+});
+
+describe("stripStopwordMarkers", () => {
+  it("strips markers around exact-match stopwords, keeps markers on content words", () => {
+    const text =
+      `${marked("What")} ${marked("the")} ${marked("doctor")} ${marked("did")} ` +
+      `${marked("say")} ${marked("about")} ${marked("Alice")} was concerning.`;
+    const stripped = stripStopwordMarkers(text);
+    expect(toPublicMarkers(stripped)).toBe(
+      "What the [doctor] did [say] about [Alice] was concerning.",
+    );
+  });
+
+  it("matches stopwords case-insensitively", () => {
+    const text = `${marked("THE")} ${marked("Doctor")}`;
+    expect(toPublicMarkers(stripStopwordMarkers(text))).toBe("THE [Doctor]");
+  });
+
+  it("keeps markers on an inflected form not itself on the stopword list (no stemming)", () => {
+    // "saying" is an inflection of "say", but only exact tokens on the
+    // list get stripped — "saying" itself isn't one.
+    const text = `Alice keeps ${marked("saying")} the same thing.`;
+    expect(toPublicMarkers(stripStopwordMarkers(text))).toBe(
+      "Alice keeps [saying] the same thing.",
+    );
+  });
+
+  it("is a no-op on marker-less text", () => {
+    const text = "plain chunk text, no markers here";
+    expect(stripStopwordMarkers(text)).toBe(text);
+  });
+
+  it("removes every marker when all matched tokens are stopwords, leaving plain text", () => {
+    const text = `${marked("What")} ${marked("is")} ${marked("that")} on the counter.`;
+    const stripped = stripStopwordMarkers(text);
+    expect(stripped.includes(M_START)).toBe(false);
+    expect(stripped).toBe("What is that on the counter.");
   });
 });

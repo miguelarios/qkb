@@ -63,6 +63,28 @@ export function toPublicMarkers(text: string): string {
     : text;
 }
 
+/**
+ * Walks every `MATCH_START...MATCH_END`-wrapped span in `text` and, for each
+ * one, calls `shouldStrip(enclosedToken)` — `true` removes just the
+ * surrounding markers (keeping the token's own text in place), `false`
+ * leaves that span untouched. A no-op on text with no markers.
+ *
+ * This is the CLI's hook for stopword-marker stripping (issue #14 follow-up:
+ * a real-vault natural-language query like "what did the doctor say about
+ * alice" highlights markers on stopwords too — `[what] [the] ... [says]` is
+ * informationless confetti) without handing the caller the raw marker
+ * bytes — `src/cli/shared.ts` supplies the stopword predicate, this module
+ * keeps sole ownership of what a "marker" actually is (same reasoning as
+ * `hasMatchMarkers`/`toPublicMarkers` above).
+ */
+export function stripMarkersWhere(text: string, shouldStrip: (token: string) => boolean): string {
+  if (!text.includes(MATCH_START)) {
+    return text;
+  }
+  const pattern = new RegExp(`${MATCH_START}([^${MATCH_END}]*)${MATCH_END}`, "g");
+  return text.replace(pattern, (whole, token: string) => (shouldStrip(token) ? token : whole));
+}
+
 // Renders a number the way Python's `str(float)` would, for byte-identical
 // SQL text against `bm25.py`'s f-string-interpolated weights (e.g. `5.0`,
 // not JS's default `5`). Only exercised on the small literal weight list

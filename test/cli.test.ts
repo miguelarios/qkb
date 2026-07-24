@@ -262,6 +262,77 @@ describe("qkb CLI (subprocess)", () => {
       expect(result.output).not.toContain("grocery list");
     });
 
+    it("strips marker brackets around stopwords in a natural-language query, keeping brackets only on content words", () => {
+      // Owner-feedback follow-up: a real-vault natural-language query like
+      // "what did the doctor say about alice" highlights EVERY matched
+      // token, including function words — `[what] [the] [doctor] [did]
+      // [say] [about] [alice]` — most of which are informationless
+      // confetti. Only "doctor", "say", and "alice" are content words; the
+      // rest (what/did/the/about) are on the stopword list and should lose
+      // their markers at render time while keeping their own text.
+      writeNote("a.md", ID1, {
+        body: "What the doctor did say about Alice was concerning.",
+      });
+      run(["ingest"]);
+
+      const result = run(["search", "what did the doctor say about alice"]);
+      expect(result.exitCode).toBe(0);
+      // content words keep their markers
+      expect(result.output).toContain("[doctor]");
+      expect(result.output).toContain("[say]");
+      expect(result.output).toContain("[Alice]");
+      // stopwords lose theirs (case-insensitive: body capitalizes "What")
+      expect(result.output).not.toMatch(/\[what\]/i);
+      expect(result.output).not.toMatch(/\[did\]/i);
+      expect(result.output).not.toMatch(/\[the\]/i);
+      expect(result.output).not.toMatch(/\[about\]/i);
+      // the stopwords' own text is still there, just unmarked
+      expect(result.output).toContain("What the");
+    });
+
+    it("an inflected form of a stopword (not itself on the list) keeps its markers — exact-token match only, no stemming", () => {
+      // Deliberate conservative-stripping decision: "saying" is an
+      // inflection of "say", but "saying" itself is not in the stopword
+      // list, so it must stay marked. Only an exact (lowercased) token
+      // match on the list strips a marker.
+      writeNote("a.md", ID1, { body: "Alice keeps saying the same thing about the doctor." });
+      run(["ingest"]);
+
+      const result = run(["search", "saying"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain("[saying]");
+    });
+
+    it("a query matching ONLY stopwords falls back exactly like a marker-less match: attribution when identifiable, otherwise nothing — never prints the stopword-only snippet as evidence", () => {
+      writeNote("a.md", ID1, {
+        context: "homelab-traefik",
+        body: "What is that on the counter over there.",
+      });
+      run(["ingest"]);
+
+      // None of "what"/"is"/"that" appear in title/context/type/tags, so
+      // there's no attribution either — the fallback path (issue #14's
+      // existing marker-less behavior) prints nothing for bm25.
+      const result = run(["search", "what is that"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).not.toContain("matched:");
+      expect(result.output).not.toMatch(/\[what\]/i);
+      expect(result.output).not.toMatch(/\[is\]/i);
+      expect(result.output).not.toMatch(/\[that\]/i);
+      // the obsidian URI line still prints regardless (see below) — this
+      // isn't "no output for the result", just "no evidence line".
+      expect(result.output).toContain("obsidian://open");
+    });
+
+    it("prints the full obsidian:// URI as an indented line under each result (human output only)", () => {
+      writeNote("a.md", ID1, { body: "Renewing traefik certificates." });
+      run(["ingest"]);
+
+      const result = run(["search", "traefik"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toMatch(/^\s{2}obsidian:\/\/open\?vault=.*&file=.*$/m);
+    });
+
     it("prints relative percentage scores (top result = 100%), not raw scores", () => {
       writeNote("a.md", ID1, { body: "traefik traefik traefik certificate renewal notes" });
       writeNote("b.md", ID2, { body: "a passing mention of traefik once" });
@@ -331,6 +402,29 @@ describe("qkb CLI (subprocess)", () => {
       // raw score still a plain unbounded float, never a "NN%" string
       expect(typeof results[0]?.score).toBe("number");
       expect(results[0]?.matched_text).toContain("[traefik]");
+      // `obsidian_uri` was already part of the --json contract before the
+      // human-output URI line was added — same key, same value, unaffected
+      // by that addition (owner-feedback follow-up).
+      expect(results[0]?.obsidian_uri).toMatch(/^obsidian:\/\/open\?vault=.*&file=.*$/);
+      // the result's key set is exactly hydrate's contract — no stray key
+      // leaked in from either the URI line or stopword-marker stripping.
+      expect(Object.keys(results[0] as object).sort()).toEqual(
+        [
+          "context",
+          "context_description",
+          "document_id",
+          "effective_date",
+          "file_path",
+          "matched_text",
+          "obsidian_uri",
+          "score",
+          "siblings",
+          "source",
+          "tags",
+          "title",
+          "type",
+        ].sort(),
+      );
       // nothing besides valid JSON on stdout+stderr
       expect(result.output.trim().startsWith("[")).toBe(true);
     });

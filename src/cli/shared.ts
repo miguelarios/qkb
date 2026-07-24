@@ -11,7 +11,12 @@ import type { Command } from "commander";
 import { type Config, loadConfig } from "../config.js";
 import { connect } from "../db/schema.js";
 import { Storage } from "../db/storage.js";
-import { hasMatchMarkers, queryTokens, toPublicMarkers } from "../search/bm25.js";
+import {
+  hasMatchMarkers,
+  queryTokens,
+  stripMarkersWhere,
+  toPublicMarkers,
+} from "../search/bm25.js";
 import { Filters } from "../search/filters.js";
 import type { HydratedResult } from "../search/hydrate.js";
 
@@ -165,6 +170,164 @@ function terminalWidth(): number {
   return cols !== undefined && cols > 20 ? cols : 80;
 }
 
+// A small standard English stopword list (articles, auxiliary/copula verbs,
+// pronouns, prepositions, conjunctions, common question/quantifier words) —
+// no equivalent list exists elsewhere in this repo or in `legacy/` (checked
+// before adding this; `legacy/python/src/qkb` has no stopword handling at
+// all — ranking has always weighted these the same as any other token, this
+// is purely a render-time display filter). Deliberately NOT the search
+// index's vocabulary and NOT stemmed/lemmatized: only an EXACT (lowercased)
+// token match strips a marker, so e.g. `[saying]` stays marked (`saying` is
+// not itself on this list, even though "say" is) — a conservative choice
+// that only strips uncontroversial function words, never risking hiding a
+// real content-word hit. See `stripStopwordMarkers` below.
+const STOPWORDS = new Set([
+  // articles / determiners
+  "a",
+  "an",
+  "the",
+  "this",
+  "that",
+  "these",
+  "those",
+  // conjunctions
+  "and",
+  "or",
+  "but",
+  "if",
+  "then",
+  "else",
+  "nor",
+  "so",
+  "yet",
+  "because",
+  // to be / to do / to have (aux + copula, uninflected and common inflections)
+  "is",
+  "am",
+  "are",
+  "was",
+  "were",
+  "be",
+  "been",
+  "being",
+  "do",
+  "does",
+  "did",
+  "doing",
+  "have",
+  "has",
+  "had",
+  "having",
+  "can",
+  "could",
+  "will",
+  "would",
+  "shall",
+  "should",
+  "may",
+  "might",
+  "must",
+  // pronouns
+  "i",
+  "you",
+  "he",
+  "she",
+  "it",
+  "we",
+  "they",
+  "me",
+  "him",
+  "her",
+  "us",
+  "them",
+  "my",
+  "your",
+  "his",
+  "its",
+  "our",
+  "their",
+  "mine",
+  "yours",
+  "hers",
+  "ours",
+  "theirs",
+  "who",
+  "whom",
+  "whose",
+  "what",
+  "which",
+  // prepositions
+  "of",
+  "in",
+  "on",
+  "at",
+  "by",
+  "to",
+  "from",
+  "with",
+  "about",
+  "against",
+  "between",
+  "into",
+  "through",
+  "during",
+  "before",
+  "after",
+  "above",
+  "below",
+  "up",
+  "down",
+  "out",
+  "off",
+  "over",
+  "under",
+  "again",
+  "further",
+  "once",
+  // misc common function words
+  "here",
+  "there",
+  "when",
+  "where",
+  "why",
+  "how",
+  "all",
+  "any",
+  "both",
+  "each",
+  "few",
+  "more",
+  "most",
+  "other",
+  "some",
+  "such",
+  "no",
+  "not",
+  "only",
+  "own",
+  "same",
+  "than",
+  "too",
+  "very",
+  "just",
+  "now",
+]);
+
+function isStopword(token: string): boolean {
+  return STOPWORDS.has(token.toLowerCase());
+}
+
+/** Strips the marker pair around any EXACT-match stopword hit in a
+ * `matched_text` snippet, keeping the word's own text in place — the query
+ * token itself decides this, not the enclosing sentence, so `[the]`/`[what]`/
+ * `[about]` lose their markers while a real content-word hit like `[alice]`
+ * or `[doctor]` keeps its markers. A no-op on marker-less text. Delegates
+ * the actual marker-bytes bookkeeping to `bm25.ts`'s `stripMarkersWhere` —
+ * this module only supplies the stopword predicate. */
+export function stripStopwordMarkers(text: string): string {
+  return stripMarkersWhere(text, isStopword);
+}
+
 /**
  * Builds the single indented evidence line printed under a human-table row,
  * or `null` to print nothing for that result. Ports issue #14's "match
@@ -175,11 +338,19 @@ function terminalWidth(): number {
  * - has match markers (bm25.ts's `hasMatchMarkers` — internal control
  *   chars, NOT literal `[`/`]`; markdown checklists/wikilinks routinely
  *   contain real brackets that aren't a match, so bracket-sniffing would
- *   misfire — see bm25.ts's module comment): a real body-column hit — clip
- *   and print with `toPublicMarkers` translating back to `[`/`]` for
- *   display (readable in plain text; no ANSI requirement).
- * - no markers, but `matchAttribution` identifies a metadata column: print
- *   that attribution instead of the noisy document-head snippet.
+ *   misfire — see bm25.ts's module comment): first `stripStopwordMarkers`
+ *   removes the marker pair around any EXACT stopword hit (a real-vault
+ *   natural-language query like "what did the doctor say about alice"
+ *   otherwise highlights `[what] [did] ... [about]` — informationless
+ *   confetti around the one or two content words that actually matter).
+ *   If at least one marker survives stripping, print that (clip + translate
+ *   to `[`/`]` for display, readable in plain text, no ANSI requirement).
+ * - stripping removed EVERY marker (only stopwords matched) — treated
+ *   exactly like marker-less text below, since there's no real evidence
+ *   left worth highlighting.
+ * - no markers (never had any, or stripped down to none), but
+ *   `matchAttribution` identifies a metadata column: print that attribution
+ *   instead of the noisy document-head snippet.
  * - no markers and nothing identifiable: for `bm25`, that marker-less text
  *   IS the document-head noise the issue calls out — print nothing. For
  *   `vector` it's never noise: vector search has no metadata columns at
@@ -197,14 +368,24 @@ function evidenceLine(
   tier: SearchTier,
   width: number,
 ): string | null {
-  const text = r.matched_text;
-  if (!text) {
+  const raw = r.matched_text;
+  if (!raw) {
     return null;
   }
   const avail = Math.max(10, width - 2); // 2-column indent printed below
+  // Only text that actually HAS markers needs the stopword pass — a no-op
+  // call is harmless either way (stripMarkersWhere already no-ops on
+  // marker-less text), but skipping it when there's nothing to strip keeps
+  // `text === raw` (not just equal-by-value) for the vector/hybrid chunk
+  // text case below.
+  const text = hasMatchMarkers(raw) ? stripStopwordMarkers(raw) : raw;
   if (hasMatchMarkers(text)) {
+    // At least one non-stopword marker survived stripping — real evidence.
     return clipAtWordBoundary(toPublicMarkers(text), avail);
   }
+  // No markers at all: either never had any (metadata-only bm25 match, or
+  // vector/hybrid chunk text), or stripping just removed every one of them
+  // (only stopwords matched) — both degrade the same way.
   const attribution = matchAttribution(r, query);
   if (attribution) {
     return clipAtWordBoundary(attribution, avail);
@@ -213,6 +394,17 @@ function evidenceLine(
     return null;
   }
   return clipAtWordBoundary(text, avail);
+}
+
+/** Wraps `uri` in the ANSI SGR "dim" sequence when stdout is a TTY, so it
+ * doesn't visually compete with the evidence line above it while still
+ * being a plain, terminal-linkifiable/cmd-clickable `obsidian://...` string
+ * — degrades to plain text on a non-TTY (piped output, every subprocess
+ * test in test/cli.test.ts), matching this codebase's existing convention
+ * of no ANSI in non-interactive output (see progress.ts's module docstring
+ * for the same rule applied to the ingest/embed progress bar). */
+function dimIfTty(uri: string): string {
+  return process.stdout.isTTY === true ? `\u001b[2m${uri}\u001b[22m` : uri;
 }
 
 function renderTable(results: HydratedResult[], query: string, tier: SearchTier): void {
@@ -237,6 +429,14 @@ function renderTable(results: HydratedResult[], query: string, tier: SearchTier)
     if (line) {
       console.log(`  ${line}`);
     }
+    // Owner-feedback follow-up to issue #14: hydrate already computes
+    // `obsidian_uri` (it's on --json today), but the human table never
+    // showed it — the full, unclipped URI (never width-clipped: it must
+    // stay a valid, clickable link) as a second indented line after the
+    // evidence line, so a terminal that linkifies `obsidian://` URIs (or
+    // supports cmd/ctrl-click) can jump straight to the note. Human output
+    // only — --json/--files/MCP already carry `obsidian_uri` unchanged.
+    console.log(`  ${dimIfTty(r.obsidian_uri)}`);
   });
 }
 
