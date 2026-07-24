@@ -10,8 +10,15 @@ import type Database from "better-sqlite3";
 import type { Command } from "commander";
 import { type Config, loadConfig } from "../config.js";
 import { connect } from "../db/schema.js";
+import { Storage } from "../db/storage.js";
+import { queryTokens } from "../search/bm25.js";
 import { Filters } from "../search/filters.js";
 import type { HydratedResult } from "../search/hydrate.js";
+
+/** The three search tiers `doSearch` (src/cli/search.ts) runs — threaded
+ * through to the human-output renderer so marker-less matched_text can be
+ * interpreted correctly (see `evidenceLine`'s docstring below). */
+export type SearchTier = "bm25" | "vector" | "hybrid";
 
 export function cfg(): Config {
   return loadConfig();
@@ -75,33 +82,180 @@ export function limitFromOpts(opts: SearchOpts): number | null {
   return opts.limit !== undefined ? Number(opts.limit) : null;
 }
 
-function renderTable(results: HydratedResult[]): void {
-  const columns: { header: string; get: (r: HydratedResult) => string }[] = [
+/** Score column: a percentage relative to the top (first, best-ranked)
+ * result — top is always 100%, everything else rounded to the nearest
+ * integer percent of the top score. Raw scores (BM25's unbounded values,
+ * hybrid RRF's tiny decimals — see cli/search.ts's doc comment and
+ * issue #14) are unreadable as printed table cells; `--json`/`--files`
+ * still emit `r.score` untouched, this only affects the human table.
+ *
+ * `results` is already sorted best-first (hydrate preserves `runSearch`'s
+ * order), so `results[0]` is always the top score. Vector scores are
+ * `1 - cosine distance` (vector.ts), which is negative for a dissimilar
+ * chunk — a plain ratio would print a nonsensical negative percentage for
+ * those (`score / top` with a negative numerator and positive top), so the
+ * result is clamped to `[0, 100]`: nothing scores "worse than 0% similar to
+ * the top result" or, from float rounding on near-ties, "better than the
+ * top result". `top <= 0` (a degenerate all-non-positive score list) falls
+ * back to a binary 100/0 by equality to `top`, since a ratio against a
+ * non-positive denominator isn't meaningful. */
+export function relativeScorePercents(results: HydratedResult[]): number[] {
+  const top = results[0]?.score ?? 0;
+  if (top <= 0) {
+    return results.map((r) => (r.score === top ? 100 : 0));
+  }
+  return results.map((r) => Math.max(0, Math.min(100, Math.round((r.score / top) * 100))));
+}
+
+/** True when `text` carries FTS5 `snippet()`'s `[`...`]` match markers
+ * (see bm25.ts's `snippet(documents_fts, 3, '[', ']', '…', 12)` call) —
+ * i.e. the snippet actually highlights a hit in the body column, as opposed
+ * to degrading to the document's opening words with no hit shown. */
+function hasMatchMarkers(text: string): boolean {
+  return text.includes("[") && text.includes("]");
+}
+
+/** When `matched_text` has no `[...]` markers, the match (if any) landed in
+ * a metadata column FTS5 doesn't snippet — figure out which one so the CLI
+ * can print `matched: <field> "<value>"` instead of a noisy, useless
+ * document-head snippet. Checks the query's `\w+` tokens (same tokenizer
+ * `sanitizeQuery` uses — see bm25.ts's `queryTokens`) case-insensitively
+ * against title/tags/context/type, in the same priority order as those
+ * columns' FTS weights (bm25.ts's `fts_weights`: title, tags, context, ...,
+ * type) — a title hit is reported over a context hit if the query token
+ * appears in both, mirroring which column actually drove the ranking most.
+ * `null` when nothing is identifiable (issue #14: print nothing rather than
+ * noise in that case). */
+export function matchAttribution(result: HydratedResult, query: string): string | null {
+  const tokens = queryTokens(query).map((t) => t.toLowerCase());
+  if (tokens.length === 0) {
+    return null;
+  }
+  const hits = (value: string | null | undefined): value is string =>
+    Boolean(value) && tokens.some((t) => (value as string).toLowerCase().includes(t));
+  if (hits(result.title)) {
+    return `matched: title "${result.title}"`;
+  }
+  const tag = result.tags.find((t) => hits(t));
+  if (tag !== undefined) {
+    return `matched: tag "${tag}"`;
+  }
+  if (hits(result.context)) {
+    return `matched: context "${result.context}"`;
+  }
+  if (hits(result.type)) {
+    return `matched: type "${result.type}"`;
+  }
+  return null;
+}
+
+/** Collapse internal whitespace, then clip to `maxWidth` at a word boundary
+ * (never mid-word) with a trailing `…`. Used for both `matched_text`
+ * snippets and the attribution line so a long context/title value can't
+ * blow past the terminal width either. */
+export function clipAtWordBoundary(text: string, maxWidth: number): string {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  if (maxWidth <= 1 || collapsed.length <= maxWidth) {
+    return collapsed;
+  }
+  const truncated = collapsed.slice(0, maxWidth - 1); // reserve a column for the ellipsis
+  const lastSpace = truncated.lastIndexOf(" ");
+  const clipped = lastSpace > 0 ? truncated.slice(0, lastSpace) : truncated;
+  return `${clipped}…`;
+}
+
+/** stdout column width to clip evidence lines to. Non-TTY (piped output,
+ * every subprocess test in test/cli.test.ts) reports `columns` as
+ * `undefined` — falls back to a fixed 80, matching the conventional
+ * terminal default and keeping clipping deterministic under test. */
+function terminalWidth(): number {
+  const cols = process.stdout.columns;
+  return cols !== undefined && cols > 20 ? cols : 80;
+}
+
+/**
+ * Builds the single indented evidence line printed under a human-table row,
+ * or `null` to print nothing for that result. Ports issue #14's "match
+ * evidence" behavior:
+ *
+ * - `matched_text` is null (no match text at all, e.g. RRF fused in a doc
+ *   whose legs both came up empty-stringed): nothing.
+ * - has `[...]` markers: a real body-column hit — clip and print as-is,
+ *   markers kept (readable in plain text; no ANSI requirement).
+ * - no markers, but `matchAttribution` identifies a metadata column: print
+ *   that attribution instead of the noisy document-head snippet.
+ * - no markers and nothing identifiable: for `bm25`, that marker-less text
+ *   IS the document-head noise the issue calls out — print nothing. For
+ *   `vector` it's never noise: vector search has no metadata columns at
+ *   all, so `matched_text` is always genuine chunk text — clip and print
+ *   it unconditionally. `hybrid` is ambiguous by construction (hybrid.ts's
+ *   `search()` prefers vector chunk text and only falls back to the bm25
+ *   snippet when a doc has no vector leg hit) — since dropping real vector
+ *   chunk text here would be a regression (the only evidence for that
+ *   result, silently hidden), hybrid degrades the same way `vector` does
+ *   rather than the same way `bm25` does.
+ */
+function evidenceLine(
+  r: HydratedResult,
+  query: string,
+  tier: SearchTier,
+  width: number,
+): string | null {
+  const text = r.matched_text;
+  if (!text) {
+    return null;
+  }
+  const avail = Math.max(10, width - 2); // 2-column indent printed below
+  if (hasMatchMarkers(text)) {
+    return clipAtWordBoundary(text, avail);
+  }
+  const attribution = matchAttribution(r, query);
+  if (attribution) {
+    return clipAtWordBoundary(attribution, avail);
+  }
+  if (tier === "bm25") {
+    return null;
+  }
+  return clipAtWordBoundary(text, avail);
+}
+
+function renderTable(results: HydratedResult[], query: string, tier: SearchTier): void {
+  const percents = relativeScorePercents(results);
+  const columns: { header: string; get: (r: HydratedResult, i: number) => string }[] = [
     { header: "Title", get: (r) => r.title ?? "" },
     { header: "Type", get: (r) => r.type },
     { header: "Context", get: (r) => r.context ?? "-" },
     { header: "Date", get: (r) => r.effective_date },
-    { header: "Score", get: (r) => r.score.toFixed(4) },
+    { header: "Score", get: (_r, i) => `${percents[i] ?? 0}%` },
   ];
   const widths = columns.map((col) =>
-    Math.max(col.header.length, ...results.map((r) => col.get(r).length)),
+    Math.max(col.header.length, ...results.map((r, i) => col.get(r, i).length)),
   );
   const renderRow = (cells: string[]) => cells.map((c, i) => c.padEnd(widths[i] ?? 0)).join("  ");
   console.log(renderRow(columns.map((c) => c.header)));
   console.log(widths.map((w) => "-".repeat(w)).join("  "));
-  for (const r of results) {
-    console.log(renderRow(columns.map((c) => c.get(r))));
-  }
-  for (const r of results) {
-    if (r.matched_text) {
-      console.log(`${r.title ?? ""}: ${r.matched_text.slice(0, 200)}`);
+  const width = terminalWidth();
+  results.forEach((r, i) => {
+    console.log(renderRow(columns.map((c) => c.get(r, i))));
+    const line = evidenceLine(r, query, tier, width);
+    if (line) {
+      console.log(`  ${line}`);
     }
-  }
+  });
 }
 
 /** Emits search results as JSON, CSV-like file lines, or a human table.
- * Ports cli.py's `_emit`. */
-export function emit(results: HydratedResult[], asJson: boolean, asFiles: boolean): void {
+ * Ports cli.py's `_emit`. `query`/`tier` are only used by the human table
+ * (relative scores + per-result evidence lines, issue #14) — `--json`
+ * still serializes `r.score` untouched and `--files` never touches score
+ * formatting at all, so neither needs them. */
+export function emit(
+  results: HydratedResult[],
+  asJson: boolean,
+  asFiles: boolean,
+  query: string,
+  tier: SearchTier,
+): void {
   if (asJson) {
     console.log(JSON.stringify(results, null, 2));
     return;
@@ -112,7 +266,37 @@ export function emit(results: HydratedResult[], asJson: boolean, asFiles: boolea
     }
     return;
   }
-  renderTable(results);
+  renderTable(results, query, tier);
+}
+
+/** Prints a one-line stderr tip when the ORIGINAL (trimmed, lowercased)
+ * query string exactly matches an existing context's name — e.g. `qkb
+ * search homelab-traefik` when "homelab-traefik" is a context, which
+ * otherwise silently degrades into "browse that context ranked by the
+ * context FTS column" (issue #14, gap 3) rather than the term-search the
+ * user likely meant. Human output only (never `--json`/`--files` — callers
+ * gate that) and only when there ARE results to show (an empty result list
+ * already got its own "no results" signal; piling a second hint on top of
+ * that is noise, not help). Contexts are stored trim+lowercased already
+ * (`normalizeContext`, src/ingest/parser.ts) so the comparison needs no
+ * further normalization on that side. One cheap extra query
+ * (`Storage.listContexts`) — no new indexes or hydrate changes needed. */
+export function printContextHint(
+  conn: Database.Database,
+  query: string,
+  resultCount: number,
+): void {
+  if (resultCount === 0) {
+    return;
+  }
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed) {
+    return;
+  }
+  const contexts = new Storage(conn).listContexts();
+  if (contexts.some((c) => c.context === trimmed)) {
+    console.error(`tip: "${trimmed}" is a context — use --context ${trimmed} to browse it`);
+  }
 }
 
 /** Truncate a path to its most useful tail (filename + nearest folder), used

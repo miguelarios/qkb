@@ -203,6 +203,131 @@ describe("qkb CLI (subprocess)", () => {
     expect(results[0]).toHaveProperty("obsidian_uri");
   });
 
+  // Issue #14: human search output shows per-result match evidence, a
+  // relative-percentage score column, and a context-name tip — all
+  // presentation-only; --json/--files must stay byte-identical (pinned
+  // separately below).
+  describe("human search output (issue #14)", () => {
+    it("shows a clipped evidence line with [markers] kept for a real body match", () => {
+      writeNote("a.md", ID1, {
+        body: "Renewing traefik certificates for the homelab reverse proxy.",
+      });
+      run(["ingest"]);
+
+      const result = run(["search", "traefik", "--context", "homelab"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain("[traefik]");
+      // no raw-score column and no old "Title: snippet" trailing block
+      expect(result.output).not.toMatch(/^a: /m);
+    });
+
+    it("shows a match attribution (not document-head noise) for a metadata-column-only match", () => {
+      // "homelab-traefik" only appears in frontmatter (context), never in
+      // the body, so the FTS5 body snippet degrades to the document's
+      // opening words with no [markers] — the old behavior printed that
+      // noise verbatim; the new behavior must attribute the hit instead.
+      writeNote("a.md", ID1, {
+        context: "homelab-traefik",
+        body: "Some unrelated body text about DNS and adguard configuration.",
+      });
+      run(["ingest"]);
+
+      const result = run(["search", "homelab-traefik"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain('matched: context "homelab-traefik"');
+      // must NOT print the useless body-head snippet
+      expect(result.output).not.toContain("Some unrelated body text");
+    });
+
+    it("prints relative percentage scores (top result = 100%), not raw scores", () => {
+      writeNote("a.md", ID1, { body: "traefik traefik traefik certificate renewal notes" });
+      writeNote("b.md", ID2, { body: "a passing mention of traefik once" });
+      run(["ingest"]);
+
+      const result = run(["search", "traefik"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain("100%");
+      // no raw BM25 float (e.g. "0.0000") anywhere in the table
+      expect(result.output).not.toMatch(/\b\d+\.\d{4,}\b/);
+    });
+
+    it('prints the "is a context" tip on stderr when the query exactly equals a context name', () => {
+      writeNote("a.md", ID1, { context: "homelab-traefik", body: "Renewing certificates." });
+      run(["ingest"]);
+
+      const result = run(["search", "homelab-traefik"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain(
+        'tip: "homelab-traefik" is a context — use --context homelab-traefik to browse it',
+      );
+    });
+
+    it("does NOT print the context tip for an ordinary query that isn't a context name", () => {
+      writeNote("a.md", ID1, { context: "homelab-traefik", body: "Renewing certificates." });
+      run(["ingest"]);
+
+      const result = run(["search", "certificates"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).not.toContain("is a context");
+    });
+
+    it("does NOT print the context tip when the query matches a context name but there are zero results", () => {
+      writeNote("a.md", ID1, { context: "homelab-traefik", body: "Renewing certificates." });
+      run(["ingest"]);
+
+      // "empty-context" isn't a real context and matches nothing.
+      const result = run(["search", "empty-context"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).not.toContain("is a context");
+    });
+
+    it("does NOT print the context tip for --json or --files output", () => {
+      writeNote("a.md", ID1, { context: "homelab-traefik", body: "Renewing certificates." });
+      run(["ingest"]);
+
+      const asJson = run(["search", "homelab-traefik", "--json"]);
+      expect(asJson.output).not.toContain("is a context");
+      JSON.parse(asJson.output); // still valid, unadorned JSON
+
+      const asFiles = run(["search", "homelab-traefik", "--files"]);
+      expect(asFiles.output).not.toContain("is a context");
+    });
+
+    it("--json output is unaffected by the evidence/score/tip changes (byte-identical contract)", () => {
+      writeNote("a.md", ID1, {
+        context: "homelab-traefik",
+        body: "Renewing traefik certificates for the homelab reverse proxy.",
+      });
+      run(["ingest"]);
+
+      const result = run(["search", "traefik", "--json"]);
+      expect(result.exitCode).toBe(0);
+      const results = JSON.parse(result.output) as Array<Record<string, unknown>>;
+      expect(results).toHaveLength(1);
+      expect(results[0]?.document_id).toBe(ID1);
+      // raw score still a plain unbounded float, never a "NN%" string
+      expect(typeof results[0]?.score).toBe("number");
+      expect(results[0]?.matched_text).toContain("[traefik]");
+      // nothing besides valid JSON on stdout+stderr
+      expect(result.output.trim().startsWith("[")).toBe(true);
+    });
+
+    it("--files output is unaffected by the evidence/score/tip changes (byte-identical contract)", () => {
+      writeNote("a.md", ID1, {
+        context: "homelab-traefik",
+        body: "Renewing traefik certificates for the homelab reverse proxy.",
+      });
+      run(["ingest"]);
+
+      const result = run(["search", "traefik", "--files"]);
+      expect(result.exitCode).toBe(0);
+      const line = result.output.trim();
+      expect(line.split(",")[0]).toBe(ID1);
+      expect(line).not.toContain("%");
+      expect(line).not.toContain("matched:");
+    });
+  });
+
   it("search --files format and context filter", () => {
     writeNote("a.md", ID1, { body: "Renewing traefik certificates." });
     run(["ingest"]);

@@ -34,6 +34,17 @@ function formatSqlFloat(x: number): string {
 }
 
 /**
+ * Split a raw user query into its `\w+` word tokens (same definition `\w+`
+ * uses everywhere else in this module — see `WORD_RE`'s docstring). Shared
+ * by `sanitizeQuery` below and by the CLI's marker-less-match attribution
+ * (src/cli/shared.ts's `matchAttribution`), which needs the same token set
+ * to check a result's metadata columns without re-deriving FTS5 query syntax.
+ */
+export function queryTokens(query: string): string[] {
+  return query.match(WORD_RE) ?? [];
+}
+
+/**
  * Tokenize a raw user query into a safely-quoted FTS5 MATCH expression.
  *
  * Every `\w+` token is wrapped in double quotes so it's treated as a literal
@@ -46,8 +57,9 @@ function formatSqlFloat(x: number): string {
  * Ported from `bm25.py`'s `sanitize_query`.
  */
 export function sanitizeQuery(query: string): string {
-  const tokens = query.match(WORD_RE) ?? [];
-  return tokens.map((t) => `"${t}"`).join(" ");
+  return queryTokens(query)
+    .map((t) => `"${t}"`)
+    .join(" ");
 }
 
 /**
