@@ -459,6 +459,18 @@ export class Storage {
       .all() as ContextRow[];
   }
 
+  /** Cheap existence check for a single context name — an indexed point
+   * lookup (`idx_documents_context`) rather than `listContexts`' full
+   * `GROUP BY` aggregation over every document. Used by the CLI's
+   * search-time "is this query exactly a context name?" tip (issue #14),
+   * which runs on every human-output search and only needs a yes/no. */
+  hasContext(context: string): boolean {
+    return (
+      this.conn.prepare("SELECT 1 FROM documents WHERE context = ? LIMIT 1").get(context) !==
+      undefined
+    );
+  }
+
   stats(): Stats {
     const documents = (
       this.conn.prepare("SELECT COUNT(*) c FROM documents").get() as {

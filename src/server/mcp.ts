@@ -32,6 +32,7 @@ import { connect } from "../db/schema.js";
 import { Storage } from "../db/storage.js";
 import { getProvider } from "../embed/provider.js";
 import type { EmbeddingProvider } from "../embed/types.js";
+import { toPublicMarkers } from "../search/bm25.js";
 import { SearchValidationError } from "../search/errors.js";
 import { Filters } from "../search/filters.js";
 import {
@@ -136,7 +137,17 @@ export async function buildServer(cfg?: Config): Promise<McpServer> {
             args.limit ?? null,
             "hybrid",
           );
-          return jsonResult({ result: results });
+          // `matched_text` may internally carry searchBm25's control-char
+          // match markers (issue #14 critical fix — bracket-sniffing broke
+          // on markdown checklists/wikilinks; see bm25.ts's module
+          // comment). The MCP result is public API (Python parity), so
+          // translate back to `[`/`]` here, same as the CLI's `--json`
+          // boundary (src/cli/shared.ts's `emit`).
+          const publicResults = results.map((r) => ({
+            ...r,
+            matched_text: r.matched_text !== null ? toPublicMarkers(r.matched_text) : null,
+          }));
+          return jsonResult({ result: publicResults });
         } catch (e) {
           // Mirrors mcp.py's `except ValueError as e`: executeSearch (and
           // everything it calls — buildFilterClause, hybrid.search) throws

@@ -239,6 +239,29 @@ describe("qkb CLI (subprocess)", () => {
       expect(result.output).not.toContain("Some unrelated body text");
     });
 
+    it("does not mistake a body's literal markdown brackets for match markers (checklist + wikilink opening, context-only match)", () => {
+      // Reviewer-proven bracket-sniffing bug: a body that legitimately
+      // OPENS with `- [ ]` checklist syntax and a `[[wikilink]]` contains
+      // literal `[`/`]` that have nothing to do with the actual match (the
+      // query only matches the context column) — bracket-sniffing
+      // `matched_text` for "was this a real hit" printed that checklist
+      // text as if it were highlighted evidence. Real match markers must be
+      // an internal signal the document's own content can never produce.
+      writeNote("a.md", ID1, {
+        context: "homelab-traefik",
+        body: "- [ ] buy milk\nSee [[grocery list]] for more.",
+      });
+      run(["ingest"]);
+
+      const result = run(["search", "homelab-traefik"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toContain('matched: context "homelab-traefik"');
+      // must NOT print the checklist/wikilink body text as if it were
+      // real match evidence.
+      expect(result.output).not.toContain("buy milk");
+      expect(result.output).not.toContain("grocery list");
+    });
+
     it("prints relative percentage scores (top result = 100%), not raw scores", () => {
       writeNote("a.md", ID1, { body: "traefik traefik traefik certificate renewal notes" });
       writeNote("b.md", ID2, { body: "a passing mention of traefik once" });
@@ -310,6 +333,50 @@ describe("qkb CLI (subprocess)", () => {
       expect(results[0]?.matched_text).toContain("[traefik]");
       // nothing besides valid JSON on stdout+stderr
       expect(result.output.trim().startsWith("[")).toBe(true);
+    });
+
+    it("--json matched_text round-trips a real match byte-exact to public [markers], with no internal control-char markers leaked, even with unrelated literal brackets in the body (checklist/wikilink)", () => {
+      // searchBm25 marks a real hit internally with control chars, not
+      // literal `[`/`]` (issue #14 critical fix), specifically so a body's
+      // own literal brackets (checklist/wikilink markdown, here placed
+      // right next to the real match so both land in the same snippet
+      // window) can never be confused with a match marker. The public
+      // `--json` contract must still show plain `[traefik]` (Python
+      // parity) — and must never leak the raw internal control bytes.
+      writeNote("a.md", ID1, {
+        context: "homelab-traefik",
+        body: "- [ ] buy milk. Renewing traefik [[cert-tracker]] certificates for the homelab reverse proxy.",
+      });
+      run(["ingest"]);
+
+      const result = run(["search", "traefik", "--json"]);
+      expect(result.exitCode).toBe(0);
+      const results = JSON.parse(result.output) as Array<{ matched_text: string }>;
+      expect(results[0]?.matched_text).toContain("[traefik]");
+      // the body's own literal brackets pass through untouched too
+      expect(results[0]?.matched_text).toContain("[[cert-tracker]]");
+      // No raw internal control-char markers ever leak into public bytes.
+      // Plain substring checks built via String.fromCharCode, not a regex
+      // literal -- biome's noControlCharactersInRegex rule (rightly)
+      // disallows control chars inside a regex pattern.
+      expect(result.output.includes(String.fromCharCode(1))).toBe(false);
+      expect(result.output.includes(String.fromCharCode(2))).toBe(false);
+    });
+
+    it("--json matched_text for a marker-less (metadata-only) match stays the plain document-head snippet — no stray brackets inserted, no leaked control chars", () => {
+      writeNote("a.md", ID1, {
+        context: "homelab-traefik",
+        body: "Some unrelated body text about DNS and adguard configuration.",
+      });
+      run(["ingest"]);
+
+      const result = run(["search", "homelab-traefik", "--json"]);
+      expect(result.exitCode).toBe(0);
+      const results = JSON.parse(result.output) as Array<{ matched_text: string | null }>;
+      expect(results[0]?.matched_text).toContain("Some unrelated body text");
+      const text = results[0]?.matched_text ?? "";
+      expect(text.includes(String.fromCharCode(1))).toBe(false);
+      expect(text.includes(String.fromCharCode(2))).toBe(false);
     });
 
     it("--files output is unaffected by the evidence/score/tip changes (byte-identical contract)", () => {

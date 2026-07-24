@@ -11,7 +11,7 @@ import type { Command } from "commander";
 import { type Config, loadConfig } from "../config.js";
 import { connect } from "../db/schema.js";
 import { Storage } from "../db/storage.js";
-import { queryTokens } from "../search/bm25.js";
+import { hasMatchMarkers, queryTokens, toPublicMarkers } from "../search/bm25.js";
 import { Filters } from "../search/filters.js";
 import type { HydratedResult } from "../search/hydrate.js";
 
@@ -107,15 +107,7 @@ export function relativeScorePercents(results: HydratedResult[]): number[] {
   return results.map((r) => Math.max(0, Math.min(100, Math.round((r.score / top) * 100))));
 }
 
-/** True when `text` carries FTS5 `snippet()`'s `[`...`]` match markers
- * (see bm25.ts's `snippet(documents_fts, 3, '[', ']', '…', 12)` call) —
- * i.e. the snippet actually highlights a hit in the body column, as opposed
- * to degrading to the document's opening words with no hit shown. */
-function hasMatchMarkers(text: string): boolean {
-  return text.includes("[") && text.includes("]");
-}
-
-/** When `matched_text` has no `[...]` markers, the match (if any) landed in
+/** When `matched_text` has no match markers, the match (if any) landed in
  * a metadata column FTS5 doesn't snippet — figure out which one so the CLI
  * can print `matched: <field> "<value>"` instead of a noisy, useless
  * document-head snippet. Checks the query's `\w+` tokens (same tokenizer
@@ -180,8 +172,12 @@ function terminalWidth(): number {
  *
  * - `matched_text` is null (no match text at all, e.g. RRF fused in a doc
  *   whose legs both came up empty-stringed): nothing.
- * - has `[...]` markers: a real body-column hit — clip and print as-is,
- *   markers kept (readable in plain text; no ANSI requirement).
+ * - has match markers (bm25.ts's `hasMatchMarkers` — internal control
+ *   chars, NOT literal `[`/`]`; markdown checklists/wikilinks routinely
+ *   contain real brackets that aren't a match, so bracket-sniffing would
+ *   misfire — see bm25.ts's module comment): a real body-column hit — clip
+ *   and print with `toPublicMarkers` translating back to `[`/`]` for
+ *   display (readable in plain text; no ANSI requirement).
  * - no markers, but `matchAttribution` identifies a metadata column: print
  *   that attribution instead of the noisy document-head snippet.
  * - no markers and nothing identifiable: for `bm25`, that marker-less text
@@ -207,7 +203,7 @@ function evidenceLine(
   }
   const avail = Math.max(10, width - 2); // 2-column indent printed below
   if (hasMatchMarkers(text)) {
-    return clipAtWordBoundary(text, avail);
+    return clipAtWordBoundary(toPublicMarkers(text), avail);
   }
   const attribution = matchAttribution(r, query);
   if (attribution) {
@@ -248,7 +244,16 @@ function renderTable(results: HydratedResult[], query: string, tier: SearchTier)
  * Ports cli.py's `_emit`. `query`/`tier` are only used by the human table
  * (relative scores + per-result evidence lines, issue #14) — `--json`
  * still serializes `r.score` untouched and `--files` never touches score
- * formatting at all, so neither needs them. */
+ * formatting at all, so neither needs them.
+ *
+ * `--json`'s `matched_text` is translated back to the public `[`/`]`
+ * markers (bm25.ts's `toPublicMarkers`) before serializing: internally
+ * `matched_text` may carry the control-char markers `searchBm25` now emits
+ * (issue #14 critical fix — bracket-sniffing for "was this a real match"
+ * broke on markdown checklists/wikilinks), but the JSON contract is public
+ * API (Python parity) and must stay byte-identical to before that change.
+ * `--files` never includes `matched_text` at all, so it needs no
+ * translation. */
 export function emit(
   results: HydratedResult[],
   asJson: boolean,
@@ -257,7 +262,11 @@ export function emit(
   tier: SearchTier,
 ): void {
   if (asJson) {
-    console.log(JSON.stringify(results, null, 2));
+    const publicResults = results.map((r) => ({
+      ...r,
+      matched_text: r.matched_text !== null ? toPublicMarkers(r.matched_text) : null,
+    }));
+    console.log(JSON.stringify(publicResults, null, 2));
     return;
   }
   if (asFiles) {
@@ -279,8 +288,10 @@ export function emit(
  * already got its own "no results" signal; piling a second hint on top of
  * that is noise, not help). Contexts are stored trim+lowercased already
  * (`normalizeContext`, src/ingest/parser.ts) so the comparison needs no
- * further normalization on that side. One cheap extra query
- * (`Storage.listContexts`) — no new indexes or hydrate changes needed. */
+ * further normalization on that side. One cheap indexed existence check
+ * (`Storage.hasContext`, `idx_documents_context`) per search — deliberately
+ * NOT `listContexts()`'s full `GROUP BY` aggregation over every document,
+ * which this only needs a yes/no answer from. */
 export function printContextHint(
   conn: Database.Database,
   query: string,
@@ -293,8 +304,7 @@ export function printContextHint(
   if (!trimmed) {
     return;
   }
-  const contexts = new Storage(conn).listContexts();
-  if (contexts.some((c) => c.context === trimmed)) {
+  if (new Storage(conn).hasContext(trimmed)) {
     console.error(`tip: "${trimmed}" is a context — use --context ${trimmed} to browse it`);
   }
 }
