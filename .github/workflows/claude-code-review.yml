@@ -1,0 +1,78 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    # One review per PR, when it is opened or leaves draft. NOT on every push:
+    # a re-review after each fix-up round reads the whole diff again and always
+    # finds something new to say, which turns a PR into a loop of fix,
+    # re-review, fix — and burns quota for no added signal.
+    # Ask for another pass with @claude (claude.yml).
+    types: [opened, ready_for_review]
+    # Stacked PRs are reviewed once retargeted to main, not while they sit on
+    # another feature branch where every base push re-triggers.
+    branches: [main]
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request for bugs, data loss, security problems, and
+            missing tests for the behaviour it changes. Read the PR description
+            and anything it links first; they record decisions and rejected
+            alternatives, so do not re-raise what they already answer.
+
+            Post only what you have verified against the code on this PR's
+            current head. Do not repeat a point an earlier comment already made.
+
+            Structure the comment exactly like this, omitting any empty section:
+
+            **Blocking** — findings that should stop a merge. Each needs a
+            concrete failure scenario and the file and line. If there are none,
+            do not write the heading.
+
+            **Worth verifying before merge** — at most two. Only include a note
+            if it changes what the author should actually do. A claim in the PR
+            that is not backed by pasted evidence belongs here.
+
+            **Minor** — at most one, and only if it is genuinely actionable.
+            Skip style, naming, wording, and "could be tightened" observations;
+            the repo's linter and conventions cover those.
+
+            Close with a single line on what is solid. One line, not a list, and
+            not a restatement of the diff.
+
+            If nothing blocks and nothing needs verifying, say so in one or two
+            lines and stop.
+
+            Use the repository's CLAUDE.md for conventions.
+
+            Use `gh pr comment` with your Bash tool to leave your review as a
+            comment on the PR.
+
+          # --model pins the review model so it does not drift with defaults.
+          # --max-turns is the real cost ceiling: it bounds a runaway review
+          # regardless of how much the prompt asks for.
+          claude_args: >-
+            --model claude-fable-5-1
+            --max-turns 15
+            --allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)"
