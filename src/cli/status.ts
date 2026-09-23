@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { Command } from "commander";
 import { type Config, configuredVaults, DEFAULT_CONFIG_PATH } from "../config.js";
 import { Storage } from "../db/storage.js";
+import { getProvider } from "../embed/provider.js";
 import { action, cfg, humanSize, mark, openDb } from "./shared.js";
 
 interface StatusPayload {
@@ -20,6 +21,10 @@ interface StatusPayload {
   provider: string;
   model: string;
   dimension: number;
+  /** The identity the configured provider commits to the index (what
+   * `qkb embed` records): for `llama` the GGUF stem, not `embedding.model`. */
+  provider_model: string;
+  provider_dim: number;
   index_model: string | null;
   index_dim: number | null;
   model_mismatch: boolean;
@@ -99,8 +104,8 @@ function humanStatus(cfgObj: Config, p: StatusPayload, dbExists: boolean): strin
     out.push(
       "",
       `⚠ Index was built with '${p.index_model}' (dim ${p.index_dim}) but config now says`,
-      `  '${p.model}' (dim ${p.dimension}).`,
-      "  Run `qkb ingest --full` to re-embed with the configured model.",
+      `  '${p.provider_model}' (dim ${p.provider_dim}).`,
+      "  Run `qkb embed --full` to re-embed with the configured model.",
     );
   }
   if (p.ingest_interrupted) {
@@ -120,8 +125,22 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
   const storage = dbExists ? new Storage(openDb(cfgObj), cfgObj.vaultName) : null;
   const st = storage ? storage.stats() : null;
   const stored = storage ? storage.storedEmbeddingConfig() : null;
-  const mismatch =
-    stored !== null && (stored[0] !== cfgObj.embeddingModel || stored[1] !== cfgObj.embeddingDim);
+  // Compare against the identity the configured provider would commit — the
+  // same value `qkb embed`'s guard checks — not the raw `embedding.model`
+  // string: for `llama` the provider's model name is the GGUF stem
+  // (e.g. "embeddinggemma-300M-Q8_0"), so comparing the config string made
+  // the warning permanent (#29). Constructing a provider does no I/O (no
+  // model load, no network); if it can't be built, fall back to config.
+  let providerModel = cfgObj.embeddingModel;
+  let providerDim = cfgObj.embeddingDim;
+  try {
+    const provider = await getProvider(cfgObj);
+    providerModel = provider.modelName;
+    providerDim = provider.dimension;
+  } catch {
+    // e.g. an unknown provider name — status still reports everything else
+  }
+  const mismatch = stored !== null && (stored[0] !== providerModel || stored[1] !== providerDim);
   const interrupted = storage ? storage.isIngestInProgress() : false;
   const counts = new Map((storage?.vaultCounts() ?? []).map((c) => [c.vault, c.documents]));
 
@@ -142,6 +161,8 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
     provider: cfgObj.embeddingProvider,
     model: cfgObj.embeddingModel,
     dimension: cfgObj.embeddingDim,
+    provider_model: providerModel,
+    provider_dim: providerDim,
     index_model: stored ? stored[0] : null,
     index_dim: stored ? stored[1] : null,
     model_mismatch: mismatch,

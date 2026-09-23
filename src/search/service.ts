@@ -60,7 +60,7 @@ export async function executeSearch(
       throw new SearchValidationError(
         `embedding dimension changed since last ingest ` +
           `(index is ${tableDim}-d, config is ${cfg.embeddingDim}-d) — ` +
-          `run \`qkb ingest --full\` to re-embed the whole vault`,
+          `run \`qkb embed --full\` to re-embed the whole vault`,
       );
     }
   }
