@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
+import { RESERVED_METADATA_KEY } from "../types.js";
 import type { HydratedResult } from "./hydrate.js";
 import { contextDescription, hydrate } from "./hydrate.js";
 
@@ -66,7 +67,14 @@ function escapeLikePrefix(raw: string): string {
  * markdown text when `includeRaw` is set. */
 export type DocumentDetail = Omit<HydratedResult, "score" | "matched_text"> & {
   raw_text?: string;
+  /** Every frontmatter property outside the core set, declared or not
+   * (stored, but only declared ones affect search). */
+  metadata: Record<string, string>;
 };
+
+/** Where to read a document's file from: one vault root, or a resolver from
+ * vault name to root (multi-vault configs). */
+export type VaultPathResolver = string | ((vaultName: string) => string | undefined);
 
 /**
  * Look up a document by exact id or unambiguous id prefix.
@@ -81,7 +89,7 @@ export type DocumentDetail = Omit<HydratedResult, "score" | "matched_text"> & {
 export function getDocument(
   conn: Database.Database,
   idOrPrefix: string,
-  vaultPath?: string,
+  vaultPath?: VaultPathResolver,
   includeRaw = false,
   includeSiblings = true,
 ): DocumentDetail {
@@ -106,15 +114,28 @@ export function getDocument(
   // Drop score/matched_text (search-only fields) from the get-by-id shape,
   // mirroring Python's `del doc["score"], doc["matched_text"]`.
   const { score: _score, matched_text: _matchedText, ...rest } = hydrated;
-  const doc: DocumentDetail = { ...rest };
+  const metaRows = conn
+    .prepare("SELECT key, value FROM metadata WHERE document_id = ? AND key != ? ORDER BY key")
+    .all(matchedId, RESERVED_METADATA_KEY) as { key: string; value: string }[];
+  const doc: DocumentDetail = {
+    ...rest,
+    metadata: Object.fromEntries(metaRows.map((r) => [r.key, r.value])),
+  };
   if (!includeSiblings) {
     doc.siblings = [];
   }
   if (includeRaw) {
-    if (vaultPath === undefined) {
+    const root = typeof vaultPath === "function" ? vaultPath(doc.vault) : vaultPath;
+    if (root === undefined) {
+      if (typeof vaultPath === "function") {
+        throw new DocumentFileMissing(
+          `vault ${JSON.stringify(doc.vault)} is not in the config — cannot read ` +
+            `${JSON.stringify(doc.file_path)} (document ${JSON.stringify(doc.document_id)})`,
+        );
+      }
       throw new Error("include_raw requires vault_path");
     }
-    const filePath = join(vaultPath, doc.file_path);
+    const filePath = join(root, doc.file_path);
     let raw: Buffer;
     try {
       raw = readFileSync(filePath);

@@ -4,7 +4,7 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Command } from "commander";
-import { type Config, DEFAULT_CONFIG_PATH } from "../config.js";
+import { type Config, configuredVaults, DEFAULT_CONFIG_PATH } from "../config.js";
 import { Storage } from "../db/storage.js";
 import { action, cfg, humanSize, mark, openDb } from "./shared.js";
 
@@ -13,6 +13,8 @@ interface StatusPayload {
   config_exists: boolean;
   vault_path: string;
   vault_exists: boolean;
+  vaults: { name: string; path: string; exists: boolean; documents: number }[];
+  fields: Record<string, string>;
   db_path: string;
   db_size_bytes: number;
   provider: string;
@@ -34,7 +36,14 @@ function humanStatus(cfgObj: Config, p: StatusPayload, dbExists: boolean): strin
   const out: string[] = ["qkb status", ""];
   const found = p.config_exists ? "found" : "using defaults";
   out.push(`Config:   ${p.config_path}  (${found})`);
-  out.push(`Vault:    ${p.vault_path}  (${cfgObj.vaultName})  [${mark(p.vault_exists)}]`);
+  if (p.vaults.length > 1) {
+    out.push("Vaults:");
+    for (const v of p.vaults) {
+      out.push(`  ${v.name}: ${v.path}  [${mark(v.exists)}]  (${v.documents} documents)`);
+    }
+  } else {
+    out.push(`Vault:    ${p.vault_path}  (${cfgObj.vaultName})  [${mark(p.vault_exists)}]`);
+  }
   if (dbExists) {
     out.push(`Database: ${p.db_path}  (${humanSize(p.db_size_bytes)})`);
   } else {
@@ -78,6 +87,10 @@ function humanStatus(cfgObj: Config, p: StatusPayload, dbExists: boolean): strin
       .map((c) => c.context)
       .join(", ");
     out.push(`  Contexts:  ${p.contexts.length}${names ? `  (${names})` : ""}`);
+    const fieldNames = Object.keys(p.fields);
+    if (fieldNames.length > 0) {
+      out.push(`  Fields:    ${fieldNames.join(", ")}`);
+    }
     if (pending) {
       out.push(`  → run \`qkb embed\` to compute the ${pending} pending vector(s)`);
     }
@@ -110,12 +123,20 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
   const mismatch =
     stored !== null && (stored[0] !== cfgObj.embeddingModel || stored[1] !== cfgObj.embeddingDim);
   const interrupted = storage ? storage.isIngestInProgress() : false;
+  const counts = new Map((storage?.vaultCounts() ?? []).map((c) => [c.vault, c.documents]));
 
   const payload: StatusPayload = {
     config_path: configPath,
     config_exists: existsSync(configPath),
     vault_path: cfgObj.vaultPath,
     vault_exists: existsSync(cfgObj.vaultPath),
+    vaults: configuredVaults(cfgObj).map((v) => ({
+      name: v.name,
+      path: v.path,
+      exists: existsSync(v.path),
+      documents: counts.get(v.name) ?? 0,
+    })),
+    fields: cfgObj.fields,
     db_path: cfgObj.dbPath,
     db_size_bytes: dbExists ? statSync(cfgObj.dbPath).size : 0,
     provider: cfgObj.embeddingProvider,

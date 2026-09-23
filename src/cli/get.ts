@@ -6,6 +6,7 @@
  * message is rewritten to read "no such option" at the top level (see
  * `../cli.ts`) so this stays parity with Click's wording. */
 import type { Command } from "commander";
+import { vaultPathFor } from "../config.js";
 import {
   AmbiguousDocumentPrefixError,
   DocumentDecodeError,
@@ -20,7 +21,7 @@ async function runGet(idOrPrefix: string, opts: { raw?: boolean; open?: boolean 
   const conn = openDb(cfgObj);
   let doc: ReturnType<typeof getDocument>;
   try {
-    doc = getDocument(conn, idOrPrefix, cfgObj.vaultPath, Boolean(opts.raw));
+    doc = getDocument(conn, idOrPrefix, (name) => vaultPathFor(cfgObj, name), Boolean(opts.raw));
   } catch (e) {
     // Ports cli.py's `except (DocumentFileMissing, KeyError, ValueError)` —
     // click.echo(str(e), err=True); sys.exit(1) (no "Error:" prefix). The TS

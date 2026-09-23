@@ -40,6 +40,21 @@ export interface HydratedResult {
   matched_text: string | null;
   tags: string[];
   siblings: Sibling[];
+  /** Name of the vault the note was indexed from. */
+  vault: string;
+  /** Declared extra properties present on the note (`[frontmatter.fields]`). */
+  fields: Record<string, string>;
+}
+
+/** Inverse of `renderFields`: `key: value` lines back into an object.
+ * `renderFields` flattens newlines inside values, so one line = one field. */
+export function parseFieldsText(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of text.split("\n")) {
+    const i = line.indexOf(": ");
+    if (i > 0) out[line.slice(0, i)] = line.slice(i + 2);
+  }
+  return out;
 }
 
 // ASCII letters/digits/`_.-~` — Python's `urllib.parse.quote` ALWAYS_SAFE set.
@@ -103,6 +118,7 @@ interface DocumentRow {
   title: string | null;
   vault_name: string;
   indexed_at: string;
+  fields_text: string;
 }
 
 interface SiblingCandidateRow {
@@ -252,6 +268,8 @@ export function hydrate(conn: Database.Database, ranked: RankedResult[]): Hydrat
       matched_text: matchedText,
       tags: tagsByDoc.get(docId) ?? [],
       siblings,
+      vault: d.vault_name,
+      fields: parseFieldsText(d.fields_text ?? ""),
     });
   }
   return out;

@@ -23,6 +23,7 @@
  * rather than a raw stack trace. */
 import { relative, sep } from "node:path";
 import type { Command } from "commander";
+import { configuredVaults } from "../config.js";
 import { Storage } from "../db/storage.js";
 import { getProvider } from "../embed/provider.js";
 import { embedPending, ingestVault } from "../ingest/pipeline.js";
@@ -78,9 +79,15 @@ export async function runIngest(opts: { full?: boolean; verbose?: boolean }): Pr
   const conn = openDb(cfgObj);
 
   const skips: Array<[string, string]> = [];
+  const vaults = configuredVaults(cfgObj);
   const onSkip = (path: string, reason: string): void => {
-    const rel = relative(cfgObj.vaultPath, path).split(sep).join("/");
-    skips.push([rel, reason]);
+    // Show the path relative to the vault it came from; prefix the vault
+    // name only when there's more than one.
+    const vault = vaults.find((v) => !relative(v.path, path).startsWith("..")) ?? vaults[0];
+    const rel = relative(vault?.path ?? cfgObj.vaultPath, path)
+      .split(sep)
+      .join("/");
+    skips.push([vaults.length > 1 && vault ? `${vault.name}/${rel}` : rel, reason]);
   };
 
   const renderer = createProgressRenderer();

@@ -344,6 +344,7 @@ export function parseNote(
   path: string,
   vaultRoot: string,
   fmMap: Record<string, string[]>,
+  declaredFields: string[] = [],
 ): ParsedNote | null {
   // gray-matter's default (js-yaml DEFAULT_SCHEMA) auto-parses YAML 1.1
   // timestamps into JS Date objects - which, unlike Python's tz-aware
@@ -413,6 +414,12 @@ export function parseNote(
     extra[k] = stringify(v);
   }
 
+  const fields: Record<string, string> = {};
+  for (const key of declaredFields) {
+    const v = extra[key];
+    if (v !== undefined) fields[key] = v;
+  }
+
   const titleRaw = get(meta, aliasesFor(fmMap, "title"));
   const typeRaw = get(meta, aliasesFor(fmMap, "type"));
   const filePath = relative(vaultRoot, path).split(sep).join("/");
@@ -427,6 +434,7 @@ export function parseNote(
     createdAt,
     tags,
     extraMetadata: extra,
+    fields,
     body: post.content,
     filePath,
   };

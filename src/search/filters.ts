@@ -20,6 +20,11 @@ export class Filters {
   tags: string[] | undefined;
   dateFrom: string | undefined;
   dateTo: string | undefined;
+  /** Restrict to these vault names (OR). */
+  vaults: string[] | undefined;
+  /** Declared-field equality filters (AND across keys). A value matches the
+   * whole stored value or one item of a list value, case-insensitively. */
+  fields: Record<string, string> | undefined;
 
   constructor(init: Partial<Filters> = {}) {
     this.context = init.context;
@@ -28,6 +33,8 @@ export class Filters {
     this.tags = init.tags;
     this.dateFrom = init.dateFrom;
     this.dateTo = init.dateTo;
+    this.vaults = init.vaults;
+    this.fields = init.fields;
   }
 }
 
@@ -159,6 +166,32 @@ export function buildFilterClause(f: Filters): [string, unknown[]] {
     );
     params.push(...f.tags);
     params.push(f.tags.length);
+  }
+
+  if (f.vaults !== undefined && f.vaults !== null && f.vaults.length > 0) {
+    const names = f.vaults.map((v) => v.trim());
+    if (names.some((v) => !v)) {
+      throw new SearchValidationError("vault filter is empty or whitespace-only");
+    }
+    conditions.push(`d.vault_name IN (${placeholders(names.length)})`);
+    params.push(...names);
+  }
+
+  if (f.fields !== undefined && f.fields !== null) {
+    for (const [key, raw] of Object.entries(f.fields)) {
+      const value = String(raw).trim().toLowerCase();
+      if (!key.trim() || !value) {
+        throw new SearchValidationError(`field filter ${JSON.stringify(key)} is empty`);
+      }
+      // List values are stored joined with ", " (parser's `stringify`), so a
+      // single item matches when it's one of the comma-separated entries.
+      conditions.push(
+        "EXISTS (SELECT 1 FROM metadata m WHERE m.document_id = d.id AND m.key = ? AND " +
+          "(lower(m.value) = ? OR (', ' || lower(m.value) || ', ') LIKE ? ESCAPE '\\'))",
+      );
+      const escaped = value.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+      params.push(key.trim(), value, `%, ${escaped}, %`);
+    }
   }
 
   const clause = conditions.length > 0 ? conditions.join(" AND ") : "1=1";
