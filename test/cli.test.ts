@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import Database from "better-sqlite3";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   EMBED_ABORT_MESSAGE,
@@ -132,13 +133,16 @@ describe("qkb CLI (subprocess)", () => {
     extra?: string;
   }
 
-  /** Spawns `node dist/cli.js ...args`, sends SIGINT after `delayMs`, and
-   * resolves with the exit code + merged output once the process exits.
-   * Unlike `run()` (spawnSync), this needs the child running concurrently
-   * with the timer, hence a real `spawn` + Promise. */
-  function runWithSigintAfter(
+  /** Spawn the CLI and send it a real SIGINT once `ready()` holds (polled
+   * every 5 ms); resolves with the exit code + merged output once the process
+   * exits. Unlike `run()` (spawnSync), this needs the child running
+   * concurrently with the poll, hence a real `spawn` + Promise. Readiness is
+   * observed, not timed: a fixed delay raced the child's own progress — under
+   * a loaded parallel test run it could fire before a single note was indexed,
+   * and on a fast machine (WAL made ingest ~2x faster) after the last one. */
+  function runWithSigintWhen(
     args: string[],
-    delayMs: number,
+    ready: () => boolean,
     runEnv: Record<string, string> = env,
   ): Promise<RunResult> {
     const child = spawn(process.execPath, [distCli, ...args], {
@@ -151,12 +155,32 @@ describe("qkb CLI (subprocess)", () => {
     child.stderr?.on("data", (d: Buffer) => {
       output += d.toString();
     });
-    setTimeout(() => child.kill("SIGINT"), delayMs);
+    const poll = setInterval(() => {
+      if (child.exitCode === null && ready()) {
+        clearInterval(poll);
+        child.kill("SIGINT");
+      }
+    }, 5);
     return new Promise((resolve) => {
       child.on("exit", (code) => {
+        clearInterval(poll);
         resolve({ exitCode: code ?? -1, output });
       });
     });
+  }
+
+  /** Documents committed so far, read straight from the DB file (WAL lets
+   * this read run alongside the child's writes); 0 before it exists. */
+  function committedDocuments(): number {
+    let db: Database.Database | undefined;
+    try {
+      db = new Database(env.QKB_DB_PATH as string, { readonly: true, fileMustExist: true });
+      return (db.prepare("SELECT COUNT(*) AS c FROM documents").get() as { c: number }).c;
+    } catch {
+      return 0;
+    } finally {
+      db?.close();
+    }
   }
 
   function writeNote(name: string, noteId: string, opts: WriteOpts = {}): string {
@@ -750,7 +774,8 @@ describe("qkb CLI (subprocess)", () => {
       });
     }
 
-    const aborted = await runWithSigintAfter(["ingest"], 400);
+    // SIGINT as soon as the first notes are committed — well before 1500.
+    const aborted = await runWithSigintWhen(["ingest"], () => committedDocuments() > 0);
     expect(aborted.exitCode).toBe(130);
     expect(aborted.output).toContain("Aborted");
     expect(aborted.output).toContain("qkb ingest");
