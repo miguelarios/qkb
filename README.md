@@ -360,6 +360,19 @@ npm run golden-queries -- ~/.config/qkb/golden_queries.yaml   # acceptance harne
 
 `npm run golden-queries` scores each query in the YAML file against the hybrid top-3 (PRD target: ≥80%); see [`scripts/golden-queries.example.yaml`](scripts/golden-queries.example.yaml) for the schema. Your real golden-queries file is personal vault data and must never be committed to this repo.
 
+## Releasing
+
+Releases are automated with [release-please](https://github.com/googleapis/release-please).
+Every merge to `main` updates an open **`chore: release X.Y.Z`** PR that bumps
+the version and writes `CHANGELOG.md` from the Conventional Commit titles
+(`feat` → minor, `fix` → patch while the version is below 1.0). Merging that PR
+tags `vX.Y.Z`, creates the GitHub Release, and publishes to npm (trusted
+publishing, with provenance) in the same workflow run. Pushing a `v*` tag by
+hand still works as a fallback.
+
+After a release, bump `Formula/qkb.rb` to the new tarball and checksum (see the
+comment at the top of that file).
+
 ## License
 
 MIT
