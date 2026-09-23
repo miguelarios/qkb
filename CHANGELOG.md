@@ -3,6 +3,18 @@
 Release PRs (`chore(release): X.Y.Z`) add a section here; the release
 workflow uses it as the GitHub Release notes.
 
+## 0.5.1 (2026-09-23)
+
+### Bug fixes
+
+- `qkb status` no longer reports a false model mismatch for the `llama` provider right after a full re-embed; it now compares the provider's own model identity, as `qkb embed` does (#29)
+- The model-mismatch warning and the search-time "embedding dimension changed" error now point to `qkb embed --full`, the command that actually re-embeds (#29)
+
+### Changes
+
+- Releases publish when a `chore(release): X.Y.Z` PR merges; no hand-pushed tag needed
+- Homebrew formula points at 0.5.0
+
 ## 0.5.0 (2026-09-23)
 
 ### Features
