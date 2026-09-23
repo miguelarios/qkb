@@ -5,9 +5,10 @@ import { describe, expect, it } from "vitest";
 
 // Cheap, offline substitute for `actionlint`: every workflow file must at
 // least be syntactically valid YAML with a `jobs` map, and the release safety
-// invariants (the npm release workflow is tag-gated and uses OIDC, CI never
-// `npm publish`es, and no Python/PyPI workflow comes back now that the repo
-// is TypeScript-only) must hold structurally, not just by convention.
+// invariants (npm publishes only when a merged version bump or a v* tag says
+// so, via OIDC; CI never `npm publish`es; no Python/PyPI workflow comes back
+// now that the repo is TypeScript-only) must hold structurally, not just by
+// convention.
 
 const WORKFLOWS_DIR = join(import.meta.dirname, "..", ".github", "workflows");
 
@@ -61,23 +62,42 @@ describe("ci.yml", () => {
 
 describe("release.yml", () => {
   const doc = loadWorkflow("release.yml");
+  const jobs = doc.jobs as Record<string, Record<string, unknown>>;
+  const steps = (jobs.release?.steps ?? []) as Record<string, unknown>[];
+  const plan = String(steps.find((s) => s.id === "plan")?.run ?? "");
 
-  it("triggers only on v* tag pushes, not on branch pushes or pull_request", () => {
+  it("runs on pushes to main (release on merge) and v* tags (manual fallback), never on pull_request", () => {
     const on = doc.on as Record<string, unknown>;
     expect(on.pull_request).toBeUndefined();
+    expect(on.pull_request_target).toBeUndefined();
     const push = on.push as Record<string, unknown>;
-    expect(push).toBeTypeOf("object");
-    expect(push.branches).toBeUndefined();
+    expect(push.branches).toEqual(["main"]);
     expect(push.tags).toEqual(["v*"]);
   });
 
+  it("publishes only when package.json's version changed (or a matching v* tag was pushed)", () => {
+    // A plain push to main must never publish — only merging a version bump
+    // (owner-only) or pushing a tag does.
+    expect(plan).toMatch(/OLD" = "\$VERSION"/);
+    expect(plan).toMatch(/release=false/);
+    expect(plan).toMatch(/Refusing to publish: tag/);
+    const gated = steps.filter((s) => s.run !== undefined && s.id !== "plan");
+    for (const s of gated) {
+      expect(String(s.if ?? "")).toMatch(/steps\.plan\.outputs\.release == 'true'/);
+    }
+    const publish = steps.find((s) => s.name === "Publish");
+    expect(String(publish?.if ?? "")).toMatch(/steps\.exists\.outputs\.already == 'false'/);
+  });
+
+  it("tags only after npm serves the version", () => {
+    const tag = String(steps.find((s) => s.name === "Tag and GitHub Release")?.run ?? "");
+    expect(tag.indexOf("npm view")).toBeGreaterThan(-1);
+    expect(tag.indexOf("npm view")).toBeLessThan(tag.indexOf("git push origin"));
+  });
+
   it("requests OIDC id-token permission for npm trusted publishing", () => {
-    const jobs = doc.jobs as Record<string, Record<string, unknown>>;
-    const permissioned = Object.values(jobs).some((job) => {
-      const perms = job.permissions as Record<string, string> | undefined;
-      return perms?.["id-token"] === "write";
-    });
-    expect(permissioned).toBe(true);
+    const perms = jobs.release?.permissions as Record<string, string> | undefined;
+    expect(perms?.["id-token"]).toBe("write");
   });
 
   it("publishes with --provenance --access public and no token secret", () => {

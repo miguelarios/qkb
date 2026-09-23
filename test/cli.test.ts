@@ -653,17 +653,16 @@ describe("qkb CLI (subprocess)", () => {
     expect(result.output.toLowerCase()).toContain("qkb ingest");
   });
 
-  it("status surfaces the index's built-with model and warns on mismatch", () => {
+  it("status surfaces the index's built-with model and warns only on a real mismatch (#29)", () => {
     writeNote("a.md", ID1);
     run(["ingest"]);
     run(["embed"]); // embedding is what commits the model/dim
 
-    // configured model (default) != the fake provider's committed "fake-8d"
+    // Built by the configured provider (fake, dim 8 -> "fake-8d"): no warning,
+    // even though the config's `embedding.model` string is something else.
     const status = run(["status"]);
     expect(status.output).toContain("Built with: fake-8d");
-    expect(status.output).toContain("qkb ingest --full");
-    expect(status.output).toContain("⚠");
-
+    expect(status.output).not.toContain("⚠");
     const d = JSON.parse(run(["status", "--json"]).output) as {
       index_model: string;
       index_dim: number;
@@ -671,14 +670,45 @@ describe("qkb CLI (subprocess)", () => {
     };
     expect(d.index_model).toBe("fake-8d");
     expect(d.index_dim).toBe(8);
-    expect(d.model_mismatch).toBe(true);
+    expect(d.model_mismatch).toBe(false);
 
-    // aligned config -> no warning
-    const env2 = { ...env, QKB_EMBEDDING_MODEL: "fake-8d" };
-    const status2 = run(["status"], env2);
-    expect(status2.output).not.toContain("⚠");
-    const d2 = JSON.parse(run(["status", "--json"], env2).output) as { model_mismatch: boolean };
-    expect(d2.model_mismatch).toBe(false);
+    // A genuinely different embedding (dim 16 -> "fake-16d") warns, and the
+    // remedy is the command that actually re-embeds.
+    const env16 = { ...env, QKB_EMBEDDING_DIM: "16" };
+    const status16 = run(["status"], env16);
+    expect(status16.output).toContain("⚠");
+    expect(status16.output).toContain("'fake-16d' (dim 16)");
+    expect(status16.output).toContain("qkb embed --full");
+    const d16 = JSON.parse(run(["status", "--json"], env16).output) as { model_mismatch: boolean };
+    expect(d16.model_mismatch).toBe(true);
+  });
+
+  it("status: no false mismatch for the llama provider, whose index key is the GGUF stem (#29)", () => {
+    writeNote("a.md", ID1);
+    run(["ingest"]);
+    // What `qkb embed` commits for provider=llama with the default GGUF.
+    const db = new Database(env.QKB_DB_PATH as string);
+    db.prepare("DELETE FROM embedding_config").run();
+    db.prepare(
+      "INSERT INTO embedding_config (key, value) VALUES ('model_name', ?), ('embedding_dim', '768')",
+    ).run("embeddinggemma-300M-Q8_0");
+    db.close();
+
+    // The issue's config: provider llama, model "embeddinggemma", dim 768.
+    // status builds the provider only to read its identity — no model load.
+    const llamaEnv = {
+      ...env,
+      QKB_EMBEDDING_PROVIDER: "llama",
+      QKB_EMBEDDING_MODEL: "embeddinggemma",
+      QKB_EMBEDDING_DIM: "768",
+      QKB_MODEL_CACHE_DIR: join(tmpDir, "no-models"),
+    };
+    const status = run(["status"], llamaEnv);
+    expect(status.exitCode).toBe(0);
+    expect(status.output).toContain("Built with: embeddinggemma-300M-Q8_0");
+    expect(status.output).not.toContain("⚠");
+    const d = JSON.parse(run(["status", "--json"], llamaEnv).output) as { model_mismatch: boolean };
+    expect(d.model_mismatch).toBe(false);
   });
 
   it("qkb embed with nothing pending never warms the provider — safe offline even with provider=llama (the network-touching default)", () => {

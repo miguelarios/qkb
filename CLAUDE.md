@@ -30,7 +30,7 @@ npm run build                              # tsc -> dist/
 - The owner's real golden-query file lives at `~/.config/qkb/golden_queries.yaml` — read/run it locally, never copy it (or its contents) into the repo.
 - The Obsidian vault is read-only. Never write into it.
 - Unit tests must pass offline: no model download, no Ollama, no network — use the `fake` provider. Tests that need a real model live in `test/integration/` and run only with `npm run test:integration`.
-- Don't tag releases (`v*`) — tagging triggers an npm publish and is owner-only.
+- Releases: merging a `chore(release): X.Y.Z` PR publishes to npm (release on merge — see `.github/workflows/release.yml`). An agent may **open** that PR when asked: bump `package.json` + `package-lock.json` (`npm version X.Y.Z --no-git-tag-version`) and add a `## X.Y.Z (YYYY-MM-DD)` section to `CHANGELOG.md`, nothing else. Merging it, and pushing `v*` tags, is owner-only.
 
 ## Filing issues and PRs
 

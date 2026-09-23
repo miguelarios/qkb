@@ -360,6 +360,21 @@ npm run golden-queries -- ~/.config/qkb/golden_queries.yaml   # acceptance harne
 
 `npm run golden-queries` scores each query in the YAML file against the hybrid top-3 (PRD target: ≥80%); see [`scripts/golden-queries.example.yaml`](scripts/golden-queries.example.yaml) for the schema. Your real golden-queries file is personal vault data and must never be committed to this repo.
 
+## Releasing
+
+Release on merge. A release is a PR titled **`chore(release): X.Y.Z`** that
+bumps the version (`npm version X.Y.Z --no-git-tag-version` updates
+`package.json` and `package-lock.json`) and adds a `## X.Y.Z (YYYY-MM-DD)`
+section to `CHANGELOG.md`. When it merges, `.github/workflows/release.yml`
+sees the version change on `main`, runs the checks, publishes to npm
+(trusted publishing, with provenance), waits until npm serves the version,
+then creates the `vX.Y.Z` tag and a GitHub Release whose notes are that
+CHANGELOG section. No local tag push needed. Pushing a matching `v*` tag
+by hand still works as a fallback.
+
+After a release, bump `Formula/qkb.rb` to the new tarball and checksum (see the
+comment at the top of that file).
+
 ## License
 
 MIT

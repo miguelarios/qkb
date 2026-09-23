@@ -1,24 +1,79 @@
-# npm release for the TypeScript rewrite. Fires ONLY on `v*` tag pushes
-# (owner-only — tags are never pushed by CI or by an agent, see CLAUDE.md's
-# "Don't tag releases" hard rule). Publishes to npm via **Trusted
-# Publishing/OIDC** — no NODE_AUTH_TOKEN/NPM_TOKEN secret exists in this repo
-# at all, so there is nothing for CI to leak and no token that would let a
-# plain `npm publish` from `ci.yml` (which never runs this workflow) succeed.
+# Release on merge, same design as pim-agents: merging a
+# `chore(release): X.Y.Z` PR (it bumps package.json/package-lock.json and adds
+# a CHANGELOG section) IS the release. On every push to main this workflow
+# checks whether package.json's version changed; if so it publishes to npm,
+# waits until npm serves the version, and only then writes the vX.Y.Z tag and
+# GitHub Release as the record. No local git client or tag push is needed,
+# so a cloud/web session can take a release all the way to "PR opened".
+#
+# A hand-pushed v* tag still publishes (fallback). Tags this workflow creates
+# with GITHUB_TOKEN don't re-trigger it (GitHub suppresses token-authored
+# events), so the record-keeping tag can't cause a second publish.
+#
+# Publishing uses npm **Trusted Publishing/OIDC**, which is bound to this
+# workflow's file name (release.yml) — keep the publish step in this file.
+# No NODE_AUTH_TOKEN/NPM_TOKEN secret exists in this repo at all, so there is
+# nothing for CI to leak and no token that would let a plain `npm publish`
+# from `ci.yml` succeed.
 name: Release (npm)
 on:
   push:
+    branches: [main]
     tags: ["v*"]
 permissions:
   contents: read
+concurrency:
+  group: release
+  cancel-in-progress: false
 jobs:
-  publish:
+  release:
     runs-on: ubuntu-latest
     permissions:
       id-token: write # npm trusted publishing (OIDC) + provenance attestation
-      contents: write # create the GitHub Release
+      contents: write # push the tag, create the GitHub Release
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # history + tags, to diff versions and check existing tags
+
+      - name: Decide what to release
+        id: plan
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          VERSION=$(jq -r .version package.json)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            # Manual fallback: the tag must name exactly what package.json says.
+            if [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
+              echo "::error::Refusing to publish: tag $GITHUB_REF_NAME but package.json is $VERSION"
+              exit 1
+            fi
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # github.event.before spans the whole push, so a push that bumps and
+          # then fixes is still compared against the right baseline.
+          BASE="$BEFORE"
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            BASE="HEAD^"
+          fi
+          OLD=$(git show "${BASE}:package.json" | jq -r .version)
+          if [ "$OLD" = "$VERSION" ]; then
+            echo "No version change ($VERSION) — nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          elif git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "::notice::v$VERSION is already tagged — skipping"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release: $OLD -> $VERSION"
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-node@v4
+        if: steps.plan.outputs.release == 'true'
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
@@ -26,18 +81,92 @@ jobs:
       # Trusted Publishing needs a recent npm CLI (>=11.5.1); the version
       # bundled with setup-node's Node build can lag behind, so pin explicitly
       # rather than trust whatever ships with the runner image.
-      - run: npm install -g npm@latest
-      - run: npm ci
-      - run: npm test
-      - run: npx tsc --noEmit
-      - run: npx biome check .
-      - run: npm run build
-      - run: npm pack
+      - if: steps.plan.outputs.release == 'true'
+        run: npm install -g npm@latest
+      - if: steps.plan.outputs.release == 'true'
+        run: npm ci
+      - if: steps.plan.outputs.release == 'true'
+        run: npm test
+      - if: steps.plan.outputs.release == 'true'
+        run: npx tsc --noEmit
+      - if: steps.plan.outputs.release == 'true'
+        run: npx biome check .
+      - if: steps.plan.outputs.release == 'true'
+        run: npm run build
+      - if: steps.plan.outputs.release == 'true'
+        run: npm pack
+
+      # Makes a re-run safe after a partial failure: publishing is the one
+      # step that can't be repeated, so skip it if this version already landed.
+      - name: Check npm for this version
+        id: exists
+        if: steps.plan.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          if npm view --prefer-online "@miguelarios/qkb@${VERSION}" version >/dev/null 2>&1; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::@miguelarios/qkb@${VERSION} is already on npm — skipping publish"
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # No `NODE_AUTH_TOKEN`/`NPM_TOKEN` env here — Trusted Publishing
       # authenticates via the `id-token: write` OIDC token above, not a
       # secret. `--provenance` attaches a Sigstore-signed build attestation.
-      - run: npm publish --provenance --access public
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: "*.tgz"
-          generate_release_notes: true
+      - name: Publish
+        if: steps.plan.outputs.release == 'true' && steps.exists.outputs.already == 'false'
+        run: npm publish --provenance --access public
+
+      - name: Tag and GitHub Release
+        if: steps.plan.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+
+          # npm is the source of truth for whether this shipped, and its own
+          # output warns a new version "may take a few minutes to become
+          # available" (pim-agents has seen 7+ minutes). Wait up to 20m.
+          SEEN=0
+          for _ in $(seq 1 120); do
+            if npm view --prefer-online "@miguelarios/qkb@${VERSION}" version >/dev/null 2>&1; then
+              SEEN=1
+              break
+            fi
+            sleep 10
+          done
+          if [ "$SEEN" -eq 0 ]; then
+            echo "::error::@miguelarios/qkb@${VERSION} did not appear on npm within 20m — not tagging $TAG"
+            exit 1
+          fi
+
+          # Release notes: this version's CHANGELOG section (`## X.Y.Z …`).
+          VER_RE=$(printf '%s' "$VERSION" | sed 's/[.[\*^$()+?{|]/\\&/g')
+          NOTES="$(mktemp)"
+          if [ -f CHANGELOG.md ]; then
+            awk -v ver="$VER_RE" '
+              $0 ~ "^## " ver "([ (]|$)" { f = 1; next }
+              /^## / { f = 0 }
+              f
+            ' CHANGELOG.md > "$NOTES"
+          fi
+          [ -s "$NOTES" ] || echo "See CHANGELOG.md" > "$NOTES"
+
+          # Each step is skipped if already done, so a re-run resumes.
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::notice::$TAG is already pushed"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "$VERSION"
+            git push origin "$TAG"
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" ./*.tgz --clobber
+          else
+            gh release create "$TAG" ./*.tgz --title "$TAG" --notes-file "$NOTES"
+          fi
+          echo "::notice::Released $TAG"
