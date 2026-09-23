@@ -309,3 +309,41 @@ CREATE TABLE metadata (
 `ingest_vault(provider=None)` is the structural path; passing a provider keeps the old single-pass inline-embed behavior (used by tests and any caller wanting one shot). Keyword/BM25 search works after `ingest` alone; vector/hybrid search returns whatever is embedded so far and improves as `embed` progresses. `qkb status` surfaces the pending-vector count.
 
 **Rationale**: The expensive part (embedding) and the cheap part (structure + keyword index) have completely different cost and failure profiles, so coupling them made the whole tool as slow and fragile as its slowest component. Decoupling makes the vault searchable in seconds, makes the long embed job interruptible/resumable, and lets embedding run as a separate/background step — while a shared index and the vec0 MATCH query mean partial vector coverage degrades gracefully to keyword-only results rather than failing. Revises the single-pass model implied by ADR-012/ADR-013.
+
+---
+
+## ADR-015: Multiple Vaults Share One Index; Note Ids Stay Globally Unique
+
+**Date**: 2026-09-23
+**Status**: Decided
+
+**Question**: The MVP needs several vaults behind one qkb (a personal vault plus an agent-maintained wiki, say), filterable per search (#23). Should a note's identity become `(vault, id)`, or stay `id`?
+
+**Options**:
+1. **`(vault, id)` primary key.** Allows the same id in two vaults. But every table keyed by `document_id` (chunks, tags, metadata, FTS `doc_id`, siblings, `qkb get` prefix lookup) would change, existing indexes would need a full rebuild and re-embed, and an id would no longer identify one note.
+2. **One database file per vault.** Clean isolation, but cross-vault search then needs query fan-out and merging of BM25/RRF scores across separate indexes.
+3. **Globally unique `id`, vault recorded per document.** `documents.vault_name` already exists. A second vault claiming an id is a reported duplicate, the same rule that already applies inside one vault.
+
+**Decision**: Option 3. Paths are unique only per vault, so the path→id map, the parse-failure protection and the deletion sweep are all scoped per vault. The sweep runs only after every vault has been walked, so a note moved between vaults is found and refreshed (metadata only, no re-embed) instead of deleted and re-embedded. Documents from a vault that's no longer configured are swept. `[vault]` stays as shorthand for a one-entry `[[vaults]]` list.
+
+**Rationale**: The `id` property is how the owner defines a note's identity ("that's how we know it's unique"). Two vaults holding the same id are almost always a mirror or a copy, so indexing one and reporting the other matches the existing duplicate rule. No schema migration or re-embed is needed.
+
+---
+
+## ADR-016: Declared Extra Frontmatter Properties
+
+**Date**: 2026-09-23
+**Status**: Decided
+
+**Question**: Properties outside the core set (ADR-011) were stored in `metadata` but never read back. How should users make some of them count (#24) without every sync or plugin key polluting ranking and embeddings?
+
+**Decision**: Opt in per key, with a description: `[frontmatter.fields] key = "description"`. Declared values are rendered as `key: value` lines, then:
+- stored in `documents.fields_text` and in a new FTS5 `fields` column, placed after the UNINDEXED `doc_id` so the existing bm25() weight positions don't move (weight = optional 6th `fts_weights` entry, default 3.0, like tags);
+- prepended to every chunk's embedded text (`embeddingText`), identically on the inline and the two-phase embed paths;
+- returned as `fields` in results, filterable (`--field` / MCP `fields`), and listed with their descriptions in the `qkb` tool description and `qkb_status`, so agents learn what the properties mean.
+
+`qkb get` returns every stored property (`metadata`), declared or not.
+
+When a note's rendered fields change (a value edit, or the declared set itself changing), the metadata-refresh path drops only that note's vectors, and the next embed pass recomputes them. This replaces a whole-vault `--full` guard. The metadata hash includes the rendered fields only when they're non-empty, so an index without declared fields keeps its existing hashes and doesn't rewrite every note after the upgrade. Old databases migrate in place: the FTS table is rebuilt from its own stored columns and vectors are kept.
+
+**Alternatives rejected**: indexing every frontmatter key (noisy: sync and plugin keys would affect ranking and vectors); a QMD-style namespaced `qkb:` block (forces owners to duplicate properties they already have).

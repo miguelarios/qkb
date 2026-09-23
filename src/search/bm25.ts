@@ -141,6 +141,10 @@ export function sanitizeQuery(query: string): string {
  *
  * Ported from `bm25.py`'s `search_bm25`.
  */
+/** BM25 weight for the declared-fields column when `fts_weights` has no 6th
+ * entry — same as `tags`, the other short, curated metadata column. */
+export const DEFAULT_FIELDS_WEIGHT = 3.0;
+
 export function searchBm25(
   conn: Database.Database,
   query: string,
@@ -153,7 +157,10 @@ export function searchBm25(
     return [];
   }
   const [clause, params] = buildFilterClause(filters);
-  const w = [...weights, 0.0]; // 6th weight for doc_id UNINDEXED
+  // title, tags, context, body, type; then 0.0 for the UNINDEXED doc_id;
+  // then the declared-fields column. A 6th `fts_weights` entry sets the
+  // fields weight; otherwise it ranks like tags.
+  const w = [...weights.slice(0, 5), 0.0, weights[5] ?? DEFAULT_FIELDS_WEIGHT];
   // NOTE: no table alias on documents_fts — FTS5 MATCH needs the real table
   // name. Weights are inlined (not bound) — SQLite's bm25() requires literal
   // numeric arguments. snippet()'s start/end markers are also inlined as

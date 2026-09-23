@@ -20,10 +20,11 @@ CREATE TABLE IF NOT EXISTS documents (
     content_hash   TEXT NOT NULL,
     title          TEXT,
     vault_name     TEXT NOT NULL DEFAULT 'Notes',
-    indexed_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    indexed_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    fields_text    TEXT NOT NULL DEFAULT ''
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
-    title, tags, context, body, type, doc_id UNINDEXED,
+    title, tags, context, body, type, doc_id UNINDEXED, fields,
     tokenize='porter unicode61'
 );
 CREATE TABLE IF NOT EXISTS chunks (
@@ -61,6 +62,49 @@ CREATE INDEX IF NOT EXISTS idx_documents_effective_date ON documents(effective_d
 CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_metadata_key ON metadata(key, value);
 `;
+
+// Created after migrate(), since an older DB's `documents` table only gains
+// columns there.
+const POST_MIGRATION_SQL = `
+CREATE INDEX IF NOT EXISTS idx_documents_vault ON documents(vault_name);
+`;
+
+function columnNames(db: Database.Database, table: string): string[] {
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+}
+
+/**
+ * Bring a DB created by an older qkb up to the current schema, in place and
+ * without re-embedding:
+ *
+ * - `documents.fields_text` (declared extra properties, rendered as
+ *   `key: value` lines) — added with an empty default.
+ * - `documents_fts.fields` — FTS5 tables can't ALTER ADD COLUMN, so the table
+ *   is rebuilt from its own stored columns (it's a content-storing FTS table,
+ *   so the body is still there) with an empty `fields` column. `fields` sits
+ *   AFTER the UNINDEXED `doc_id` so the existing bm25() weight positions for
+ *   title/tags/context/body/type don't move.
+ */
+function migrate(db: Database.Database): void {
+  if (!columnNames(db, "documents").includes("fields_text")) {
+    db.exec("ALTER TABLE documents ADD COLUMN fields_text TEXT NOT NULL DEFAULT ''");
+  }
+  if (!columnNames(db, "documents_fts").includes("fields")) {
+    db.transaction(() => {
+      db.exec(
+        "CREATE VIRTUAL TABLE documents_fts_migrated USING fts5(" +
+          "title, tags, context, body, type, doc_id UNINDEXED, fields, " +
+          "tokenize='porter unicode61')",
+      );
+      db.exec(
+        "INSERT INTO documents_fts_migrated (title, tags, context, body, type, doc_id, fields) " +
+          "SELECT title, tags, context, body, type, doc_id, '' FROM documents_fts",
+      );
+      db.exec("DROP TABLE documents_fts");
+      db.exec("ALTER TABLE documents_fts_migrated RENAME TO documents_fts");
+    })();
+  }
+}
 
 /**
  * Build a `?,?,...` SQL IN-list placeholder string for `n` parameters.
@@ -138,7 +182,17 @@ export function connect(dbPath: string, embeddingDim: number): Database.Database
   const db = new Database(dbPath);
   sqliteVec.load(db);
   db.pragma("foreign_keys = ON");
+  // A long-running server reads while `qkb ingest`/`embed` (or the server's
+  // own watch loop, on a second connection) writes. WAL lets readers and the
+  // one writer proceed concurrently; busy_timeout makes a second writer wait
+  // for the lock instead of failing at once with "database is locked".
+  db.pragma("busy_timeout = 5000");
+  if (dbPath !== ":memory:") {
+    db.pragma("journal_mode = WAL");
+  }
   db.exec(SCHEMA_SQL);
+  migrate(db);
+  db.exec(POST_MIGRATION_SQL);
   createVectorTable(db, embeddingDim);
   return db;
 }

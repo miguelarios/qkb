@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { parse } from "smol-toml";
 
 export interface Config {
@@ -26,6 +26,38 @@ export interface Config {
   frontmatter: Record<string, string[]>;
   openaiBaseUrl: string | null;
   openaiApiKey: string | null;
+  /** Extra vaults from `[[vaults]]`. Empty means "the single vault in
+   * `vaultPath`/`vaultName`" — read vaults through `configuredVaults()`, never
+   * this field directly. */
+  vaults: Vault[];
+  /** Declared extra frontmatter properties (`[frontmatter.fields]`): key ->
+   * short description for agents. Declared keys are searchable, embedded, and
+   * returned in results; undeclared extra keys are only stored. */
+  fields: Record<string, string>;
+  mcpHost: string;
+  mcpPort: number;
+  /** Browser origins accepted by the HTTP MCP server besides loopback. `*`
+   * disables the check. */
+  mcpAllowedOrigins: string[];
+  /** Seconds between automatic re-index runs in watch mode. */
+  watchInterval: number;
+}
+
+export interface Vault {
+  name: string;
+  path: string;
+}
+
+/** Every vault qkb indexes: the `[[vaults]]` list, or the single
+ * `[vault]` / `vaultPath` entry when no list is configured. */
+export function configuredVaults(cfg: Config): Vault[] {
+  if (cfg.vaults.length > 0) return cfg.vaults;
+  return [{ name: cfg.vaultName, path: cfg.vaultPath }];
+}
+
+/** Look up a configured vault by name (for reading a document's file back). */
+export function vaultPathFor(cfg: Config, vaultName: string): string | undefined {
+  return configuredVaults(cfg).find((v) => v.name === vaultName)?.path;
 }
 
 export const DEFAULT_FRONTMATTER: Record<string, string[]> = {
@@ -65,7 +97,19 @@ const TOML_MAP: TomlEntry[] = [
   ["search", "vec_candidates", "vecCandidates", (v) => Number(v)],
   ["search", "fts_candidates", "ftsCandidates", (v) => Number(v)],
   ["search", "fts_weights", "ftsWeights", (v) => (Array.isArray(v) ? v.map((x) => Number(x)) : [])],
+  ["mcp", "host", "mcpHost", (v) => String(v)],
+  ["mcp", "port", "mcpPort", (v) => Number(v)],
+  ["mcp", "allowed_origins", "mcpAllowedOrigins", (v) => toList(v)],
+  ["watch", "interval", "watchInterval", (v) => Number(v)],
 ];
+
+function toList(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter(Boolean);
+  return String(v)
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
 
 // QKB_<NAME> env var -> Config property
 type EnvEntry = [string, keyof Config, (val: string) => unknown];
@@ -85,6 +129,10 @@ const ENV_MAP: EnvEntry[] = [
   ["QKB_MODEL_CACHE_DIR", "modelCacheDir", (v) => String(v)],
   ["QKB_OPENAI_BASE_URL", "openaiBaseUrl", (v) => (v ? String(v) : null)],
   ["QKB_OPENAI_API_KEY", "openaiApiKey", (v) => (v ? String(v) : null)],
+  ["QKB_MCP_HOST", "mcpHost", (v) => String(v)],
+  ["QKB_MCP_PORT", "mcpPort", (v) => Number(v)],
+  ["QKB_ALLOWED_ORIGINS", "mcpAllowedOrigins", (v) => toList(v)],
+  ["QKB_WATCH_INTERVAL", "watchInterval", (v) => Number(v)],
 ];
 
 function expandPath(p: string): string {
@@ -122,14 +170,27 @@ export function loadConfig(
     frontmatter: { ...DEFAULT_FRONTMATTER },
     openaiBaseUrl: null,
     openaiApiKey: null,
+    vaults: [],
+    fields: {},
+    mcpHost: "127.0.0.1",
+    mcpPort: 8181,
+    mcpAllowedOrigins: [],
+    watchInterval: 300,
   };
 
   // Check if we should use a different config path from env
   const actualConfigPath = env.QKB_CONFIG || configPath;
 
-  // Load from TOML file if it exists
+  // Load from TOML file if it exists. A missing/unreadable file means
+  // defaults; a file that exists but doesn't parse is a user error and must
+  // say so instead of silently falling back to defaults.
+  let content: string | null = null;
   try {
-    const content = readFileSync(actualConfigPath, "utf-8");
+    content = readFileSync(actualConfigPath, "utf-8");
+  } catch {
+    // File doesn't exist or can't be read, use defaults
+  }
+  if (content !== null) {
     const data = parse(content) as Record<string, unknown>;
 
     for (const [section, key, attr, caster] of TOML_MAP) {
@@ -155,9 +216,25 @@ export function loadConfig(
           }
         }
       }
+      const fieldsData = frontmatterData.fields;
+      if (fieldsData && typeof fieldsData === "object" && !Array.isArray(fieldsData)) {
+        for (const [key, desc] of Object.entries(fieldsData as Record<string, unknown>)) {
+          cfg.fields[key] = String(desc ?? "");
+        }
+      }
     }
-  } catch {
-    // File doesn't exist or can't be read, use defaults
+
+    // [[vaults]] — several vaults in one index
+    if (Array.isArray(data.vaults)) {
+      cfg.vaults = (data.vaults as Record<string, unknown>[]).map((v, i) => {
+        if (!v || typeof v.path !== "string" || !v.path.trim()) {
+          throw new Error(`config: [[vaults]] entry ${i + 1} needs a \`path\``);
+        }
+        const path = v.path;
+        const name = typeof v.name === "string" && v.name.trim() ? v.name.trim() : basename(path);
+        return { name, path };
+      });
+    }
   }
 
   // Apply env variable overrides
@@ -168,7 +245,34 @@ export function loadConfig(
     }
   }
 
+  // QKB_VAULT_PATH names ONE vault explicitly — it replaces a configured
+  // [[vaults]] list rather than silently being ignored by it.
+  if ("QKB_VAULT_PATH" in env) {
+    cfg.vaults = [];
+  }
+
   // Expand ~ in paths
+  cfg.vaults = cfg.vaults.map((v) => ({ name: v.name, path: expandPath(v.path) }));
+  const names = new Set<string>();
+  for (const v of cfg.vaults) {
+    if (names.has(v.name)) throw new Error(`config: duplicate vault name "${v.name}"`);
+    names.add(v.name);
+  }
+  if (cfg.vaults.length > 0) {
+    // Keep the single-vault fields pointing at the first vault, for callers
+    // (and messages) that only care about one.
+    cfg.vaultPath = (cfg.vaults[0] as Vault).path;
+    cfg.vaultName = (cfg.vaults[0] as Vault).name;
+  }
+  for (const key of Object.keys(cfg.fields)) {
+    for (const aliases of Object.values(cfg.frontmatter)) {
+      if (aliases.includes(key)) {
+        throw new Error(
+          `config: [frontmatter.fields] "${key}" is already a core frontmatter key or alias`,
+        );
+      }
+    }
+  }
   cfg.vaultPath = expandPath(cfg.vaultPath);
   cfg.dbPath = expandPath(cfg.dbPath);
   cfg.modelCacheDir = expandPath(cfg.modelCacheDir);

@@ -1,30 +1,27 @@
 # qkb — Project Instructions
 
-Hybrid BM25 + vector search for Obsidian vaults. The project is mid-rewrite from Python to
-TypeScript (Node ≥20, `better-sqlite3` + `sqlite-vec`, `commander` CLI, `@modelcontextprotocol/sdk`
-stdio server) — see `docs/plans/2026-07-20-typescript-rewrite.md`. The TS project lives at the repo
-root; the original Python implementation (`qkb-search`, v0.3.0, published on PyPI) is preserved and
-still runnable under `legacy/python/` and is the authoritative behavioral spec each port task
-matches against. Package `@miguelarios/qkb`, command `qkb`.
+Hybrid BM25 + vector search for Obsidian-style knowledge-base vaults, with frontmatter treated as
+structured metadata. TypeScript (Node ≥20, `better-sqlite3` + `sqlite-vec`, `node-llama-cpp`,
+`commander` CLI, `@modelcontextprotocol/sdk` MCP server). Package `@miguelarios/qkb`, command `qkb`.
+
+The original Python implementation (`qkb-search`, v0.3.0) is no longer in the tree; it is on PyPI
+and in git history. Source comments that cite `legacy/python/...` or a `*.py` module refer to the
+last release that still carried it: `git show v0.4.3:legacy/python/src/qkb/<module>.py`.
 
 ## Source of truth
 
-- `docs/plans/2026-07-20-typescript-rewrite.md` — the TypeScript rewrite plan (18 tasks). Execute in order; each task ports the cited `legacy/python/src/qkb/<module>.py` + `legacy/python/tests/test_<module>.py`.
+- **GitHub issues are the roadmap.** The MVP is tracked in #19 (sub-issues, label `mvp`). File new work as issues with the templates below rather than as plan documents; close issues from PRs (`Closes #N`).
+- `docs/plans/2026-07-20-typescript-rewrite.md` — the TypeScript rewrite plan (complete, kept for history).
 - `docs/plans/2026-07-06-phase1-mvp.md` — the original Python implementation plan, kept for history.
 - `docs/DESIGN.md` — technical design. `docs/adr/architecture-decisions.md` — decision log; **ADRs win over DESIGN.md on conflict**.
-- `docs/PRD.md` — success criteria (unchanged by the rewrite). Primary: ≥8/10 golden queries return the target doc in the top 3.
+- `docs/PRD.md` — success criteria. Primary: ≥8/10 golden queries return the target doc in the top 3.
 
 ## Commands
 
 ```bash
-# TypeScript (repo root)
 npm test                                   # unit tests (vitest, no Ollama, FakeProvider)
 npx biome check . && npx tsc --noEmit      # lint/format + typecheck
 npm run build                              # tsc -> dist/
-
-# Legacy Python (legacy/python/) — reference/spec only, not the shipping code
-cd legacy/python && ../../.venv/bin/pytest -q -m "not integration"
-../../.venv/bin/ruff check . && ../../.venv/bin/ruff format . && ../../.venv/bin/mypy src
 ```
 
 ## Hard rules
@@ -32,8 +29,8 @@ cd legacy/python && ../../.venv/bin/pytest -q -m "not integration"
 - **This repo is public.** No real names, personal contexts, private hostnames/IPs, or vault content in code, tests, fixtures, docs, or commit messages. Test data uses synthetic values (Alice Smith, example.com, `homelab-traefik`-style contexts). The gitleaks pre-commit hook enforces this — if it blocks a commit, fix the data; NEVER `--no-verify`.
 - The owner's real golden-query file lives at `~/.config/qkb/golden_queries.yaml` — read/run it locally, never copy it (or its contents) into the repo.
 - The Obsidian vault is read-only. Never write into it.
-- Unit tests must pass offline (TS: no model download, no Ollama, no network — use the `fake` provider; Python: anything needing Ollama gets `@pytest.mark.integration`).
-- Don't tag releases (`v*`) — tagging triggers a publish (PyPI for legacy Python; npm for the TS package, Task 17) and is owner-only.
+- Unit tests must pass offline: no model download, no Ollama, no network — use the `fake` provider. Tests that need a real model live in `test/integration/` and run only with `npm run test:integration`.
+- Don't tag releases (`v*`) — tagging triggers an npm publish and is owner-only.
 
 ## Filing issues and PRs
 

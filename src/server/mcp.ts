@@ -1,5 +1,6 @@
-/** MCP stdio server exposing qkb search to LLM agents (DESIGN.md §9.2).
- * Ported from `legacy/python/src/qkb/server/mcp.py`.
+/** MCP server exposing qkb search to LLM agents (DESIGN.md §9.2), over stdio
+ * or Streamable HTTP (`./http.ts`). Ported from
+ * `legacy/python/src/qkb/server/mcp.py`.
  *
  * Three tools, mirroring Python's FastMCP server exactly (names, arg names,
  * result shapes):
@@ -27,11 +28,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type Database from "better-sqlite3";
 import { z } from "zod";
-import { type Config, loadConfig } from "../config.js";
+import { type Config, configuredVaults, loadConfig, vaultPathFor } from "../config.js";
 import { connect } from "../db/schema.js";
 import { Storage } from "../db/storage.js";
 import { getProvider } from "../embed/provider.js";
 import type { EmbeddingProvider } from "../embed/types.js";
+import { describeRun, startWatch, type Watcher } from "../ingest/watch.js";
 import { toPublicMarkers } from "../search/bm25.js";
 import { SearchValidationError } from "../search/errors.js";
 import { Filters } from "../search/filters.js";
@@ -52,9 +54,11 @@ function jsonResult(payload: unknown): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(payload) }] };
 }
 
+type Lock = <T>(fn: () => T | Promise<T>) => Promise<T>;
+
 /** Tiny promise-chain mutex — see module docstring for why the async tool
  * bodies below need this where Python's synchronous ones didn't. */
-function makeLock(): <T>(fn: () => T | Promise<T>) => Promise<T> {
+export function makeLock(): Lock {
   let tail: Promise<unknown> = Promise.resolve();
   return function withLock<T>(fn: () => T | Promise<T>): Promise<T> {
     const run = tail.then(fn, fn);
@@ -66,43 +70,93 @@ function makeLock(): <T>(fn: () => T | Promise<T>) => Promise<T> {
   };
 }
 
-/**
- * Build the qkb MCP server: registers the `qkb`/`qkb_get`/`qkb_status`
- * tools against a single shared SQLite connection and embedding provider.
- * Ported from `mcp.py`'s `build_server`.
- *
- * The provider is resolved via `getProvider` (async — e.g. the `llama`
- * provider's constructor is lazy and does no model loading here; loading
- * happens on first `embed`/`embedQuery` call), so bm25-only tool calls never
- * pay any provider startup cost.
- *
- * Closing: assigns `server.server.onclose` to release the provider (if it
- * exposes `close()`) and the SQLite connection. This fires whenever the
- * underlying transport disconnects (mirrors Python's `lifespan` teardown,
- * which Python drives via an `asynccontextmanager` FastMCP has no TS
- * equivalent for — `Protocol#onclose` is the closest hook this SDK exposes).
- */
-export async function buildServer(cfg?: Config): Promise<McpServer> {
+/** Wrap a provider so its calls run one at a time. The watch loop's
+ * `embedPending` and a search's `embedQuery` share one provider in the same
+ * process, and a local model context (node-llama-cpp) must not be driven by
+ * two calls at once. */
+export function serializeProvider(provider: EmbeddingProvider): EmbeddingProvider {
+  const lock = makeLock();
+  return {
+    get dimension() {
+      return provider.dimension;
+    },
+    get modelName() {
+      return provider.modelName;
+    },
+    embed: (texts) => lock(() => provider.embed(texts)),
+    embedQuery: (query) => lock(() => provider.embedQuery(query)),
+    close: () => provider.close?.(),
+  };
+}
+
+/** Everything the tools share for the life of the process: config, one
+ * SQLite connection, one embedding provider, and the lock serializing tool
+ * bodies. The HTTP transport builds a fresh `McpServer` per request (it's
+ * stateless) over this same context, so the model is loaded once. */
+export interface QkbContext {
+  cfg: Config;
+  conn: Database.Database;
+  provider: EmbeddingProvider;
+  withLock: Lock;
+  close(): void;
+}
+
+export async function createContext(cfg?: Config): Promise<QkbContext> {
   const cfgObj = cfg ?? loadConfig();
   const conn: Database.Database = connect(cfgObj.dbPath, cfgObj.embeddingDim);
-  const provider: EmbeddingProvider = await getProvider(cfgObj);
-  const withLock = makeLock();
-
-  const server = new McpServer({ name: "qkb", version: "0.1.0" });
-
-  server.server.onclose = () => {
-    provider.close?.();
-    conn.close();
+  const provider = serializeProvider(await getProvider(cfgObj));
+  let closed = false;
+  return {
+    cfg: cfgObj,
+    conn,
+    provider,
+    withLock: makeLock(),
+    close() {
+      if (closed) return;
+      closed = true;
+      provider.close?.();
+      conn.close();
+    },
   };
+}
+
+/** The `qkb` tool's description: what it searches, plus the vault names and
+ * declared fields (with their descriptions) so an agent knows what it can
+ * filter on without a separate status call. */
+function searchToolDescription(cfg: Config): string {
+  let d =
+    "Search the personal knowledge base (Obsidian vault) with hybrid " +
+    "BM25 + vector retrieval. Filter by context, source, type, tags, or " +
+    "date range. Results include sibling documents and context " +
+    "descriptions.";
+  const vaults = configuredVaults(cfg);
+  if (vaults.length > 1) {
+    d += ` Vaults (filter with \`vaults\`): ${vaults.map((v) => v.name).join(", ")}.`;
+  }
+  const fields = Object.entries(cfg.fields);
+  if (fields.length > 0) {
+    d +=
+      " Notes may carry these extra properties (returned in `fields`, filter with " +
+      "`fields: {key: value}`): " +
+      fields.map(([k, desc]) => (desc ? `${k} (${desc})` : k)).join("; ") +
+      ".";
+  }
+  return d;
+}
+
+/**
+ * Register the `qkb`/`qkb_get`/`qkb_status` tools on a new McpServer over
+ * `ctx`. Does NOT own `ctx`: closing this server leaves the connection and
+ * provider open (the HTTP transport makes one server per request).
+ */
+export function createMcpServer(ctx: QkbContext): McpServer {
+  const { cfg: cfgObj, conn, provider, withLock } = ctx;
+  const server = new McpServer({ name: "qkb", version: "0.1.0" });
 
   server.registerTool(
     "qkb",
     {
-      description:
-        "Search the personal knowledge base (Obsidian vault) with hybrid " +
-        "BM25 + vector retrieval. Filter by context, source, type, tags, or " +
-        "date range. Results include sibling documents and context " +
-        "descriptions.",
+      description: searchToolDescription(cfgObj),
       inputSchema: {
         query: z.string(),
         context: z.string().optional(),
@@ -111,6 +165,8 @@ export async function buildServer(cfg?: Config): Promise<McpServer> {
         tags: z.array(z.string()).optional(),
         date_from: z.string().optional(),
         date_to: z.string().optional(),
+        vaults: z.array(z.string()).optional(),
+        fields: z.record(z.string(), z.string()).optional(),
         limit: z.number().int().optional(),
         rerank: z.boolean().optional(),
       },
@@ -133,6 +189,8 @@ export async function buildServer(cfg?: Config): Promise<McpServer> {
               tags: args.tags,
               dateFrom: args.date_from,
               dateTo: args.date_to,
+              vaults: args.vaults,
+              fields: args.fields,
             }),
             args.limit ?? null,
             "hybrid",
@@ -184,7 +242,7 @@ export async function buildServer(cfg?: Config): Promise<McpServer> {
           const doc = getDocument(
             conn,
             args.document_id,
-            cfgObj.vaultPath,
+            (name) => vaultPathFor(cfgObj, name),
             args.include_raw ?? false,
             args.include_siblings ?? true,
           );
@@ -213,15 +271,18 @@ export async function buildServer(cfg?: Config): Promise<McpServer> {
     "qkb_status",
     {
       description:
-        "Index health: document/chunk counts, context list with " +
-        "descriptions, last ingestion time.",
+        "Index health: document/chunk counts, vaults, context list with " +
+        "descriptions, declared extra properties, last ingestion time.",
     },
     async () => {
       return withLock(() => {
-        const stats = new Storage(conn).stats();
+        const storage = new Storage(conn);
+        const stats = storage.stats();
+        const counts = new Map(storage.vaultCounts().map((c) => [c.vault, c.documents]));
         // Storage.stats() returns TS-camelCase (`lastIndexedAt`) — remapped
         // to Python's snake_case dict keys here so the tool's JSON result
-        // matches mcp.py's `Storage(conn).stats()` byte-for-byte.
+        // matches mcp.py's `Storage(conn).stats()` byte-for-byte (plus the
+        // multi-vault / declared-fields additions).
         return jsonResult({
           documents: stats.documents,
           chunks: stats.chunks,
@@ -229,6 +290,11 @@ export async function buildServer(cfg?: Config): Promise<McpServer> {
           dim: stats.dim,
           contexts: stats.contexts,
           last_indexed_at: stats.lastIndexedAt,
+          vaults: configuredVaults(cfgObj).map((v) => ({
+            name: v.name,
+            documents: counts.get(v.name) ?? 0,
+          })),
+          fields: cfgObj.fields,
         });
       });
     },
@@ -237,10 +303,104 @@ export async function buildServer(cfg?: Config): Promise<McpServer> {
   return server;
 }
 
+/**
+ * Build a self-contained qkb MCP server (the stdio shape): a fresh context
+ * plus the tools over it. Ported from `mcp.py`'s `build_server`.
+ *
+ * The provider is resolved via `getProvider` (async — e.g. the `llama`
+ * provider's constructor is lazy and does no model loading here; loading
+ * happens on first `embed`/`embedQuery` call), so bm25-only tool calls never
+ * pay any provider startup cost.
+ *
+ * Closing: assigns `server.server.onclose` to release the provider (if it
+ * exposes `close()`) and the SQLite connection. This fires whenever the
+ * underlying transport disconnects (mirrors Python's `lifespan` teardown,
+ * which Python drives via an `asynccontextmanager` FastMCP has no TS
+ * equivalent for — `Protocol#onclose` is the closest hook this SDK exposes).
+ */
+export async function buildServer(cfg?: Config): Promise<McpServer> {
+  const ctx = await createContext(cfg);
+  const server = createMcpServer(ctx);
+  server.server.onclose = () => ctx.close();
+  return server;
+}
+
+export interface ServeOptions {
+  /** Re-index on a timer while serving. */
+  watch?: boolean;
+  /** Seconds between re-index runs (default: config `watch.interval`). */
+  interval?: number;
+}
+
+/** Start the watch loop for a serving process. It writes through its OWN
+ * connection (WAL lets it commit while the server's connection reads) but
+ * shares the server's (serialized) provider, so the model loads once. Logs go
+ * to stderr: on stdio, stdout is the MCP channel. */
+export function startServerWatch(ctx: QkbContext, intervalSec: number): Watcher {
+  const writeConn = connect(ctx.cfg.dbPath, ctx.cfg.embeddingDim);
+  const watcher = startWatch(writeConn, ctx.cfg, ctx.provider, {
+    intervalSec,
+    onRun: (r) => {
+      const line = describeRun(r);
+      if (line) console.error(`qkb: ${line}`);
+    },
+    onError: (e) => {
+      console.error(`qkb: re-index failed: ${e instanceof Error ? e.message : String(e)}`);
+    },
+  });
+  return {
+    runNow: () => watcher.runNow(),
+    async stop() {
+      await watcher.stop();
+      writeConn.close();
+    },
+  };
+}
+
 /** Real entry point: build the server and serve it over stdio until the
  * transport closes. Ported from `mcp.py`'s `run_server`. */
-export async function runServer(): Promise<void> {
-  const server = await buildServer();
+export async function runServer(opts: ServeOptions = {}): Promise<void> {
+  const ctx = await createContext();
+  const server = createMcpServer(ctx);
+  const watcher = opts.watch ? startServerWatch(ctx, opts.interval ?? ctx.cfg.watchInterval) : null;
+  server.server.onclose = () => {
+    void (async () => {
+      await watcher?.stop();
+      ctx.close();
+    })();
+  };
   const transport = new StdioServerTransport();
   await server.connect(transport);
+}
+
+export interface HttpServeOptions extends ServeOptions {
+  host?: string;
+  port?: number;
+}
+
+/** `qkb mcp --http`: serve Streamable HTTP until SIGINT/SIGTERM, then stop
+ * the watch loop and close the listener, connection and provider. */
+export async function runHttpServer(opts: HttpServeOptions = {}): Promise<void> {
+  const { startHttpServer } = await import("./http.js");
+  const ctx = await createContext();
+  const http = await startHttpServer(ctx, {
+    host: opts.host ?? ctx.cfg.mcpHost,
+    port: opts.port ?? ctx.cfg.mcpPort,
+    allowedOrigins: ctx.cfg.mcpAllowedOrigins,
+  });
+  const watcher = opts.watch ? startServerWatch(ctx, opts.interval ?? ctx.cfg.watchInterval) : null;
+  console.error(`qkb: MCP server listening on ${http.url}/mcp`);
+
+  await new Promise<void>((resolve) => {
+    const shutdown = (): void => {
+      process.off("SIGINT", shutdown);
+      process.off("SIGTERM", shutdown);
+      resolve();
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+  });
+  await http.close();
+  await watcher?.stop();
+  ctx.close();
 }

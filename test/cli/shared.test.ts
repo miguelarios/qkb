@@ -40,6 +40,8 @@ function result(overrides: Partial<HydratedResult> = {}): HydratedResult {
     matched_text: null,
     tags: [],
     siblings: [],
+    vault: "Notes",
+    fields: {},
     ...overrides,
   };
 }

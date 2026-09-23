@@ -13,6 +13,10 @@ export interface ParsedNote {
   createdAt: string; // full ISO 8601
   tags: string[];
   extraMetadata: Record<string, string>;
+  /** Declared extra properties (`[frontmatter.fields]`) present on this
+   * note, in declaration order — a subset of `extraMetadata`. Searchable,
+   * embedded, and returned in results. */
+  fields?: Record<string, string>;
   body: string;
   filePath: string; // vault-relative, POSIX separators
 }
@@ -38,6 +42,23 @@ export interface IngestStats {
  * `document_id` (see `legacy/python/src/qkb/ingest/storage.py`), not by a
  * per-chunk `source`, so none is added here (parity with the authoritative
  * Python spec over the plan's illustrative field list). */
+/** Render declared fields as the `key: value` lines that are indexed in the
+ * FTS `fields` column and prepended to every chunk's embedded text. */
+export function renderFields(fields: Record<string, string>): string {
+  // One line per field: newlines inside a value are flattened so the text
+  // parses back unambiguously (see hydrate's `parseFieldsText`).
+  return Object.entries(fields)
+    .map(([k, v]) => `${k}: ${v.replace(/\s*\n\s*/g, " ").trim()}`)
+    .join("\n");
+}
+
+/** The text actually embedded for a chunk: the note's rendered fields (if
+ * any) as a header, then the chunk text. Shared by the inline-embed ingest
+ * path and `embedPending` so both produce identical vectors. */
+export function embeddingText(fieldsText: string, chunkText: string): string {
+  return fieldsText ? `${fieldsText}\n\n${chunkText}` : chunkText;
+}
+
 export interface Chunk {
   index: number;
   text: string;
@@ -45,10 +66,9 @@ export interface Chunk {
 }
 
 // Reserved frontmatter key for the Storage layer's metadata-change hash row
-// (`src/db/storage.ts`, Task 7 — not yet ported). Defined here rather than in
-// storage.ts (which doesn't exist yet) so `src/ingest/parser.ts` can strip it
-// without a forward reference; storage.ts will import it from here when it
-// lands. Ported verbatim from `storage.py` `_METADATA_HASH_KEY`: a note
+// (`src/db/storage.ts`). Lives here, not in storage.ts, so both
+// `src/ingest/parser.ts` and storage.ts can import it without depending on
+// each other. Ported verbatim from `storage.py` `_METADATA_HASH_KEY`: a note
 // carrying this key in frontmatter would collide on the metadata
 // (document_id, key) PK at write time, so the parser strips it defensively.
 export const RESERVED_METADATA_KEY = "__qkb_meta_hash__";

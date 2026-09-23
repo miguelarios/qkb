@@ -44,8 +44,26 @@ export interface SearchOpts {
   dateFrom?: string;
   dateTo?: string;
   limit?: string;
+  vault?: string[];
+  field?: string[];
   json?: boolean;
   files?: boolean;
+}
+
+function collect(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
+}
+
+/** Parse repeated `--field key=value` flags. */
+export function parseFieldFlags(flags: string[] | undefined): Record<string, string> | undefined {
+  if (!flags || flags.length === 0) return undefined;
+  const out: Record<string, string> = {};
+  for (const flag of flags) {
+    const i = flag.indexOf("=");
+    if (i <= 0) failUsage(`--field expects key=value, got ${JSON.stringify(flag)}`);
+    out[flag.slice(0, i).trim()] = flag.slice(i + 1).trim();
+  }
+  return out;
 }
 
 /** Adds the shared search filter/output flags every search-tier command
@@ -60,6 +78,8 @@ export function addSearchOptions(cmd: Command): Command {
     .option("--date-from <date>", "filter: effective date >= this")
     .option("--date-to <date>", "filter: effective date <= this")
     .option("--limit <n>", "max results")
+    .option("--vault <name>", "only this vault (repeatable)", collect)
+    .option("--field <key=value>", "declared field equals value (repeatable, AND)", collect)
     .option("--json", "output as JSON")
     .option("--files", "output as document_id,score,file_path,context lines");
 }
@@ -78,6 +98,8 @@ export function filtersFromOpts(opts: SearchOpts): Filters {
       : undefined,
     dateFrom: opts.dateFrom,
     dateTo: opts.dateTo,
+    vaults: opts.vault,
+    fields: parseFieldFlags(opts.field),
   });
 }
 

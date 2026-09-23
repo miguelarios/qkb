@@ -4,10 +4,10 @@ import yaml from "js-yaml";
 import { describe, expect, it } from "vitest";
 
 // Cheap, offline substitute for `actionlint`: every workflow file must at
-// least be syntactically valid YAML with a `jobs` map, and the safety
-// invariants this task's brief calls out (never resurrect an auto `v*`
-// PyPI trigger; the npm release workflow is tag-gated, uses OIDC, and CI
-// never `npm publish`s) must hold structurally, not just by convention.
+// least be syntactically valid YAML with a `jobs` map, and the release safety
+// invariants (the npm release workflow is tag-gated and uses OIDC, CI never
+// `npm publish`es, and no Python/PyPI workflow comes back now that the repo
+// is TypeScript-only) must hold structurally, not just by convention.
 
 const WORKFLOWS_DIR = join(import.meta.dirname, "..", ".github", "workflows");
 
@@ -25,13 +25,7 @@ describe("workflow YAML is well-formed", () => {
 
   it("found the expected workflow files", () => {
     expect(files.sort()).toEqual(
-      [
-        "ci-legacy-python.yml",
-        "ci.yml",
-        "gitleaks.yml",
-        "release-python.yml",
-        "release.yml",
-      ].sort(),
+      ["ci.yml", "claude-code-review.yml", "gitleaks.yml", "release.yml"].sort(),
     );
   });
 
@@ -102,16 +96,9 @@ describe("release.yml", () => {
   });
 });
 
-describe("release-python.yml stays disarmed", () => {
-  const doc = loadWorkflow("release-python.yml");
-
-  it("is workflow_dispatch-only — no automatic v* tag trigger", () => {
-    const on = doc.on as Record<string, unknown> | string;
-    if (typeof on === "object" && on !== null) {
-      expect(on).toHaveProperty("workflow_dispatch");
-      expect(on).not.toHaveProperty("push");
-    } else {
-      expect(on).toBe("workflow_dispatch");
-    }
+describe("no Python tooling", () => {
+  it.each(readdirSync(WORKFLOWS_DIR))("%s never installs Python or publishes to PyPI", (file) => {
+    const text = readFileSync(join(WORKFLOWS_DIR, file), "utf-8");
+    expect(text).not.toMatch(/setup-python|pypi|pip install|uv (tool|pip|sync)/i);
   });
 });

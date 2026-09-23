@@ -48,11 +48,11 @@ import { readdirSync } from "node:fs";
 import { basename, join, relative, sep } from "node:path";
 import { setImmediate as setImmediateAsync } from "node:timers/promises";
 import type Database from "better-sqlite3";
-import type { Config } from "../config.js";
+import { type Config, configuredVaults, type Vault } from "../config.js";
 import { vectorTableDimension } from "../db/schema.js";
 import { contentHash, Storage } from "../db/storage.js";
 import type { EmbeddingProvider } from "../embed/types.js";
-import type { IngestStats } from "../types.js";
+import { embeddingText, type IngestStats, renderFields } from "../types.js";
 import { chunkText } from "./chunker.js";
 import { NoteDataError, parseNote } from "./parser.js";
 
@@ -211,30 +211,73 @@ export async function ingestVault(
     skipped: 0,
   };
 
-  // Single scan: everything the sweep needs is derived from this one
-  // indexedPaths() snapshot (taken before this run) rather than a second
-  // full-table scan.
-  const indexedPaths = new Map(Object.entries(storage.indexedPaths())); // file_path -> id
-  const previouslyIndexed = new Set(indexedPaths.values()); // doc ids
+  // Multiple vaults share one index. Note ids stay globally unique (the `id`
+  // property is what makes a note a note), so `seen` spans every vault and a
+  // second vault claiming the same id is reported as a duplicate, exactly
+  // like a duplicate within one vault. File paths are only unique per vault,
+  // so everything path-keyed below is per vault.
+  const vaults = configuredVaults(cfg);
+  const declaredFields = Object.keys(cfg.fields ?? {});
   // Batch the per-unchanged-doc metadata-hash SELECT into one upfront query.
   const metaHashes = storage.allMetadataHashes(); // doc id -> stored metadata_hash
   const seen = new Map<string, string>(); // note id -> first abs path claiming it this run
 
-  // Doc ids whose backing file still exists but raised while parsing this run
-  // (e.g. a note saved mid-edit with malformed frontmatter). Protected from
-  // the deletion sweep: the file is present, just transiently unparseable.
-  const parseFailedIds = new Set<string>();
-  // Vault-relative paths that failed to parse this run, regardless of whether
-  // they resolved to a prior doc id. A path that fails to parse AND isn't a
-  // recognized prior path is the signature of a renamed-or-new file that also
-  // failed this run — it can't be linked back to whatever old id it used to
-  // have, so the sweep can't tell it apart from a real deletion by id alone.
-  const parseFailedPaths = new Set<string>();
+  interface VaultRun {
+    vault: Vault;
+    storage: Storage;
+    // Single scan: everything the sweep needs is derived from this one
+    // indexedPaths() snapshot (taken before this run) rather than a second
+    // full-table scan.
+    indexedPaths: Map<string, string>; // file_path -> id
+    previouslyIndexed: Set<string>; // doc ids
+    // Doc ids whose backing file still exists but raised while parsing this
+    // run (e.g. a note saved mid-edit with malformed frontmatter). Protected
+    // from the deletion sweep: the file is present, just transiently
+    // unparseable.
+    parseFailedIds: Set<string>;
+    // Vault-relative paths that failed to parse this run, regardless of
+    // whether they resolved to a prior doc id. A path that fails to parse AND
+    // isn't a recognized prior path is the signature of a renamed-or-new file
+    // that also failed this run — it can't be linked back to whatever old id
+    // it used to have, so the sweep can't tell it apart from a real deletion
+    // by id alone.
+    parseFailedPaths: Set<string>;
+    files: string[];
+  }
+  const runs: VaultRun[] = vaults.map((vault) => {
+    const vs = new Storage(conn, vault.name);
+    const indexedPaths = new Map(Object.entries(vs.indexedPaths()));
+    return {
+      vault,
+      storage: vs,
+      indexedPaths,
+      previouslyIndexed: new Set(indexedPaths.values()),
+      parseFailedIds: new Set<string>(),
+      parseFailedPaths: new Set<string>(),
+      files: vaultFiles(vault.path),
+    };
+  });
 
-  const files = vaultFiles(cfg.vaultPath);
-  const total = files.length;
+  // A vault that suddenly has NO notes while the index still holds some is
+  // far more likely an unmounted volume or a sync client that hasn't started
+  // yet than a real mass deletion. Refuse the run rather than let the sweep
+  // wipe that vault's index; a genuinely emptied vault can be cleared by
+  // removing it from the config (its docs are then swept as orphans).
+  for (const r of runs) {
+    if (r.files.length === 0 && r.previouslyIndexed.size > 0) {
+      throw new Error(
+        `vault "${r.vault.name}" (${r.vault.path}) has no notes but ${r.previouslyIndexed.size} ` +
+          "are indexed from it — is it mounted? Refusing to de-index.",
+      );
+    }
+  }
+
+  const work: [VaultRun, string][] = runs.flatMap((r) =>
+    r.files.map((f): [VaultRun, string] => [r, f]),
+  );
+  const total = work.length;
   let aborted = false;
-  for (let i = 0; i < files.length; i++) {
+  for (let i = 0; i < work.length; i++) {
     if (signal) {
       // Real macrotask yield (only paid when a caller opted in — see module
       // docstring) so a pending SIGINT-triggered `abort()` actually gets a
@@ -245,14 +288,16 @@ export async function ingestVault(
         break;
       }
     }
-    const path = files[i] as string;
-    const relPath = relative(cfg.vaultPath, path).split(sep).join("/");
-    onProgress?.(i, total, relPath);
+    const [run, path] = work[i] as [VaultRun, string];
+    const { indexedPaths, parseFailedIds, parseFailedPaths } = run;
+    const vaultStorage = run.storage;
+    const relPath = relative(run.vault.path, path).split(sep).join("/");
+    onProgress?.(i, total, vaults.length > 1 ? `${run.vault.name}/${relPath}` : relPath);
     stats.scanned++;
 
     let note: ReturnType<typeof parseNote>;
     try {
-      note = parseNote(path, cfg.vaultPath, cfg.frontmatter);
+      note = parseNote(path, run.vault.path, cfg.frontmatter, declaredFields);
     } catch (e) {
       // An opted-in note that can't be indexed (no id / unparseable date ->
       // NoteDataError), or an unexpected parse failure. Skip cleanly with a
@@ -289,7 +334,7 @@ export async function ingestVault(
       // Body unchanged. Refresh frontmatter-derived metadata only if it
       // actually changed (a true no-op opens no transaction, bumps no
       // indexed_at). Counted as `unchanged` either way.
-      storage.updateMetadataIfChanged(note, chash, metaHashes[note.id] ?? null);
+      vaultStorage.updateMetadataIfChanged(note, chash, metaHashes[note.id] ?? null);
       stats.unchanged++;
       continue;
     }
@@ -297,11 +342,15 @@ export async function ingestVault(
     const chunks = chunkText(note.body, cfg.chunkTargetTokens, cfg.chunkOverlapPercent);
     let embeddings: number[][] | null = null;
     if (provider !== null) {
-      embeddings = chunks.length > 0 ? await provider.embed(chunks.map((c) => c.text)) : [];
+      const fieldsText = renderFields(note.fields ?? {});
+      embeddings =
+        chunks.length > 0
+          ? await provider.embed(chunks.map((c) => embeddingText(fieldsText, c.text)))
+          : [];
     }
     // Structural pass (provider === null): no embeddings — `qkb embed` fills
     // vectors in later. Inline-embed pass: vectors written alongside chunks.
-    storage.upsert(note, chash, chunks, embeddings);
+    vaultStorage.upsert(note, chash, chunks, embeddings);
     if (stored === null || full) stats.indexed++;
     else stats.updated++;
   }
@@ -324,8 +373,19 @@ export async function ingestVault(
   // prior run: a renamed note that also fails to parse can't be linked back
   // to its old id via file_path, so a missing stored path might be that
   // renamed note rather than a real deletion — protect the whole sweep this
-  // run rather than risk purging it.
-  const unresolvedFailures = [...parseFailedPaths].some((p) => !indexedPaths.has(p));
+  // run rather than risk purging it. Whole-run across vaults, because a note
+  // can move between vaults too.
+  const unresolvedFailures = runs.some((r) =>
+    [...r.parseFailedPaths].some((p) => !r.indexedPaths.has(p)),
+  );
+  const parseFailedIds = new Set(runs.flatMap((r) => [...r.parseFailedIds]));
+  // Sweep only after EVERY vault was walked, so a note that moved from one
+  // vault to another is found (in `seen`) instead of deleted and re-embedded.
+  const previouslyIndexed = new Set(runs.flatMap((r) => [...r.previouslyIndexed]));
+  // Docs from a vault that's no longer configured are gone too.
+  for (const id of storage.orphanedVaultDocs(vaults.map((v) => v.name))) {
+    previouslyIndexed.add(id);
+  }
 
   // Deletion sweep (DESIGN.md §7.1): de-index a previously-indexed doc only
   // when its file is genuinely gone OR its note is a true opt-out (parseNote

@@ -10,7 +10,7 @@
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { Chunk, ParsedNote } from "../types.js";
-import { RESERVED_METADATA_KEY } from "../types.js";
+import { embeddingText, RESERVED_METADATA_KEY, renderFields } from "../types.js";
 import { placeholders, rebuildVectorTable, vectorTableDimension } from "./schema.js";
 
 export function contentHash(body: string): string {
@@ -63,6 +63,12 @@ export function metadataHash(note: ParsedNote, vaultName = "Notes"): string {
       .map(([k, v]) => `${k}${_KV_SEP}${v}`)
       .join(_ITEM_SEP),
   ];
+  // Declared fields are a view over extraMetadata, but WHICH keys are
+  // declared is config — a change there must still refresh the FTS `fields`
+  // column. Only appended when non-empty so a vault without declared fields
+  // keeps exactly the hashes it had before fields existed (no mass rewrite).
+  const fieldsText = renderFields(note.fields ?? {});
+  if (fieldsText) parts.push(fieldsText);
   return createHash("sha256").update(parts.join(_FIELD_SEP), "utf-8").digest("hex");
 }
 
@@ -123,9 +129,12 @@ export class Storage {
     return result;
   }
 
-  /** Map of vault-relative file_path -> document id for indexed documents. */
+  /** Map of vault-relative file_path -> document id for the documents
+   * indexed from this Storage's vault (paths are only unique per vault). */
   indexedPaths(): Record<string, string> {
-    const rows = this.conn.prepare("SELECT id, file_path FROM documents").all() as {
+    const rows = this.conn
+      .prepare("SELECT id, file_path FROM documents WHERE vault_name = ?")
+      .all(this.vaultName) as {
       id: string;
       file_path: string;
     }[];
@@ -141,13 +150,14 @@ export class Storage {
       .prepare(
         `INSERT INTO documents
            (id, type, context, source, effective_date, created_at,
-            file_path, content_hash, title, vault_name)
-           VALUES (?,?,?,?,?,?,?,?,?,?)
+            file_path, content_hash, title, vault_name, fields_text)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET
              type=excluded.type, context=excluded.context, source=excluded.source,
              effective_date=excluded.effective_date, created_at=excluded.created_at,
              file_path=excluded.file_path, content_hash=excluded.content_hash,
              title=excluded.title, vault_name=excluded.vault_name,
+             fields_text=excluded.fields_text,
              indexed_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')`,
       )
       .run(
@@ -161,6 +171,7 @@ export class Storage {
         chash,
         note.title,
         this.vaultName,
+        renderFields(note.fields ?? {}),
       );
   }
 
@@ -168,9 +179,18 @@ export class Storage {
     this.conn.prepare("DELETE FROM documents_fts WHERE doc_id = ?").run(note.id);
     this.conn
       .prepare(
-        "INSERT INTO documents_fts (title, tags, context, body, type, doc_id) VALUES (?,?,?,?,?,?)",
+        "INSERT INTO documents_fts (title, tags, context, body, type, doc_id, fields) " +
+          "VALUES (?,?,?,?,?,?,?)",
       )
-      .run(note.title, note.tags.join(" "), note.context ?? "", note.body, note.type, note.id);
+      .run(
+        note.title,
+        note.tags.join(" "),
+        note.context ?? "",
+        note.body,
+        note.type,
+        note.id,
+        renderFields(note.fields ?? {}),
+      );
   }
 
   private writeTagsAndMetadata(note: ParsedNote, mhash: string): void {
@@ -234,16 +254,18 @@ export class Storage {
     tx();
   }
 
-  /** (chunk_id, chunk_text) for chunks that don't have a vector yet — the
-   * work queue for `qkb embed`. */
+  /** (chunk_id, text to embed) for chunks that don't have a vector yet —
+   * the work queue for `qkb embed`. The text carries the note's declared
+   * fields as a header (see `embeddingText`). */
   pendingChunks(): [number, string][] {
     const rows = this.conn
       .prepare(
-        "SELECT id, chunk_text FROM chunks " +
-          "WHERE id NOT IN (SELECT chunk_id FROM chunks_vec) ORDER BY id",
+        "SELECT c.id AS id, c.chunk_text AS chunk_text, d.fields_text AS fields_text " +
+          "FROM chunks c JOIN documents d ON d.id = c.document_id " +
+          "WHERE c.id NOT IN (SELECT chunk_id FROM chunks_vec) ORDER BY c.id",
       )
-      .all() as { id: number; chunk_text: string }[];
-    return rows.map((r) => [r.id, r.chunk_text]);
+      .all() as { id: number; chunk_text: string; fields_text: string }[];
+    return rows.map((r) => [r.id, embeddingText(r.fields_text, r.chunk_text)]);
   }
 
   /** Insert embeddings for the given chunk ids in one transaction. Each call
@@ -288,13 +310,58 @@ export class Storage {
     if (stored === mhash) {
       return false;
     }
+    const oldFields = this.conn
+      .prepare("SELECT fields_text FROM documents WHERE id = ?")
+      .get(note.id) as { fields_text: string } | undefined;
+    const fieldsChanged =
+      oldFields !== undefined && oldFields.fields_text !== renderFields(note.fields ?? {});
     const tx = this.conn.transaction(() => {
+      if (fieldsChanged) {
+        // Declared fields are part of every chunk's embedded text, so their
+        // vectors are now stale: drop them and let the next embed pass
+        // (`qkb embed` / watch mode) recompute just this note's chunks.
+        this.dropVectors(note.id);
+      }
       this.writeDocRow(note, chash);
       this.writeFtsRow(note);
       this.writeTagsAndMetadata(note, mhash);
     });
     tx();
     return true;
+  }
+
+  private dropVectors(docId: string): void {
+    const ids = (
+      this.conn.prepare("SELECT id FROM chunks WHERE document_id = ?").all(docId) as {
+        id: number;
+      }[]
+    ).map((r) => BigInt(r.id));
+    if (ids.length > 0) {
+      this.conn
+        .prepare(`DELETE FROM chunks_vec WHERE chunk_id IN (${placeholders(ids.length)})`)
+        .run(...ids);
+    }
+  }
+
+  /** Document ids indexed from vaults NOT in `vaultNames` — left behind when
+   * a vault is removed from (or renamed in) the config. */
+  orphanedVaultDocs(vaultNames: string[]): string[] {
+    const rows = this.conn
+      .prepare(
+        `SELECT id FROM documents WHERE vault_name NOT IN (${placeholders(vaultNames.length)})`,
+      )
+      .all(...vaultNames) as { id: string }[];
+    return rows.map((r) => r.id);
+  }
+
+  /** Document count per vault, for `qkb status`. */
+  vaultCounts(): { vault: string; documents: number }[] {
+    return this.conn
+      .prepare(
+        "SELECT vault_name AS vault, COUNT(*) AS documents FROM documents " +
+          "GROUP BY vault_name ORDER BY vault_name",
+      )
+      .all() as { vault: string; documents: number }[];
   }
 
   private deleteChunks(docId: string): void {

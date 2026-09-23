@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   EMBED_ABORT_MESSAGE,
@@ -423,6 +424,9 @@ describe("qkb CLI (subprocess)", () => {
           "tags",
           "title",
           "type",
+          // added deliberately for multi-vault (#23) and declared fields (#24)
+          "vault",
+          "fields",
         ].sort(),
       );
       // nothing besides valid JSON on stdout+stderr
@@ -800,6 +804,37 @@ describe("qkb CLI (subprocess)", () => {
       expect(payload.documents).toBe(0);
     } finally {
       await client.close();
+    }
+  }, 15_000);
+
+  it("qkb mcp --http serves Streamable HTTP and shuts down cleanly on SIGTERM (#21)", async () => {
+    const child = spawn(process.execPath, [distCli, "mcp", "--http", "--port", "0"], {
+      env: { ...process.env, ...env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    try {
+      const url = await new Promise<string>((resolve, reject) => {
+        let err = "";
+        child.stderr.on("data", (d: Buffer) => {
+          err += d.toString();
+          const m = err.match(/listening on (http:\/\/\S+\/mcp)/);
+          if (m?.[1]) resolve(m[1]);
+        });
+        child.on("exit", (code) => reject(new Error(`exited ${code}: ${err}`)));
+      });
+      expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
+      const client = new Client({ name: "qkb-cli-http-client", version: "0.1.0" });
+      await client.connect(new StreamableHTTPClientTransport(new URL(url)));
+      const result = await client.callTool({ name: "qkb_status", arguments: {} });
+      const content = result.content as { type: string; text: string }[];
+      expect(JSON.parse(content[0]?.text ?? "null").documents).toBe(0);
+      await client.close();
+
+      const exited = new Promise<number | null>((resolve) => child.on("exit", resolve));
+      child.kill("SIGTERM");
+      expect(await exited).toBe(0);
+    } finally {
+      if (child.exitCode === null) child.kill("SIGKILL");
     }
   }, 15_000);
 });

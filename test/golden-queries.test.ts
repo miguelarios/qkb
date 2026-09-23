@@ -15,7 +15,7 @@ import { chunkText } from "../src/ingest/chunker.js";
 import type { ParsedNote } from "../src/types.js";
 
 // Ports legacy/python/scripts/golden_queries.py's behavior: same YAML schema
-// (`legacy/python/scripts/golden_queries.example.yaml`), same scoring
+// (`scripts/golden-queries.example.yaml`), same scoring
 // definition (expect_title_contains as a case-insensitive substring of one
 // of the hybrid top-3 titles), same >=80% pass threshold. Exercised here
 // against synthetic fixtures with FakeProvider — the real vault run is
