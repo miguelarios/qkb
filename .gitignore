@@ -4,20 +4,8 @@ dist/
 *.tsbuildinfo
 npm-debug.log*
 
-# Python (legacy/python/)
-__pycache__/
-*.py[cod]
-*.egg-info/
-build/
-.venv/
-venv/
-
 # Tooling caches
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
+coverage/
 
 # qkb runtime data — never commit a real index
 *.db

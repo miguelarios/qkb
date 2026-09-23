@@ -11,7 +11,7 @@
  * cached). Reads the OWNER'S PRIVATE `~/.config/qkb/golden_queries.yaml` by
  * default — that file contains real vault titles/queries and must NEVER be
  * committed or copied into this repo (see
- * `legacy/python/scripts/golden_queries.example.yaml` for the schema this
+ * `scripts/golden-queries.example.yaml` for the schema this
  * expects, with synthetic examples). Task 18 (manual acceptance) runs this
  * against the owner's real vault; unit tests here exercise the scoring/
  * parsing logic against synthetic fixtures with `FakeProvider`.
@@ -51,7 +51,7 @@ export interface GoldenQuery {
 /**
  * Parses the golden-queries YAML file (`{queries: [{query,
  * expect_title_contains, context?}, ...]}`, see
- * `legacy/python/scripts/golden_queries.example.yaml`). Throws if an entry
+ * `scripts/golden-queries.example.yaml`). Throws if an entry
  * is missing a required field, so a malformed file fails loudly instead of
  * silently skipping queries the way a partial regex match might.
  */

@@ -2,7 +2,7 @@
 
 An on-device hybrid search engine for Obsidian vaults that understands YAML frontmatter metadata. Combines BM25 keyword search (SQLite FTS5) and vector semantic search (sqlite-vec) with metadata filtering, sibling-document surfacing, and two first-class interfaces: a CLI for humans and an MCP server for LLM agents.
 
-**Status**: TypeScript rewrite — feature-parity with the Python `v0.3.0` original, plus multi-provider embeddings and GPU-accelerated (Metal) local embedding on Apple Silicon.
+**Status**: v0.4 on npm — a TypeScript rewrite of the original Python `qkb-search`, with multi-provider embeddings and GPU-accelerated (Metal) local embedding on Apple Silicon. Work toward the MVP (HTTP MCP, multiple vaults, declared extra properties) is tracked in the [MVP plan](docs/plans/2026-09-23-mvp.md).
 
 ## Quickstart
 
@@ -207,11 +207,11 @@ Inspired by [QMD](https://github.com/tobi/qmd)'s search architecture and its GPU
 - [PRD](docs/PRD.md) — what we're building and why
 - [Technical Design](docs/DESIGN.md) — architecture, schema, search algorithms
 - [Architecture Decision Records](docs/adr/architecture-decisions.md) — the decision log
-- [Implementation Plans](docs/plans/) — milestone-by-milestone build plan, including the [TypeScript rewrite plan](docs/plans/2026-07-20-typescript-rewrite.md)
+- [Implementation Plans](docs/plans/) — the current [MVP plan](docs/plans/2026-09-23-mvp.md), plus the completed [TypeScript rewrite plan](docs/plans/2026-07-20-typescript-rewrite.md) for history
 
 ## Migrating from the Python version
 
-The original Python implementation (`qkb-search`, PyPI, `v0.3.0`) is kept in this repo at `legacy/python/` and remains installable (`pip install qkb-search` / `uv tool install qkb-search`) but is **superseded by this npm package** — no further Python releases are planned except emergency patches. Both share the same `~/.config/qkb/config.toml`, `~/.local/share/qkb/qkb.db`, and `~/.cache/qkb/models` paths, but switching between them (or between embedding providers) changes the vectors, so run `qkb embed --full` after switching.
+The original Python implementation (`qkb-search`, PyPI, `v0.3.0`) is **superseded by this npm package** and no longer lives in this repo (its last copy is under `legacy/python/` at tag `v0.4.3`). It remains installable from PyPI, but no further Python releases are planned. Both share the same `~/.config/qkb/config.toml`, `~/.local/share/qkb/qkb.db`, and `~/.cache/qkb/models` paths, but switching between them (or between embedding providers) changes the vectors, so run `qkb embed --full` after switching.
 
 ## Development
 
@@ -224,7 +224,7 @@ npm run build       # tsc -p tsconfig.build.json -> dist/
 npm run golden-queries -- ~/.config/qkb/golden_queries.yaml   # acceptance harness (needs a real index)
 ```
 
-`npm run golden-queries` scores each query in the YAML file against the hybrid top-3 (PRD target: ≥80%); see `legacy/python/scripts/golden_queries.example.yaml` for the schema. Your real golden-queries file is personal vault data and must never be committed to this repo.
+`npm run golden-queries` scores each query in the YAML file against the hybrid top-3 (PRD target: ≥80%); see [`scripts/golden-queries.example.yaml`](scripts/golden-queries.example.yaml) for the schema. Your real golden-queries file is personal vault data and must never be committed to this repo.
 
 ## License
 
