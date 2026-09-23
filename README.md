@@ -362,13 +362,15 @@ npm run golden-queries -- ~/.config/qkb/golden_queries.yaml   # acceptance harne
 
 ## Releasing
 
-Releases are automated with [release-please](https://github.com/googleapis/release-please).
-Every merge to `main` updates an open **`chore: release X.Y.Z`** PR that bumps
-the version and writes `CHANGELOG.md` from the Conventional Commit titles
-(`feat` → minor, `fix` → patch while the version is below 1.0). Merging that PR
-tags `vX.Y.Z`, creates the GitHub Release, and publishes to npm (trusted
-publishing, with provenance) in the same workflow run. Pushing a `v*` tag by
-hand still works as a fallback.
+Release on merge. A release is a PR titled **`chore(release): X.Y.Z`** that
+bumps the version (`npm version X.Y.Z --no-git-tag-version` updates
+`package.json` and `package-lock.json`) and adds a `## X.Y.Z (YYYY-MM-DD)`
+section to `CHANGELOG.md`. When it merges, `.github/workflows/release.yml`
+sees the version change on `main`, runs the checks, publishes to npm
+(trusted publishing, with provenance), waits until npm serves the version,
+then creates the `vX.Y.Z` tag and a GitHub Release whose notes are that
+CHANGELOG section. No local tag push needed. Pushing a matching `v*` tag
+by hand still works as a fallback.
 
 After a release, bump `Formula/qkb.rb` to the new tarball and checksum (see the
 comment at the top of that file).

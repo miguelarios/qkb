@@ -5,9 +5,9 @@ import { describe, expect, it } from "vitest";
 
 // Cheap, offline substitute for `actionlint`: every workflow file must at
 // least be syntactically valid YAML with a `jobs` map, and the release safety
-// invariants (npm publishes only from a release-please release or a v* tag,
-// via OIDC; CI never `npm publish`es; no Python/PyPI workflow comes back now
-// that the repo is TypeScript-only) must hold structurally, not just by
+// invariants (npm publishes only when a merged version bump or a v* tag says
+// so, via OIDC; CI never `npm publish`es; no Python/PyPI workflow comes back
+// now that the repo is TypeScript-only) must hold structurally, not just by
 // convention.
 
 const WORKFLOWS_DIR = join(import.meta.dirname, "..", ".github", "workflows");
@@ -63,8 +63,10 @@ describe("ci.yml", () => {
 describe("release.yml", () => {
   const doc = loadWorkflow("release.yml");
   const jobs = doc.jobs as Record<string, Record<string, unknown>>;
+  const steps = (jobs.release?.steps ?? []) as Record<string, unknown>[];
+  const plan = String(steps.find((s) => s.id === "plan")?.run ?? "");
 
-  it("runs on pushes to main (release-please) and v* tags (manual fallback), never on pull_request", () => {
+  it("runs on pushes to main (release on merge) and v* tags (manual fallback), never on pull_request", () => {
     const on = doc.on as Record<string, unknown>;
     expect(on.pull_request).toBeUndefined();
     expect(on.pull_request_target).toBeUndefined();
@@ -73,18 +75,28 @@ describe("release.yml", () => {
     expect(push.tags).toEqual(["v*"]);
   });
 
-  it("publishes only when release-please just cut a release or a v* tag was pushed", () => {
-    // A plain push to main must never publish — only merging the release PR
+  it("publishes only when package.json's version changed (or a matching v* tag was pushed)", () => {
+    // A plain push to main must never publish — only merging a version bump
     // (owner-only) or pushing a tag does.
-    const cond = String(jobs.publish?.if ?? "");
-    expect(cond).toMatch(/needs\.release-please\.outputs\.release_created == 'true'/);
-    expect(cond).toMatch(/startsWith\(github\.ref, 'refs\/tags\/v'\)/);
-    expect(jobs.publish?.needs).toBe("release-please");
-    expect(String(jobs["release-please"]?.if ?? "")).toMatch(/refs\/heads\/main/);
+    expect(plan).toMatch(/OLD" = "\$VERSION"/);
+    expect(plan).toMatch(/release=false/);
+    expect(plan).toMatch(/Refusing to publish: tag/);
+    const gated = steps.filter((s) => s.run !== undefined && s.id !== "plan");
+    for (const s of gated) {
+      expect(String(s.if ?? "")).toMatch(/steps\.plan\.outputs\.release == 'true'/);
+    }
+    const publish = steps.find((s) => s.name === "Publish");
+    expect(String(publish?.if ?? "")).toMatch(/steps\.exists\.outputs\.already == 'false'/);
+  });
+
+  it("tags only after npm serves the version", () => {
+    const tag = String(steps.find((s) => s.name === "Tag and GitHub Release")?.run ?? "");
+    expect(tag.indexOf("npm view")).toBeGreaterThan(-1);
+    expect(tag.indexOf("npm view")).toBeLessThan(tag.indexOf("git push origin"));
   });
 
   it("requests OIDC id-token permission for npm trusted publishing", () => {
-    const perms = jobs.publish?.permissions as Record<string, string> | undefined;
+    const perms = jobs.release?.permissions as Record<string, string> | undefined;
     expect(perms?.["id-token"]).toBe("write");
   });
 
@@ -98,25 +110,9 @@ describe("release.yml", () => {
     expect(text).not.toMatch(/NPM_TOKEN/);
   });
 
-  it("creates or updates the GitHub Release with the tarball", () => {
+  it("creates a GitHub Release", () => {
     const text = JSON.stringify(doc);
     expect(text).toMatch(/gh-release|gh release create/);
-  });
-});
-
-describe("release-please config", () => {
-  const root = join(import.meta.dirname, "..");
-  const manifest = JSON.parse(readFileSync(join(root, ".release-please-manifest.json"), "utf-8"));
-  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf-8"));
-  const config = JSON.parse(readFileSync(join(root, "release-please-config.json"), "utf-8"));
-
-  it("manifest version matches package.json (release-please computes the next version from it)", () => {
-    expect(manifest["."]).toBe(pkg.version);
-  });
-
-  it("tags as vX.Y.Z (what the manual fallback and past releases use)", () => {
-    expect(config.packages["."]["release-type"]).toBe("node");
-    expect(config.packages["."]["include-component-in-tag"]).toBe(false);
   });
 });
 
