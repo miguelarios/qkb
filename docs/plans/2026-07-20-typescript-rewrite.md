@@ -2,8 +2,7 @@
 
 > **Status: complete — kept for history.** Tasks 1–17 shipped as npm `@miguelarios/qkb` v0.4.x
 > (the checkboxes below were never ticked). Task 18's real-vault acceptance was never recorded in
-> the repo; it is carried forward as Task 6 of the current plan,
-> [`2026-09-23-mvp.md`](2026-09-23-mvp.md). `legacy/python/` paths below refer to tag `v0.4.3`.
+> the repo; it is carried forward as the owner-run acceptance in #25 / [#19](https://github.com/miguelarios/qkb/issues/19). `legacy/python/` paths below refer to tag `v0.4.3`.
 
 > **For agentic workers:** REQUIRED SUB-SKILL — use `superpowers:subagent-driven-development` to
 > implement this plan task-by-task (fresh implementer per task, task-review after each, broad

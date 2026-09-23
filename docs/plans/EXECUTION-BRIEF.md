@@ -2,7 +2,7 @@
 
 > **Historical.** This brief drove the original Python build (`2026-07-06-phase1-mvp.md`). The
 > Python code has been removed from the tree; the current plan is
-> [`2026-09-23-mvp.md`](2026-09-23-mvp.md).
+> tracked in GitHub issues ([#19](https://github.com/miguelarios/qkb/issues/19)).
 
 Mission for an autonomous session: build qkb Phase 1 end-to-end and prove it against the owner's real vault. Read `CLAUDE.md` first — its hard rules (public repo, no PII, read-only vault, no release tags) are non-negotiable.
 

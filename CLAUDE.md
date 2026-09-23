@@ -10,7 +10,7 @@ last release that still carried it: `git show v0.4.3:legacy/python/src/qkb/<modu
 
 ## Source of truth
 
-- `docs/plans/2026-09-23-mvp.md` — **the current plan** (MVP definition of done + ordered tasks). Execute in order; tick checkboxes as tasks land.
+- **GitHub issues are the roadmap.** The MVP is tracked in #19 (sub-issues, label `mvp`). File new work as issues with the templates below rather than as plan documents; close issues from PRs (`Closes #N`).
 - `docs/plans/2026-07-20-typescript-rewrite.md` — the TypeScript rewrite plan (complete, kept for history).
 - `docs/plans/2026-07-06-phase1-mvp.md` — the original Python implementation plan, kept for history.
 - `docs/DESIGN.md` — technical design. `docs/adr/architecture-decisions.md` — decision log; **ADRs win over DESIGN.md on conflict**.

@@ -1,0 +1,26 @@
+# Example: qkb next to a vault that another container keeps in sync, embedding
+# through Ollama on a GPU machine elsewhere on the network. Copy to
+# docker-compose.yml and adjust paths/hosts.
+services:
+  qkb:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8181:8181" # MCP endpoint: http://<this-host>:8181/mcp
+    volumes:
+      - ./vault:/vault:ro # the synced vault (read-only)
+      - qkb-data:/data # index + model cache
+      # - ./qkb-config.toml:/config/config.toml:ro  # [[vaults]], [frontmatter.fields], ...
+    environment:
+      QKB_VAULT_PATH: /vault # drop this when the config file lists [[vaults]]
+      QKB_VAULT_NAME: Notes # must match the Obsidian vault name for obsidian:// links
+      QKB_EMBEDDING_PROVIDER: ollama
+      QKB_EMBEDDING_MODEL: embeddinggemma
+      QKB_EMBEDDING_DIM: "768"
+      QKB_OLLAMA_HOST: http://gpu-host.example.com:11434
+      QKB_WATCH_INTERVAL: "300"
+      # Browser-based clients on other origins must be allowed explicitly:
+      # QKB_ALLOWED_ORIGINS: https://notes.example.com
+
+volumes:
+  qkb-data:

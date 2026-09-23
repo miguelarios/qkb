@@ -20,3 +20,9 @@ jobs:
       - run: npx biome check .
       - run: npx tsc --noEmit
       - run: npm run build
+  docker:
+    # Build-only: proves the service image still builds. Nothing is pushed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t qkb:ci .
