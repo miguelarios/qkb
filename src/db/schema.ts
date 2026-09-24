@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS documents (
     path_key       TEXT NOT NULL DEFAULT ''   -- lower(vault path without .md), for [[dir/Note]]
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
-    title, aliases, headings, tags, fields, body, type, doc_id UNINDEXED,
+    title, aliases, headings, tags, sibling_fields, fields, body, type, doc_id UNINDEXED,
     tokenize='porter unicode61'
 );
 CREATE TABLE IF NOT EXISTS chunks (
@@ -107,6 +107,7 @@ export const FTS_COLUMNS = [
   "aliases",
   "headings",
   "tags",
+  "sibling_fields",
   "fields",
   "body",
   "type",

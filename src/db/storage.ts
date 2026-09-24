@@ -76,7 +76,18 @@ export function metadataHash(note: ParsedNote, vaultName = "Notes"): string {
   // keeps exactly the hashes it had before fields existed (no mass rewrite).
   const fieldsText = renderFields(note.fields ?? {});
   if (fieldsText) parts.push(fieldsText);
+  // Same idea for which fields are sibling fields: they move to their own
+  // FTS column, so flipping `siblings` must rewrite the row.
+  if (note.siblingKeys?.length) parts.push(`siblings:${[...note.siblingKeys].sort().join(",")}`);
   return createHash("sha256").update(parts.join(_FIELD_SEP), "utf-8").digest("hex");
+}
+
+function pick(fields: Record<string, string>, keys: Set<string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(fields).filter(([k]) => keys.has(k)));
+}
+
+function omit(fields: Record<string, string>, keys: Set<string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(fields).filter(([k]) => !keys.has(k)));
 }
 
 /** A declared field's usage, for `qkb fields` / `qkb_status`. */
@@ -84,6 +95,8 @@ export interface FieldRow {
   field: string;
   description: string;
   /** Notes carrying the field. */
+  /** Notes sharing a value of this field are related (`siblings = true`). */
+  siblings: boolean;
   documents: number;
   /** Most common values, most frequent first. */
   top_values: { value: string; count: number }[];
@@ -187,19 +200,21 @@ export class Storage {
   }
 
   private writeFtsRow(note: ParsedNote): void {
+    const siblings = new Set(note.siblingKeys ?? []);
     this.conn.prepare("DELETE FROM documents_fts WHERE doc_id = ?").run(note.id);
     this.conn
       .prepare(
         "INSERT INTO documents_fts " +
-          "(title, aliases, headings, tags, fields, body, type, doc_id) " +
-          "VALUES (?,?,?,?,?,?,?,?)",
+          "(title, aliases, headings, tags, sibling_fields, fields, body, type, doc_id) " +
+          "VALUES (?,?,?,?,?,?,?,?,?)",
       )
       .run(
         note.title,
         (note.aliases ?? []).join("\n"),
         (note.headings ?? []).join("\n"),
         note.tags.join(" "),
-        renderFields(note.fields ?? {}),
+        renderFields(pick(note.fields ?? {}, siblings)),
+        renderFields(omit(note.fields ?? {}, siblings)),
         note.body,
         note.type,
         note.id,
@@ -516,7 +531,7 @@ export class Storage {
 
   /** Usage of each declared field: how many notes carry it and its most
    * common values (list values count per item). */
-  fieldSummary(fields: Record<string, string>, topN = 5): FieldRow[] {
+  fieldSummary(fields: Record<string, string>, topN = 5, siblingFields: string[] = []): FieldRow[] {
     const rows: FieldRow[] = [];
     const values = this.conn.prepare("SELECT value FROM metadata WHERE key = ?");
     for (const [field, description] of Object.entries(fields)) {
@@ -533,7 +548,13 @@ export class Storage {
         .sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1))
         .slice(0, topN)
         .map(([value, count]) => ({ value, count }));
-      rows.push({ field, description, documents, top_values });
+      rows.push({
+        field,
+        description,
+        siblings: siblingFields.includes(field),
+        documents,
+        top_values,
+      });
     }
     return rows;
   }

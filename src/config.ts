@@ -35,6 +35,9 @@ export interface Config {
    * short description for agents. Declared keys are searchable, embedded, and
    * returned in results; undeclared extra keys are only stored. */
   fields: Record<string, string>;
+  /** Declared fields with `siblings = true`: notes sharing a value are
+   * related to each other, and the values rank like tags. */
+  siblingFields: string[];
   mcpHost: string;
   mcpPort: number;
   /** Browser origins accepted by the HTTP MCP server besides loopback. `*`
@@ -130,6 +133,26 @@ const TOML_MAP: TomlEntry[] = [
   ["expansion", "max_variants", "expansionMaxVariants", (v) => Number(v)],
 ];
 
+/** A `[frontmatter.fields]` entry: `key = "description"`, or a table
+ * `key = { description = "...", siblings = true }`. */
+function parseFieldSpec(key: string, spec: unknown): { description: string; siblings: boolean } {
+  if (spec !== null && typeof spec === "object" && !Array.isArray(spec)) {
+    const t = spec as Record<string, unknown>;
+    for (const k of Object.keys(t)) {
+      if (k !== "description" && k !== "siblings") {
+        throw new Error(
+          `config: [frontmatter.fields.${key}] has unknown key "${k}" (expected description, siblings)`,
+        );
+      }
+    }
+    if (t.siblings !== undefined && typeof t.siblings !== "boolean") {
+      throw new Error(`config: [frontmatter.fields.${key}] siblings must be true or false`);
+    }
+    return { description: String(t.description ?? ""), siblings: t.siblings === true };
+  }
+  return { description: String(spec ?? ""), siblings: false };
+}
+
 function toBool(v: unknown): boolean {
   return v === true || ["1", "true", "yes", "on"].includes(String(v).trim().toLowerCase());
 }
@@ -141,6 +164,7 @@ export const DEFAULT_FTS_WEIGHTS: Record<string, number> = {
   aliases: 5.0,
   headings: 3.0,
   tags: 3.0,
+  sibling_fields: 3.0,
   fields: 2.0,
   body: 1.0,
   type: 0.5,
@@ -241,6 +265,7 @@ export function loadConfig(
     openaiApiKey: null,
     vaults: [],
     fields: {},
+    siblingFields: [],
     mcpHost: "127.0.0.1",
     mcpPort: 8181,
     mcpAllowedOrigins: [],
@@ -298,8 +323,10 @@ export function loadConfig(
       }
       const fieldsData = frontmatterData.fields;
       if (fieldsData && typeof fieldsData === "object" && !Array.isArray(fieldsData)) {
-        for (const [key, desc] of Object.entries(fieldsData as Record<string, unknown>)) {
-          cfg.fields[key] = String(desc ?? "");
+        for (const [key, spec] of Object.entries(fieldsData as Record<string, unknown>)) {
+          const f = parseFieldSpec(key, spec);
+          cfg.fields[key] = f.description;
+          if (f.siblings) cfg.siblingFields.push(key);
         }
       }
     }

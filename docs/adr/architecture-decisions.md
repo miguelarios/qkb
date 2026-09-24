@@ -360,7 +360,7 @@ When a note's rendered fields change (a value edit, or the declared set itself c
 **Decision**: The `id` alone. It is the note's identity (unique, stable across renames and vault moves, ADR-015), so it stays required; everything else is optional:
 - the date falls back `date` → `created` → `modified` → file mtime, so a note is never rejected for lacking one;
 - the title falls back to the file name;
-- `context` and `source` lose their dedicated columns and become ordinary stored properties. Declare them in `[frontmatter.fields]` to make them searchable and embedded; filter on them (and any other stored property) with `--field`. `--context`/`--source` remain as deprecated shorthands, and `same_source` related notes (ADR-019) still read `source`.
+- `context` and `source` lose their dedicated columns and become ordinary stored properties. Declare them in `[frontmatter.fields]` to make them searchable and embedded; filter on them (and any other stored property) with `--field`. `--context`/`--source` remain as deprecated shorthands. Grouping by `source` became opt-in per field (ADR-021).
 
 `qkb ingest` reports how many notes lacked an `id`. The index format changes, so databases carry a schema version (`meta.schema_version`); an older index is dropped and rebuilt empty with a notice to run `qkb ingest && qkb embed`, instead of a hand-written migration. Re-embedding is needed anyway because the embedded text changed.
 
@@ -388,7 +388,7 @@ When a note's rendered fields change (a value edit, or the declared set itself c
 
 **Question**: Sibling surfacing grouped notes by `source` only (#36). Most notes relate through `[[wikilinks]]`. How should results show related notes?
 
-**Decision**: Ingest stores each note's outgoing link targets (`links` table, in order of appearance; `[[target|alias]]`, `[[target#heading]]` and `![[embeds]]` reduce to the target, fenced code is skipped). Targets are resolved at query time, within the same vault, against file stem, vault path, title and alias, so a link to a note that doesn't exist yet starts resolving when it's indexed and renames need no re-ingest of the linking note. Each result lists `related` notes with a `relation` of `links_to`, `linked_from` or `same_source`; search results cap the list at 10 per result, `qkb get` returns all.
+**Decision**: Ingest stores each note's outgoing link targets (`links` table, in order of appearance; `[[target|alias]]`, `[[target#heading]]` and `![[embeds]]` reduce to the target, fenced code is skipped). Targets are resolved at query time, within the same vault, against file stem, vault path, title and alias, so a link to a note that doesn't exist yet starts resolving when it's indexed and renames need no re-ingest of the linking note. Each result lists `related` notes with a `relation` of `links_to`, `linked_from` or `sibling` (ADR-021); search results cap the list at 10 per result, `qkb get` returns all.
 
 **Alternatives rejected**: resolving links at ingest time (stale on renames and new notes); vector-similarity "more like this" (costly per result, and duplicates what vector search already does).
 
@@ -407,4 +407,21 @@ When a note's rendered fields change (a value edit, or the declared set itself c
 - Either stage failing (model missing, out of memory) logs a warning and returns plain hybrid results.
 
 **Rationale**: Reranking is the largest precision gain available once recall is good; expansion helps short or vague queries. Keeping them optional keeps the default path at one small embedding model and millisecond keyword search, which matters for the watch-mode server on modest hardware. Declared-field descriptions are not fed to either model: they exist for agents choosing filters (self-query), while the reranker reads the field values themselves.
+
+---
+
+## ADR-021: Sibling Fields Are Declared, Not Hard-Coded to `source`
+
+**Date**: 2026-09-24
+**Status**: Decided (amends ADR-019)
+
+**Question**: Related notes by shared value read only `source`. Once `source` became an ordinary property (ADR-017), why should that one name be special? Other properties group notes the same way: `author`, `series`, a meeting id.
+
+**Decision**: Any declared field can be a sibling field: `[frontmatter.fields] source = { description = "...", siblings = true }`. The plain string form stays for ordinary fields. For a sibling field:
+- notes sharing a value are related (`relation: "sibling"`, with `field` and `value`), after links and backlinks, in declaration order, most recent first. Values match case-insensitively; a list value relates notes sharing any item. `qkb get` lists up to 50 per field;
+- its rendered values go to a separate FTS column `sibling_fields`, weighted 3 (like tags) instead of the ordinary `fields` column's 2: a shared value names what a group of notes is about.
+
+No field is a sibling field by default. Which fields are sibling fields is part of the metadata hash, so changing it rewrites the affected FTS rows on the next ingest; related notes read the config at query time and change immediately.
+
+**Alternatives rejected**: keeping `source` built in (a name only some vaults use, silently special); making every declared field a sibling field (a low-cardinality field like `status` would relate most of the vault to itself).
 

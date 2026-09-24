@@ -93,18 +93,20 @@ describe("search/hydrate", () => {
     expect(uri).toBe("obsidian://open?vault=Notes&file=02-Areas%2FWork%2F2026-03-15%20Kickoff");
   });
 
-  it("hydrates a result with notes sharing its source as related (ports test_hydrate_with_siblings)", async () => {
+  it("hydrates a result with notes sharing a sibling-field value as related (ports test_hydrate_with_siblings)", async () => {
     await seedSiblings(conn, provider);
-    const out = hydrate(conn, [[ID_T, 0.9, "roadmap chunk"]]);
+    const out = hydrate(conn, [[ID_T, 0.9, "roadmap chunk"]], undefined, ["source"]);
     expect(out.length).toBe(1);
     const r = out[0];
     expect(r?.title).toBe("Kickoff Transcript");
     expect(r?.matched_text).toBe("roadmap chunk");
     expect(r?.obsidian_uri.startsWith("obsidian://open?vault=Notes&file=")).toBe(true);
-    expect(r?.related.map((x) => [x.document_id, x.relation])).toEqual([[ID_N, "same_source"]]);
+    expect(r?.related.map((x) => [x.document_id, x.relation, x.field, x.value])).toEqual([
+      [ID_N, "sibling", "source", "2026-03-15-project-kickoff"],
+    ]);
   });
 
-  it("no source and no links -> no related notes", async () => {
+  it("no sibling values and no links -> no related notes", async () => {
     await ingestOne(conn, provider, makeNote({ id: ID_T, source: null }));
     const out = hydrate(conn, [[ID_T, 0.5, null]]);
     expect(out[0]?.related).toEqual([]);
@@ -157,7 +159,7 @@ describe("search/hydrate", () => {
       [ID_A, 0.987654321, "alpha match"],
       [ID_B, 0.5, null],
     ];
-    const out = hydrate(conn, ranked);
+    const out = hydrate(conn, ranked, undefined, ["source"]);
 
     expect(out.map((r) => r.document_id)).toEqual([ID_C, ID_A, ID_B]);
     const byId = new Map(out.map((r) => [r.document_id, r]));
@@ -178,6 +180,59 @@ describe("search/hydrate", () => {
     expect(b?.related.map((x) => x.document_id)).toEqual([ID_A]);
     expect(b?.matched_text).toBeNull();
     expect(b?.score).toBe(0.5);
+  });
+
+  describe("sibling fields", () => {
+    const A = "44444444-4444-4444-8444-444444444444";
+    const B = "55555555-5555-4555-8555-555555555555";
+    const C = "66666666-6666-4666-8666-666666666666";
+
+    async function seedAuthors(): Promise<void> {
+      await ingestOne(
+        conn,
+        provider,
+        makeNote({
+          id: A,
+          title: "A",
+          filePath: "A.md",
+          extraMetadata: { author: "Alice Smith, Bob Jones" },
+        }),
+      );
+      await ingestOne(
+        conn,
+        provider,
+        makeNote({ id: B, title: "B", filePath: "B.md", extraMetadata: { author: "bob jones" } }),
+      );
+      await ingestOne(
+        conn,
+        provider,
+        makeNote({ id: C, title: "C", filePath: "C.md", extraMetadata: { author: "Carol White" } }),
+      );
+    }
+
+    it("a list value relates notes sharing any item, case-insensitively", async () => {
+      await seedAuthors();
+      const [a, b, c] = hydrate(
+        conn,
+        [
+          [A, 1, null],
+          [B, 1, null],
+          [C, 1, null],
+        ],
+        undefined,
+        ["author"],
+      );
+      expect(a?.related.map((x) => [x.document_id, x.field, x.value])).toEqual([
+        [B, "author", "Bob Jones"],
+      ]);
+      expect(b?.related.map((x) => x.document_id)).toEqual([A]);
+      expect(c?.related).toEqual([]);
+    });
+
+    it("a field that isn't a sibling field relates nothing", async () => {
+      await seedAuthors();
+      expect(hydrate(conn, [[A, 1, null]])[0]?.related).toEqual([]);
+    });
   });
 
   describe("related notes from wikilinks (#36)", () => {

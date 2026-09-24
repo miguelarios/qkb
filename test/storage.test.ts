@@ -273,24 +273,30 @@ describe("db/storage", () => {
         extraMetadata: { company: "Acme", people: "Alice Smith" },
       }),
     );
-    const rows = new Storage(conn).fieldSummary({ company: "Employer", people: "", missing: "x" });
+    const rows = new Storage(conn).fieldSummary(
+      { company: "Employer", people: "", missing: "x" },
+      5,
+      ["people"],
+    );
     expect(rows).toEqual([
       {
         field: "company",
         description: "Employer",
+        siblings: false,
         documents: 2,
         top_values: [{ value: "Acme", count: 2 }],
       },
       {
         field: "people",
         description: "",
+        siblings: true,
         documents: 2,
         top_values: [
           { value: "Alice Smith", count: 2 },
           { value: "Bob Jones", count: 1 },
         ],
       },
-      { field: "missing", description: "x", documents: 0, top_values: [] },
+      { field: "missing", description: "x", siblings: false, documents: 0, top_values: [] },
     ]);
   });
 

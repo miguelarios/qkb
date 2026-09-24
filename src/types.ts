@@ -21,6 +21,8 @@ export interface ParsedNote {
    * note, in declaration order — a subset of `extraMetadata`. Searchable,
    * embedded, and returned in results. */
   fields?: Record<string, string>;
+  /** Which of `fields` are sibling fields (`siblings = true` in config). */
+  siblingKeys?: string[];
   body: string;
   filePath: string; // vault-relative, POSIX separators
 }

@@ -392,6 +392,7 @@ export function parseNote(
   vaultRoot: string,
   fmMap: Record<string, string[]>,
   declaredFields: string[] = [],
+  siblingFields: string[] = [],
 ): ParsedNote | null {
   // gray-matter's default (js-yaml DEFAULT_SCHEMA) auto-parses YAML 1.1
   // timestamps into JS Date objects - which, unlike Python's tz-aware
@@ -476,6 +477,7 @@ export function parseNote(
     links: extractWikilinks(post.content),
     extraMetadata: extra,
     fields,
+    siblingKeys: siblingFields.filter((k) => k in fields),
     body: post.content,
     filePath,
   };

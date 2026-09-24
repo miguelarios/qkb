@@ -97,7 +97,7 @@ export async function executeSearch(
       warn(`reranking failed, returning unreranked results: ${errorMessage(e)}`);
     }
   }
-  return hydrate(conn, ranked.slice(0, resolvedLimit));
+  return hydrate(conn, ranked.slice(0, resolvedLimit), undefined, cfg.siblingFields ?? []);
 }
 
 function errorMessage(e: unknown): string {

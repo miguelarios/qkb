@@ -139,7 +139,7 @@ function searchToolDescription(cfg: Config): string {
     "Search the personal knowledge base (Obsidian vault) with hybrid " +
     "BM25 + vector retrieval. Filter by type, tags, date range, vault, or any " +
     "frontmatter property (`fields: {key: value}`). Each result lists related " +
-    "notes (wikilinks in both directions, shared source). `rerank: true` re-scores " +
+    "notes (wikilinks in both directions, and notes sharing a sibling-field value). `rerank: true` re-scores " +
     "the top hits with a local reranker (slower, more precise); `expand: true` also " +
     "searches model-written rewrites of the query (helps vague or short queries).";
   const vaults = configuredVaults(cfg);
@@ -151,7 +151,13 @@ function searchToolDescription(cfg: Config): string {
     d +=
       " Notes may carry these extra properties (returned in `fields`, filter with " +
       "`fields: {key: value}`): " +
-      fields.map(([k, desc]) => (desc ? `${k} (${desc})` : k)).join("; ") +
+      fields
+        .map(([k, desc]) => {
+          const notes = [desc, cfg.siblingFields.includes(k) ? "sibling field" : ""];
+          const text = notes.filter(Boolean).join("; ");
+          return text ? `${k} (${text})` : k;
+        })
+        .join("; ") +
       ".";
   }
   return d;
@@ -262,6 +268,7 @@ export function createMcpServer(ctx: QkbContext): McpServer {
             (name) => vaultPathFor(cfgObj, name),
             args.include_raw ?? false,
             args.include_related ?? true,
+            cfgObj.siblingFields,
           );
           return jsonResult(doc);
         } catch (e) {
@@ -312,7 +319,7 @@ export function createMcpServer(ctx: QkbContext): McpServer {
           })),
           fields: cfgObj.fields,
           // What each declared field holds, for building `fields` filters.
-          field_values: storage.fieldSummary(cfgObj.fields),
+          field_values: storage.fieldSummary(cfgObj.fields, 5, cfgObj.siblingFields),
         });
       });
     },

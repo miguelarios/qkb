@@ -92,6 +92,7 @@ export function getDocument(
   vaultPath?: VaultPathResolver,
   includeRaw = false,
   includeRelated = true,
+  siblingFields: string[] = [],
 ): DocumentDetail {
   const rows = conn
     .prepare(`SELECT id FROM documents WHERE id LIKE ? ESCAPE '${LIKE_ESCAPE}'`)
@@ -106,7 +107,7 @@ export function getDocument(
   }
   const matchedId = (rows[0] as { id: string }).id;
   // A single lookup returns every related note, not the per-result cap.
-  const hydrated = hydrate(conn, [[matchedId, 0.0, null]], null)[0];
+  const hydrated = hydrate(conn, [[matchedId, 0.0, null]], null, siblingFields)[0];
   if (hydrated === undefined) {
     // Unreachable: `matchedId` was just read from `documents`, so `hydrate`
     // (which batches its own SELECT against the same table) cannot miss it.

@@ -148,7 +148,8 @@ title = 5.0
 aliases = 5.0
 headings = 3.0
 tags = 3.0
-fields = 2.0              # declared [frontmatter.fields]
+sibling_fields = 3.0      # declared fields with siblings = true
+fields = 2.0              # other declared [frontmatter.fields]
 body = 1.0
 type = 0.5
 
@@ -321,10 +322,11 @@ Every result lists **related notes**:
   alias, and one written before its target exists starts resolving once the
   target is indexed;
 - `linked_from`: notes that link to it (backlinks);
-- `same_source`: notes sharing its `source` property (e.g. several clips of
-  one web page, or a transcript and the notes taken from it).
+- `sibling`: notes sharing a value of a *sibling field*, e.g. several clips
+  of one web page sharing a `source` (see "Extra frontmatter properties").
 
-Search results show up to 10 related notes each; `qkb get` shows them all.
+Search results show up to 10 related notes each; `qkb get` shows them all
+(up to 50 siblings per field).
 
 ## Reranking and query expansion
 
@@ -368,7 +370,21 @@ Declared properties are:
 - **embedded**: prepended to each chunk's text as `project: Apollo` lines, so semantic search sees them;
 - **returned**: as a `fields` object in `--json`, `qkb get` and MCP results;
 - **filterable**: `--field project=Apollo` (repeatable, AND) / MCP `fields: {"project": "Apollo"}`. The match is case-insensitive, and a list property matches any one of its items;
-- **described to agents**: each key and its description appear in the `qkb` tool description and in `qkb_status`.
+- **described to agents**: each key and its description appear in the `qkb` tool description and in `qkb_status` (with the most common values), so an agent knows what it can filter on. Descriptions are for agents only; the search models read the values.
+
+**Sibling fields.** A property whose shared values group notes (a `source`
+shared by clips of one page or a meeting's transcript and notes, an
+`author`, a `series`) can be marked `siblings = true`:
+
+```toml
+[frontmatter.fields]
+source = { description = "Where a note came from", siblings = true }
+```
+
+Notes sharing a value then list each other as related (`relation:
+"sibling"`, with the `field` and `value`), and the values rank like tags
+(`fts_weights.sibling_fields`, default 3) instead of like ordinary fields
+(2). Pick fields whose values a handful of notes share, not most of the vault.
 
 Declaring a new field, or editing a declared value, refreshes the affected
 notes on the next `ingest` and re-embeds just those notes on the next
@@ -429,6 +445,7 @@ Inspired by [QMD](https://github.com/tobi/qmd)'s search architecture and its GPU
 
 ## Documents
 
+- [Guide: how qkb reads your notes](docs/GUIDE.md) — properties, declared and sibling fields, related notes, ranking, filters
 - [PRD](docs/PRD.md) — what we're building and why
 - [Technical Design](docs/DESIGN.md) — architecture, schema, search algorithms
 - [Architecture Decision Records](docs/adr/architecture-decisions.md) — the decision log

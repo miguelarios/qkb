@@ -78,7 +78,7 @@ export function addSearchOptions(cmd: Command): Command {
     .option("--date-to <date>", "filter: effective date <= this")
     .option("--limit <n>", "max results")
     .option("--vault <name>", "only this vault (repeatable)", collect)
-    .option("--field <key=value>", "declared field equals value (repeatable, AND)", collect)
+    .option("--field <key=value>", "frontmatter property equals value (repeatable, AND)", collect)
     .option("--json", "output as JSON")
     .option("--files", "output as document_id,score,file_path,vault lines");
 }

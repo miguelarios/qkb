@@ -467,6 +467,7 @@ describe("qkb CLI (subprocess)", () => {
       {
         field: "context",
         description: "Area of life a note belongs to",
+        siblings: false,
         documents: 1,
         top_values: [{ value: "homelab", count: 1 }],
       },

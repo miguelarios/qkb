@@ -17,10 +17,10 @@ import { placeholders } from "../db/schema.js";
 import type { RankedResult } from "./hybrid.js";
 
 /** How a related note connects to a result. */
-export type Relation = "links_to" | "linked_from" | "same_source";
+export type Relation = "links_to" | "linked_from" | "sibling";
 
 /** A note connected to a result by a wikilink (either direction) or by a
- * shared `source` value (#36). */
+ * shared value of a sibling field (`siblings = true` in config, #36). */
 export interface RelatedNote {
   document_id: string;
   title: string | null;
@@ -28,10 +28,17 @@ export interface RelatedNote {
   file_path: string;
   obsidian_uri: string;
   relation: Relation;
+  /** For `sibling`: the field and the value both notes share. */
+  field?: string;
+  value?: string;
 }
 
 /** Related notes returned per search result (a `qkb get` returns them all). */
 export const RELATED_PER_RESULT = 10;
+
+/** Siblings listed per field by `qkb get`: a field like `author` can be
+ * shared by most of a vault, and a full list of those isn't useful. */
+export const SIBLINGS_PER_FIELD = 50;
 
 /** The full per-result JSON contract `hydrate` produces. */
 export interface HydratedResult {
@@ -44,8 +51,8 @@ export interface HydratedResult {
   obsidian_uri: string;
   matched_text: string | null;
   tags: string[];
-  /** Notes this one links to, notes linking to it, and notes sharing its
-   * `source` — capped at RELATED_PER_RESULT in search results. */
+  /** Notes this one links to, notes linking to it, and notes sharing a
+   * sibling-field value — capped at RELATED_PER_RESULT in search results. */
   related: RelatedNote[];
   /** Name of the vault the note was indexed from. */
   vault: string;
@@ -198,13 +205,17 @@ function resolveTargets(
 
 /**
  * Related notes for each document, most direct first: notes it links to, then
- * notes linking to it (both within its vault), then notes sharing its `source`
- * property. Each note appears once, under its first relation.
+ * notes linking to it (both within its vault), then notes sharing a value of
+ * each sibling field, in the order the fields are declared (most recent
+ * first within a field). Each note appears once, under its first relation.
+ * A list-valued field (`author: [Alice, Bob]`) relates notes sharing any one
+ * item; values match case-insensitively, like `--field`.
  */
 export function relatedNotes(
   conn: Database.Database,
   docs: DocumentRow[],
   cap: number | null,
+  siblingFields: string[] = [],
 ): Map<string, RelatedNote[]> {
   const out = new Map<string, RelatedNote[]>();
   if (docs.length === 0) return out;
@@ -235,24 +246,38 @@ export function relatedNotes(
           )
           .all(...allNames) as (RefRow & { target: string })[]);
 
-  // Shared source.
-  const srcRows = conn
-    .prepare(
-      `SELECT document_id, value FROM metadata WHERE key = 'source' AND document_id IN (${idMarks})`,
-    )
-    .all(...ids) as { document_id: string; value: string }[];
-  const sourceOf = new Map(srcRows.map((r) => [r.document_id, r.value]));
-  const sources = [...new Set(sourceOf.values())];
-  const bySource = new Map<string, RefRow[]>();
-  if (sources.length > 0) {
+  // Sibling fields: item (lowercased) -> notes carrying it, per field.
+  const myItems = new Map<string, Map<string, string[]>>(); // field -> doc -> items
+  const byItem = new Map<string, Map<string, (RefRow & { item: string })[]>>();
+  for (const field of siblingFields) {
     const rows = conn
       .prepare(
-        `SELECT m.value, d.id, d.title, d.type, d.file_path, d.vault_name
-           FROM metadata m JOIN documents d ON d.id = m.document_id
-          WHERE m.key = 'source' AND m.value IN (${placeholders(sources.length)}) ORDER BY d.title`,
+        `SELECT document_id, value FROM metadata WHERE key = ? AND document_id IN (${idMarks})`,
       )
-      .all(...sources) as (RefRow & { value: string })[];
-    for (const r of rows) bySource.set(r.value, [...(bySource.get(r.value) ?? []), r]);
+      .all(field, ...ids) as { document_id: string; value: string }[];
+    const perDoc = new Map(rows.map((r) => [r.document_id, splitItems(r.value)]));
+    myItems.set(field, perDoc);
+    const wanted = new Set([...perDoc.values()].flat().map((v) => v.toLowerCase()));
+    const groups = new Map<string, (RefRow & { item: string })[]>();
+    if (wanted.size > 0) {
+      const candidates = conn
+        .prepare(
+          `SELECT m.value, d.id, d.title, d.type, d.file_path, d.vault_name
+             FROM metadata m JOIN documents d ON d.id = m.document_id
+            WHERE m.key = ? ORDER BY d.effective_date DESC, d.title`,
+        )
+        .all(field) as (RefRow & { value: string })[];
+      for (const c of candidates) {
+        for (const item of splitItems(c.value)) {
+          const k = item.toLowerCase();
+          if (!wanted.has(k)) continue;
+          const g = groups.get(k) ?? [];
+          if (g.length < SIBLINGS_PER_FIELD + 1) g.push({ ...c, item });
+          groups.set(k, g);
+        }
+      }
+    }
+    byItem.set(field, groups);
   }
 
   const resolvedByVault = new Map<string, Map<string, RefRow[]>>();
@@ -271,8 +296,12 @@ export function relatedNotes(
     }
     const list: RelatedNote[] = [];
     const seen = new Set([d.id]);
-    const add = (r: RefRow, relation: Relation): void => {
-      if (seen.has(r.id) || (cap !== null && list.length >= cap)) return;
+    const add = (
+      r: RefRow,
+      relation: Relation,
+      via?: { field: string; value: string },
+    ): boolean => {
+      if (seen.has(r.id) || (cap !== null && list.length >= cap)) return false;
       seen.add(r.id);
       list.push({
         document_id: r.id,
@@ -281,7 +310,9 @@ export function relatedNotes(
         file_path: r.file_path,
         obsidian_uri: obsidianUri(r.vault_name, r.file_path),
         relation,
+        ...via,
       });
+      return true;
     };
     for (const t of outgoing.get(d.id) ?? []) {
       for (const r of resolved.get(t) ?? []) add(r, "links_to");
@@ -290,9 +321,14 @@ export function relatedNotes(
     for (const r of inRows) {
       if (r.vault_name === d.vault_name && myNames.has(r.target)) add(r, "linked_from");
     }
-    const src = sourceOf.get(d.id);
-    if (src !== undefined) {
-      for (const r of bySource.get(src) ?? []) add(r, "same_source");
+    for (const field of siblingFields) {
+      let added = 0;
+      for (const item of myItems.get(field)?.get(d.id) ?? []) {
+        for (const r of byItem.get(field)?.get(item.toLowerCase()) ?? []) {
+          if (added >= SIBLINGS_PER_FIELD) break;
+          if (add(r, "sibling", { field, value: item })) added++;
+        }
+      }
     }
     out.set(d.id, list);
   }
@@ -302,6 +338,14 @@ export function relatedNotes(
 /** Round to 6 decimal places, mirroring Python's `round(score, 6)` for the
  * float magnitudes RRF/BM25 scores take. Not a general banker's-rounding
  * port — see hydrate.test.ts for the pinned values this must reproduce. */
+/** A stored property value's items: lists are stored joined with ", ". */
+function splitItems(value: string): string[] {
+  return value
+    .split(", ")
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
 function round6(x: number): number {
   return Math.round(x * 1e6) / 1e6;
 }
@@ -309,7 +353,7 @@ function round6(x: number): number {
 /**
  * Hydrate `[docId, score, matchedText]` tuples into the full result contract:
  * doc metadata, tags, declared fields, Obsidian URI, and related notes
- * (wikilinks both ways plus shared `source`), surfaced without a second query.
+ * (wikilinks both ways plus sibling fields), surfaced without a second query.
  *
  * Missing doc ids (deleted since the tuples were ranked) are silently
  * skipped; result order otherwise matches `ranked`. Ported from
@@ -320,6 +364,7 @@ export function hydrate(
   conn: Database.Database,
   ranked: RankedResult[],
   relatedCap: number | null = RELATED_PER_RESULT,
+  siblingFields: string[] = [],
 ): HydratedResult[] {
   const docIds = ranked.map(([docId]) => docId);
   const docRows = batchDocRows(conn, docIds);
@@ -329,6 +374,7 @@ export function hydrate(
     conn,
     presentIds.map((id) => docRows.get(id) as DocumentRow),
     relatedCap,
+    siblingFields,
   );
 
   const out: HydratedResult[] = [];

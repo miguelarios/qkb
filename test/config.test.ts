@@ -32,6 +32,7 @@ describe("config", () => {
         aliases: 5.0,
         headings: 3.0,
         tags: 3.0,
+        sibling_fields: 3.0,
         fields: 2.0,
         body: 1.0,
         type: 0.5,

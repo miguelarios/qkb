@@ -8,7 +8,7 @@ import { action, cfg, failUsage, openDb } from "./shared.js";
 
 async function runFields(opts: { json?: boolean }): Promise<void> {
   const cfgObj = cfg();
-  const rows = new Storage(openDb(cfgObj)).fieldSummary(cfgObj.fields);
+  const rows = new Storage(openDb(cfgObj)).fieldSummary(cfgObj.fields, 5, cfgObj.siblingFields);
   if (opts.json) {
     console.log(JSON.stringify(rows, null, 2));
     return;
@@ -19,7 +19,10 @@ async function runFields(opts: { json?: boolean }): Promise<void> {
     return;
   }
   for (const r of rows) {
-    console.log(`${r.field}  (${r.documents} notes)${r.description ? `  ${r.description}` : ""}`);
+    const sib = r.siblings ? ", siblings" : "";
+    console.log(
+      `${r.field}  (${r.documents} notes${sib})${r.description ? `  ${r.description}` : ""}`,
+    );
     if (r.top_values.length > 0) {
       console.log(`  ${r.top_values.map((v) => `${v.value} (${v.count})`).join(", ")}`);
     }

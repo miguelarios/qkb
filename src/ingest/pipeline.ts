@@ -298,7 +298,13 @@ export async function ingestVault(
 
     let note: ReturnType<typeof parseNote>;
     try {
-      note = parseNote(path, run.vault.path, cfg.frontmatter, declaredFields);
+      note = parseNote(
+        path,
+        run.vault.path,
+        cfg.frontmatter,
+        declaredFields,
+        cfg.siblingFields ?? [],
+      );
     } catch (e) {
       // An opted-in note that can't be indexed (no id / unparseable date ->
       // NoteDataError), or an unexpected parse failure. Skip cleanly with a
