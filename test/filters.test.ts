@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { buildFilterClause, Filters } from "../src/search/filters.js";
 
 // Ports legacy/python/tests/test_filters.py — exact SQL and parameter
-// semantics, including context normalization via normalizeContext,
-// source stripping (no lowercase), tags AND-semantics via junction table,
+// semantics, including context/source as field-filter shorthand (#35),
+// tags AND-semantics via junction table,
 // date range expansion and validation.
 
 describe("search/filters", () => {
@@ -25,20 +25,29 @@ describe("search/filters", () => {
           source: "s1",
         }),
       );
-      expect(clause).toContain("d.context = ?");
       expect(clause).toContain("d.type = ?");
-      expect(clause).toContain("d.source = ?");
       expect(clause).toContain("d.effective_date >= ?");
       expect(clause).toContain("d.effective_date <= ?");
       expect(clause).toContain("HAVING COUNT(DISTINCT tag) = ?");
-      expect(params[0]).toBe("homelab"); // context normalized
-      expect(params[params.length - 1]).toBe(2); // tag count
+      // context/source are field filters now (#35): one EXISTS per key
+      expect(clause.match(/EXISTS \(SELECT 1 FROM metadata m/g)).toHaveLength(2);
+      expect(params).toContain("context");
+      expect(params).toContain("source");
     });
 
-    it("context uses shared normalizer", () => {
+    it("context is shorthand for a case-insensitive field filter on `context` (#35)", () => {
       const [clause, params] = buildFilterClause(new Filters({ context: "  Homelab  " }));
-      expect(clause).toContain("d.context = ?");
-      expect(params[0]).toBe("homelab");
+      expect(clause).toContain("m.key = ?");
+      expect(params.slice(0, 2)).toEqual(["context", "homelab"]);
+    });
+
+    it("an explicit field filter and the context shorthand combine (shorthand wins on the same key)", () => {
+      const [, params] = buildFilterClause(
+        new Filters({ context: "work", fields: { context: "home", project: "Apollo" } }),
+      );
+      expect(params).toContain("work");
+      expect(params).not.toContain("home");
+      expect(params).toContain("project");
     });
 
     it("context whitespace-only raises", () => {
@@ -47,14 +56,13 @@ describe("search/filters", () => {
 
     it("context none produces no clause", () => {
       const [clause, params] = buildFilterClause(new Filters({ context: undefined }));
-      expect(clause).not.toContain("d.context = ?");
+      expect(clause).toBe("1=1");
       expect(params).toEqual([]);
     });
 
-    it("source is stripped", () => {
-      const [clause, params] = buildFilterClause(new Filters({ source: " foo " }));
-      expect(clause).toContain("d.source = ?");
-      expect(params[0]).toBe("foo");
+    it("source is shorthand for a field filter on `source`", () => {
+      const [, params] = buildFilterClause(new Filters({ source: " foo " }));
+      expect(params.slice(0, 2)).toEqual(["source", "foo"]);
     });
 
     it("source whitespace-only raises", () => {
@@ -63,13 +71,8 @@ describe("search/filters", () => {
 
     it("source none produces no clause", () => {
       const [clause, params] = buildFilterClause(new Filters({ source: undefined }));
-      expect(clause).not.toContain("d.source = ?");
+      expect(clause).toBe("1=1");
       expect(params).toEqual([]);
-    });
-
-    it("source not case folded", () => {
-      const [_clause, params] = buildFilterClause(new Filters({ source: " MixedCase-Source " }));
-      expect(params[0]).toBe("MixedCase-Source");
     });
 
     it("docType empty string produces no clause", () => {

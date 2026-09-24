@@ -27,7 +27,16 @@ describe("config", () => {
       expect(cfg.embeddingProvider).toBe("llama");
       expect(cfg.embeddingModel).toBe("embeddinggemma-300M-Q8_0");
       expect(cfg.embeddingDim).toBe(768);
-      expect(cfg.ftsWeights).toEqual([5.0, 3.0, 2.0, 1.0, 0.5]);
+      expect(cfg.ftsWeights).toEqual({
+        title: 5.0,
+        aliases: 5.0,
+        headings: 3.0,
+        tags: 3.0,
+        sibling_fields: 3.0,
+        fields: 2.0,
+        body: 1.0,
+        type: 0.5,
+      });
       expect(cfg.frontmatter.created).toEqual(["created", "date created"]);
       expect(cfg.frontmatter.id).toEqual(["id"]);
     });
@@ -91,11 +100,11 @@ model = "nomic-embed-text"
         configPath,
         `
 [frontmatter]
-context = "category"
+id = "uuid"
 `,
       );
       const cfg = loadConfig(configPath, {});
-      expect(cfg.frontmatter.context).toEqual(["category"]);
+      expect(cfg.frontmatter.id).toEqual(["uuid"]);
     });
 
     it("keeps array aliases as arrays", () => {
@@ -117,7 +126,7 @@ created = ["birth", "created"]
         configPath,
         `
 [frontmatter]
-context = "category"
+title = "name"
 `,
       );
       const cfg = loadConfig(configPath, {});
@@ -307,7 +316,8 @@ openai_api_key = "should-not-read-this"
       expect(cfg.rrfK).toBe(60);
       expect(cfg.vecCandidates).toBe(30);
       expect(cfg.ftsCandidates).toBe(30);
-      expect(cfg.ftsWeights).toEqual([5.0, 3.0, 2.0, 1.0, 0.5]);
+      expect(cfg.ftsWeights.title).toBe(5.0);
+      expect(cfg.ftsWeights.body).toBe(1.0);
     });
 
     it("overrides search tuning via TOML", () => {
@@ -320,7 +330,10 @@ default_limit = 20
 rrf_k = 100
 vec_candidates = 50
 fts_candidates = 50
-fts_weights = [3.0, 2.0, 1.0]
+
+[search.fts_weights]
+title = 8.0
+body = 0.5
 `,
       );
       const cfg = loadConfig(configPath, {});
@@ -328,7 +341,17 @@ fts_weights = [3.0, 2.0, 1.0]
       expect(cfg.rrfK).toBe(100);
       expect(cfg.vecCandidates).toBe(50);
       expect(cfg.ftsCandidates).toBe(50);
-      expect(cfg.ftsWeights).toEqual([3.0, 2.0, 1.0]);
+      expect(cfg.ftsWeights.title).toBe(8.0);
+      expect(cfg.ftsWeights.body).toBe(0.5);
+      expect(cfg.ftsWeights.tags).toBe(3.0); // unmentioned columns keep their default
+    });
+
+    it("rejects the old positional fts_weights array and unknown columns with a clear message", () => {
+      const configPath = join(testDir, "config.toml");
+      writeFileSync(configPath, "[search]\nfts_weights = [5.0, 3.0, 2.0, 1.0, 0.5]\n");
+      expect(() => loadConfig(configPath, {})).toThrow(/fts_weights is now a table/);
+      writeFileSync(configPath, "[search.fts_weights]\ncontext = 2.0\n");
+      expect(() => loadConfig(configPath, {})).toThrow(/unknown fts_weights column "context"/);
     });
   });
 
@@ -363,6 +386,27 @@ overlap_percent = 20
         QKB_CONFIG: configPath,
       });
       expect(cfg.vaultName).toBe("CustomFromEnv");
+    });
+  });
+
+  describe("[rerank] and [expansion] (#37, #38)", () => {
+    it("are off by default and read from config and env", () => {
+      const off = loadConfig(join(testDir, "nonexistent.toml"), {});
+      expect(off.rerankEnabled).toBe(false);
+      expect(off.expansionEnabled).toBe(false);
+      expect(off.rerankCandidates).toBe(30);
+
+      const configPath = join(testDir, "llm.toml");
+      writeFileSync(
+        configPath,
+        "[rerank]\nenabled = true\ncandidates = 50\n[expansion]\nmax_variants = 2\n",
+      );
+      const on = loadConfig(configPath, { QKB_EXPANSION: "yes", QKB_RERANK_PROVIDER: "fake" });
+      expect(on.rerankEnabled).toBe(true);
+      expect(on.rerankCandidates).toBe(50);
+      expect(on.rerankProvider).toBe("fake");
+      expect(on.expansionEnabled).toBe(true);
+      expect(on.expansionMaxVariants).toBe(2);
     });
   });
 });

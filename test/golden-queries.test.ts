@@ -13,6 +13,7 @@ import { contentHash, Storage } from "../src/db/storage.js";
 import { FakeProvider } from "../src/embed/fake.js";
 import { chunkText } from "../src/ingest/chunker.js";
 import type { ParsedNote } from "../src/types.js";
+import { type NoteOverrides, withProps } from "./helpers/note.js";
 
 // Ports legacy/python/scripts/golden_queries.py's behavior: same YAML schema
 // (`scripts/golden-queries.example.yaml`), same scoring
@@ -23,13 +24,11 @@ import type { ParsedNote } from "../src/types.js";
 
 const DIM = 8;
 
-function makeNote(overrides: Partial<ParsedNote> = {}): ParsedNote {
+function makeNote(overrides: NoteOverrides = {}): ParsedNote {
   const base: ParsedNote = {
     id: "f47ac10b-58cc-4372-a567-0e02b2c3d401",
     type: "note",
     title: "Traefik Cert Renewal",
-    context: "homelab-traefik",
-    source: null,
     effectiveDate: "2026-03-15",
     createdAt: "2026-03-15T10:00:00-06:00",
     tags: ["networking", "ssl"],
@@ -37,7 +36,7 @@ function makeNote(overrides: Partial<ParsedNote> = {}): ParsedNote {
     body: "# Traefik\n\nRenewing certificates requires restarting the proxy container.",
     filePath: "02-Areas/Homelab/Traefik Cert Renewal.md",
   };
-  return { ...base, ...overrides };
+  return withProps(base, overrides, { context: "homelab-traefik", source: null });
 }
 
 async function ingestOne(

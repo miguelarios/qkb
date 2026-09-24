@@ -124,6 +124,9 @@ export async function runIngest(opts: { full?: boolean; verbose?: boolean }): Pr
   summary += `  (${stats.scanned} scanned)`;
   console.log(summary);
 
+  if (stats.withoutId) {
+    console.log(`${stats.withoutId} note(s) have no \`id\` and were not indexed`);
+  }
   for (const line of summarizeSkips(skips, Boolean(opts.verbose))) {
     console.log(line);
   }

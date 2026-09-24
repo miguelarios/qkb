@@ -3,7 +3,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Command, CommanderError } from "commander";
-import { registerContextsCommands } from "./cli/contexts.js";
+import { registerFieldsCommands } from "./cli/fields.js";
 import { registerGetCommand } from "./cli/get.js";
 import { registerIngestCommands } from "./cli/ingest.js";
 import { registerMcpCommand } from "./cli/mcp.js";
@@ -24,7 +24,7 @@ export function readVersion(): string {
 }
 
 /** Builds the full `qkb` command tree: `ingest`, `embed`, `search`,
- * `vsearch`, `query`, `get`, `contexts`, `context describe`, `status`,
+ * `vsearch`, `query`, `get`, `fields`, `status`,
  * `mcp` — ports the command surface of `legacy/python/src/qkb/cli.py`.
  * Individual command implementations live in `./cli/*.ts`; this function
  * only assembles them, mirroring cli.py's `@cli.group()`/`@cli.command()`
@@ -63,7 +63,7 @@ export function createProgram(): Command {
   registerIngestCommands(program);
   registerSearchCommands(program);
   registerGetCommand(program);
-  registerContextsCommands(program);
+  registerFieldsCommands(program);
   registerStatusCommand(program);
   registerMcpCommand(program);
 

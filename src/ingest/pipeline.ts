@@ -209,6 +209,7 @@ export async function ingestVault(
     unchanged: 0,
     deindexed: 0,
     skipped: 0,
+    withoutId: 0,
   };
 
   // Multiple vaults share one index. Note ids stay globally unique (the `id`
@@ -297,7 +298,13 @@ export async function ingestVault(
 
     let note: ReturnType<typeof parseNote>;
     try {
-      note = parseNote(path, run.vault.path, cfg.frontmatter, declaredFields);
+      note = parseNote(
+        path,
+        run.vault.path,
+        cfg.frontmatter,
+        declaredFields,
+        cfg.siblingFields ?? [],
+      );
     } catch (e) {
       // An opted-in note that can't be indexed (no id / unparseable date ->
       // NoteDataError), or an unexpected parse failure. Skip cleanly with a
@@ -315,9 +322,10 @@ export async function ingestVault(
     }
 
     if (note === null) {
-      // True opt-out (no context AND no source): a legitimate de-index. Not
-      // added to `seen`, so the sweep below will remove any prior entry.
+      // No `id`: not indexed (#33). Not added to `seen`, so the sweep below
+      // removes any prior entry for a note that lost its id.
       stats.skipped++;
+      stats.withoutId = (stats.withoutId ?? 0) + 1;
       continue;
     }
 

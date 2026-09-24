@@ -22,7 +22,8 @@ export interface Config {
   rrfK: number;
   vecCandidates: number;
   ftsCandidates: number;
-  ftsWeights: number[];
+  /** BM25 weight per FTS column (see FTS_COLUMNS in src/db/schema.ts). */
+  ftsWeights: Record<string, number>;
   frontmatter: Record<string, string[]>;
   openaiBaseUrl: string | null;
   openaiApiKey: string | null;
@@ -34,6 +35,9 @@ export interface Config {
    * short description for agents. Declared keys are searchable, embedded, and
    * returned in results; undeclared extra keys are only stored. */
   fields: Record<string, string>;
+  /** Declared fields with `siblings = true`: notes sharing a value are
+   * related to each other, and the values rank like tags. */
+  siblingFields: string[];
   mcpHost: string;
   mcpPort: number;
   /** Browser origins accepted by the HTTP MCP server besides loopback. `*`
@@ -41,6 +45,19 @@ export interface Config {
   mcpAllowedOrigins: string[];
   /** Seconds between automatic re-index runs in watch mode. */
   watchInterval: number;
+  /** Rerank hybrid results with a cross-encoder (#37). Off by default. */
+  rerankEnabled: boolean;
+  rerankProvider: string;
+  rerankGgufRepo: string;
+  rerankGgufFile: string;
+  /** How many top hybrid candidates the reranker re-scores. */
+  rerankCandidates: number;
+  /** Expand a query into variants with a small local model (#38). Off by default. */
+  expansionEnabled: boolean;
+  expansionProvider: string;
+  expansionGgufRepo: string;
+  expansionGgufFile: string;
+  expansionMaxVariants: number;
 }
 
 export interface Vault {
@@ -60,15 +77,18 @@ export function vaultPathFor(cfg: Config, vaultName: string): string | undefined
   return configuredVaults(cfg).find((v) => v.name === vaultName)?.path;
 }
 
+/** Built-in properties qkb understands without configuration, each with its
+ * accepted aliases. Only `id` is required (#33); everything else is
+ * optional. Any other property can be declared in `[frontmatter.fields]`. */
 export const DEFAULT_FRONTMATTER: Record<string, string[]> = {
   id: ["id"],
   type: ["type"],
   title: ["title"],
-  context: ["context"],
-  source: ["source"],
+  aliases: ["aliases", "alias"],
   date: ["date"],
   created: ["created", "date created"],
-  tags: ["tags"],
+  modified: ["modified", "updated", "date modified"],
+  tags: ["tags", "tag"],
 };
 
 export const DEFAULT_CONFIG_PATH = join(homedir(), ".config", "qkb", "config.toml");
@@ -96,12 +116,81 @@ const TOML_MAP: TomlEntry[] = [
   ["search", "rrf_k", "rrfK", (v) => Number(v)],
   ["search", "vec_candidates", "vecCandidates", (v) => Number(v)],
   ["search", "fts_candidates", "ftsCandidates", (v) => Number(v)],
-  ["search", "fts_weights", "ftsWeights", (v) => (Array.isArray(v) ? v.map((x) => Number(x)) : [])],
+  ["search", "fts_weights", "ftsWeights", (v) => parseFtsWeights(v)],
   ["mcp", "host", "mcpHost", (v) => String(v)],
   ["mcp", "port", "mcpPort", (v) => Number(v)],
   ["mcp", "allowed_origins", "mcpAllowedOrigins", (v) => toList(v)],
   ["watch", "interval", "watchInterval", (v) => Number(v)],
+  ["rerank", "enabled", "rerankEnabled", (v) => toBool(v)],
+  ["rerank", "provider", "rerankProvider", (v) => String(v)],
+  ["rerank", "gguf_repo", "rerankGgufRepo", (v) => String(v)],
+  ["rerank", "gguf_file", "rerankGgufFile", (v) => String(v)],
+  ["rerank", "candidates", "rerankCandidates", (v) => Number(v)],
+  ["expansion", "enabled", "expansionEnabled", (v) => toBool(v)],
+  ["expansion", "provider", "expansionProvider", (v) => String(v)],
+  ["expansion", "gguf_repo", "expansionGgufRepo", (v) => String(v)],
+  ["expansion", "gguf_file", "expansionGgufFile", (v) => String(v)],
+  ["expansion", "max_variants", "expansionMaxVariants", (v) => Number(v)],
 ];
+
+/** A `[frontmatter.fields]` entry: `key = "description"`, or a table
+ * `key = { description = "...", siblings = true }`. */
+function parseFieldSpec(key: string, spec: unknown): { description: string; siblings: boolean } {
+  if (spec !== null && typeof spec === "object" && !Array.isArray(spec)) {
+    const t = spec as Record<string, unknown>;
+    for (const k of Object.keys(t)) {
+      if (k !== "description" && k !== "siblings") {
+        throw new Error(
+          `config: [frontmatter.fields.${key}] has unknown key "${k}" (expected description, siblings)`,
+        );
+      }
+    }
+    if (t.siblings !== undefined && typeof t.siblings !== "boolean") {
+      throw new Error(`config: [frontmatter.fields.${key}] siblings must be true or false`);
+    }
+    return { description: String(t.description ?? ""), siblings: t.siblings === true };
+  }
+  return { description: String(spec ?? ""), siblings: false };
+}
+
+function toBool(v: unknown): boolean {
+  return v === true || ["1", "true", "yes", "on"].includes(String(v).trim().toLowerCase());
+}
+
+/** Default BM25 weights: short, deliberate text (title, aliases) counts most;
+ * headings and tags next; declared fields, then body text; `type` barely. */
+export const DEFAULT_FTS_WEIGHTS: Record<string, number> = {
+  title: 5.0,
+  aliases: 5.0,
+  headings: 3.0,
+  tags: 3.0,
+  sibling_fields: 3.0,
+  fields: 2.0,
+  body: 1.0,
+  type: 0.5,
+};
+
+function parseFtsWeights(v: unknown): Record<string, number> {
+  if (Array.isArray(v) || typeof v !== "object" || v === null) {
+    throw new Error(
+      "config: [search] fts_weights is now a table, e.g.\n" +
+        "  [search.fts_weights]\n  title = 5.0\n  body = 1.0\n" +
+        `(columns: ${Object.keys(DEFAULT_FTS_WEIGHTS).join(", ")})`,
+    );
+  }
+  const out = { ...DEFAULT_FTS_WEIGHTS };
+  for (const [k, w] of Object.entries(v as Record<string, unknown>)) {
+    if (!(k in DEFAULT_FTS_WEIGHTS)) {
+      throw new Error(
+        `config: unknown fts_weights column "${k}" (columns: ${Object.keys(DEFAULT_FTS_WEIGHTS).join(", ")})`,
+      );
+    }
+    const n = Number(w);
+    if (!Number.isFinite(n) || n < 0) throw new Error(`config: fts_weights.${k} must be >= 0`);
+    out[k] = n;
+  }
+  return out;
+}
 
 function toList(v: unknown): string[] {
   if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter(Boolean);
@@ -133,6 +222,10 @@ const ENV_MAP: EnvEntry[] = [
   ["QKB_MCP_PORT", "mcpPort", (v) => Number(v)],
   ["QKB_ALLOWED_ORIGINS", "mcpAllowedOrigins", (v) => toList(v)],
   ["QKB_WATCH_INTERVAL", "watchInterval", (v) => Number(v)],
+  ["QKB_RERANK", "rerankEnabled", (v) => toBool(v)],
+  ["QKB_RERANK_PROVIDER", "rerankProvider", (v) => String(v)],
+  ["QKB_EXPANSION", "expansionEnabled", (v) => toBool(v)],
+  ["QKB_EXPANSION_PROVIDER", "expansionProvider", (v) => String(v)],
 ];
 
 function expandPath(p: string): string {
@@ -166,16 +259,28 @@ export function loadConfig(
     rrfK: 60,
     vecCandidates: 30,
     ftsCandidates: 30,
-    ftsWeights: [5.0, 3.0, 2.0, 1.0, 0.5],
+    ftsWeights: { ...DEFAULT_FTS_WEIGHTS },
     frontmatter: { ...DEFAULT_FRONTMATTER },
     openaiBaseUrl: null,
     openaiApiKey: null,
     vaults: [],
     fields: {},
+    siblingFields: [],
     mcpHost: "127.0.0.1",
     mcpPort: 8181,
     mcpAllowedOrigins: [],
     watchInterval: 300,
+    // Same local models QMD uses for reranking and query expansion.
+    rerankEnabled: false,
+    rerankProvider: "llama",
+    rerankGgufRepo: "ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF",
+    rerankGgufFile: "qwen3-reranker-0.6b-q8_0.gguf",
+    rerankCandidates: 30,
+    expansionEnabled: false,
+    expansionProvider: "llama",
+    expansionGgufRepo: "tobil/qmd-query-expansion-1.7B-gguf",
+    expansionGgufFile: "qmd-query-expansion-1.7B-q4_k_m.gguf",
+    expansionMaxVariants: 4,
   };
 
   // Check if we should use a different config path from env
@@ -218,8 +323,10 @@ export function loadConfig(
       }
       const fieldsData = frontmatterData.fields;
       if (fieldsData && typeof fieldsData === "object" && !Array.isArray(fieldsData)) {
-        for (const [key, desc] of Object.entries(fieldsData as Record<string, unknown>)) {
-          cfg.fields[key] = String(desc ?? "");
+        for (const [key, spec] of Object.entries(fieldsData as Record<string, unknown>)) {
+          const f = parseFieldSpec(key, spec);
+          cfg.fields[key] = f.description;
+          if (f.siblings) cfg.siblingFields.push(key);
         }
       }
     }

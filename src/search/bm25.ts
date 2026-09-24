@@ -5,6 +5,8 @@
  */
 
 import type Database from "better-sqlite3";
+import { DEFAULT_FTS_WEIGHTS } from "../config.js";
+import { FTS_COLUMNS } from "../db/schema.js";
 import { buildFilterClause, type Filters } from "./filters.js";
 
 // Matches Python's `re.findall(r"\w+", query, flags=re.UNICODE)` — `re.UNICODE`
@@ -141,26 +143,24 @@ export function sanitizeQuery(query: string): string {
  *
  * Ported from `bm25.py`'s `search_bm25`.
  */
-/** BM25 weight for the declared-fields column when `fts_weights` has no 6th
- * entry — same as `tags`, the other short, curated metadata column. */
-export const DEFAULT_FIELDS_WEIGHT = 3.0;
+/** Index of the body column, for snippet(). */
+const BODY_COLUMN = FTS_COLUMNS.indexOf("body");
 
 export function searchBm25(
   conn: Database.Database,
   query: string,
   filters: Filters,
   limit: number,
-  weights: number[],
+  weights: Record<string, number>,
 ): [string, number, string][] {
   const match = sanitizeQuery(query);
   if (!match) {
     return [];
   }
   const [clause, params] = buildFilterClause(filters);
-  // title, tags, context, body, type; then 0.0 for the UNINDEXED doc_id;
-  // then the declared-fields column. A 6th `fts_weights` entry sets the
-  // fields weight; otherwise it ranks like tags.
-  const w = [...weights.slice(0, 5), 0.0, weights[5] ?? DEFAULT_FIELDS_WEIGHT];
+  // One weight per FTS column in declaration order, then 0.0 for the
+  // UNINDEXED doc_id.
+  const w = [...FTS_COLUMNS.map((c) => weights[c] ?? DEFAULT_FTS_WEIGHTS[c] ?? 1.0), 0.0];
   // NOTE: no table alias on documents_fts — FTS5 MATCH needs the real table
   // name. Weights are inlined (not bound) — SQLite's bm25() requires literal
   // numeric arguments. snippet()'s start/end markers are also inlined as
@@ -170,7 +170,7 @@ export function searchBm25(
   const sql = `
     SELECT documents_fts.doc_id AS doc_id,
            -bm25(documents_fts, ${w.map(formatSqlFloat).join(",")}) AS score,
-           snippet(documents_fts, 3, '${MATCH_START}', '${MATCH_END}', '…', 12) AS snip
+           snippet(documents_fts, ${BODY_COLUMN}, '${MATCH_START}', '${MATCH_END}', '…', 12) AS snip
     FROM documents_fts
     JOIN documents d ON d.id = documents_fts.doc_id
     WHERE documents_fts MATCH ? AND ${clause}

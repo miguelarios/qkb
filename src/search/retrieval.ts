@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { RESERVED_METADATA_KEY } from "../types.js";
 import type { HydratedResult } from "./hydrate.js";
-import { contextDescription, hydrate } from "./hydrate.js";
+import { hydrate } from "./hydrate.js";
 
 const LIKE_ESCAPE = "\\";
 
@@ -82,16 +82,17 @@ export type VaultPathResolver = string | ((vaultName: string) => string | undefi
  * Throws `DocumentNotFoundError` if no document matches, or
  * `AmbiguousDocumentPrefixError` if more than one does. When `includeRaw` is
  * set, also reads the note's file from `vaultPath` (read-only — never
- * writes) as raw UTF-8 text, prefixed with an HTML comment carrying the
- * context description if one exists; throws `DocumentFileMissing` if that
- * read fails for any reason. Ported from `retrieval.py`'s `get_document`.
+ * writes) as raw UTF-8 text; throws `DocumentFileMissing` if that read fails
+ * for any reason. Returns every related note (no per-result cap). Ported
+ * from `retrieval.py`'s `get_document`.
  */
 export function getDocument(
   conn: Database.Database,
   idOrPrefix: string,
   vaultPath?: VaultPathResolver,
   includeRaw = false,
-  includeSiblings = true,
+  includeRelated = true,
+  siblingFields: string[] = [],
 ): DocumentDetail {
   const rows = conn
     .prepare(`SELECT id FROM documents WHERE id LIKE ? ESCAPE '${LIKE_ESCAPE}'`)
@@ -105,7 +106,8 @@ export function getDocument(
     );
   }
   const matchedId = (rows[0] as { id: string }).id;
-  const hydrated = hydrate(conn, [[matchedId, 0.0, null]])[0];
+  // A single lookup returns every related note, not the per-result cap.
+  const hydrated = hydrate(conn, [[matchedId, 0.0, null]], null, siblingFields)[0];
   if (hydrated === undefined) {
     // Unreachable: `matchedId` was just read from `documents`, so `hydrate`
     // (which batches its own SELECT against the same table) cannot miss it.
@@ -121,8 +123,8 @@ export function getDocument(
     ...rest,
     metadata: Object.fromEntries(metaRows.map((r) => [r.key, r.value])),
   };
-  if (!includeSiblings) {
-    doc.siblings = [];
+  if (!includeRelated) {
+    doc.related = [];
   }
   if (includeRaw) {
     const root = typeof vaultPath === "function" ? vaultPath(doc.vault) : vaultPath;
@@ -171,8 +173,7 @@ export function getDocument(
           `(document ${JSON.stringify(doc.document_id)}) — vault content must be UTF-8 text`,
       );
     }
-    const desc = contextDescription(conn, doc.context);
-    doc.raw_text = desc ? `<!-- Context: ${desc} -->\n\n${text}` : text;
+    doc.raw_text = text;
   }
   return doc;
 }

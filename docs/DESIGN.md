@@ -13,6 +13,8 @@
 
 An on-device hybrid search engine for Obsidian vaults that understands frontmatter metadata. Where QMD treats markdown files as flat documents organized by directory, qkb treats them as nodes in a structured knowledge system — with types, contexts, sources, sibling relationships, and date semantics derived directly from YAML frontmatter.
 
+> **Since 0.6** every note with an `id` is indexed and `context`/`source` are ordinary properties (ADR-017); ranking, related notes, reranking and query expansion changed too (ADR-018–020). ADRs win where this document disagrees.
+
 Content opts in to indexing via frontmatter properties (`context` and/or `source`). The system is two subsystems sharing a SQLite database: an **ingestion pipeline** (batch, write-heavy, idempotent) and a **search engine** (read-only, latency-sensitive, multi-interface).
 
 ### Why not QMD out of the box?

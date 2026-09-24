@@ -5,15 +5,24 @@ import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 
-// Ported verbatim from legacy/python/src/qkb/db.py `_SCHEMA` — same names,
-// same columns, same tokenizer. Golden-query tuning depends on this being an
-// exact port, not a reinterpretation.
+/** Bump when the table layout changes. An index built with another version
+ * is reset on open (see `resetIfOutdated`): everything in it is derived from
+ * the vault, so the next ingest + embed rebuilds it. */
+export const SCHEMA_VERSION = 2;
+
+// v2 (#33–#36): every note with an `id` is indexed; `context`/`source` are
+// ordinary declared fields rather than columns; aliases and headings rank as
+// their own FTS columns; wikilinks are stored as edges.
+//
+// FTS column order is the bm25() weight order — see FTS_COLUMNS.
 const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS documents (
     id             TEXT PRIMARY KEY,
     type           TEXT NOT NULL,
-    context        TEXT,
-    source         TEXT,
     effective_date TEXT NOT NULL,
     created_at     TEXT NOT NULL,
     file_path      TEXT NOT NULL,
@@ -21,10 +30,12 @@ CREATE TABLE IF NOT EXISTS documents (
     title          TEXT,
     vault_name     TEXT NOT NULL DEFAULT 'Notes',
     indexed_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    fields_text    TEXT NOT NULL DEFAULT ''
+    fields_text    TEXT NOT NULL DEFAULT '',
+    stem_key       TEXT NOT NULL DEFAULT '',  -- lower(file name without .md), for [[links]]
+    path_key       TEXT NOT NULL DEFAULT ''   -- lower(vault path without .md), for [[dir/Note]]
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
-    title, tags, context, body, type, doc_id UNINDEXED, fields,
+    title, aliases, headings, tags, sibling_fields, fields, body, type, doc_id UNINDEXED,
     tokenize='porter unicode61'
 );
 CREATE TABLE IF NOT EXISTS chunks (
@@ -41,68 +52,104 @@ CREATE TABLE IF NOT EXISTS tags (
     tag         TEXT NOT NULL,
     PRIMARY KEY (document_id, tag)
 );
+CREATE TABLE IF NOT EXISTS aliases (
+    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    alias       TEXT NOT NULL,
+    PRIMARY KEY (document_id, alias)
+);
+CREATE TABLE IF NOT EXISTS links (
+    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    target      TEXT NOT NULL,  -- lowercased link target, resolved at read time
+    position    INTEGER NOT NULL DEFAULT 0,  -- order of first appearance in the note
+    PRIMARY KEY (document_id, target)
+);
 CREATE TABLE IF NOT EXISTS metadata (
     document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     key         TEXT NOT NULL,
     value       TEXT NOT NULL,
     PRIMARY KEY (document_id, key)
 );
-CREATE TABLE IF NOT EXISTS context_descriptions (
-    context     TEXT PRIMARY KEY,
-    description TEXT NOT NULL
-);
 CREATE TABLE IF NOT EXISTS embedding_config (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_documents_context ON documents(context);
-CREATE INDEX IF NOT EXISTS idx_documents_source ON documents(source);
 CREATE INDEX IF NOT EXISTS idx_documents_type ON documents(type);
 CREATE INDEX IF NOT EXISTS idx_documents_effective_date ON documents(effective_date);
+CREATE INDEX IF NOT EXISTS idx_documents_vault ON documents(vault_name);
+CREATE INDEX IF NOT EXISTS idx_documents_title ON documents(lower(title));
+CREATE INDEX IF NOT EXISTS idx_documents_stem ON documents(stem_key);
+CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(path_key);
 CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_metadata_key ON metadata(key, value);
+CREATE INDEX IF NOT EXISTS idx_aliases_alias ON aliases(lower(alias));
+CREATE INDEX IF NOT EXISTS idx_links_target ON links(target);
 `;
 
-// Created after migrate(), since an older DB's `documents` table only gains
-// columns there.
-const POST_MIGRATION_SQL = `
-CREATE INDEX IF NOT EXISTS idx_documents_vault ON documents(vault_name);
-`;
+/** Every table qkb has ever created — dropped on a schema reset. */
+const ALL_TABLES = [
+  "documents_fts",
+  "chunks_vec",
+  "links",
+  "aliases",
+  "tags",
+  "metadata",
+  "chunks",
+  "context_descriptions",
+  "embedding_config",
+  "documents",
+  "meta",
+];
 
-function columnNames(db: Database.Database, table: string): string[] {
-  return (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+/** FTS5 columns in declaration order, i.e. bm25() weight order (doc_id is
+ * UNINDEXED and gets weight 0). */
+export const FTS_COLUMNS = [
+  "title",
+  "aliases",
+  "headings",
+  "tags",
+  "sibling_fields",
+  "fields",
+  "body",
+  "type",
+] as const;
+
+function tableExists(db: Database.Database, name: string): boolean {
+  return (
+    db
+      .prepare("SELECT 1 FROM sqlite_master WHERE name = ? AND type IN ('table','view')")
+      .get(name) !== undefined
+  );
+}
+
+function storedSchemaVersion(db: Database.Database): number | null {
+  if (!tableExists(db, "documents")) return null; // fresh database
+  if (!tableExists(db, "meta")) return 1; // v0.5.x and earlier
+  const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as
+    | { value: string }
+    | undefined;
+  return row ? Number(row.value) : 1;
 }
 
 /**
- * Bring a DB created by an older qkb up to the current schema, in place and
- * without re-embedding:
- *
- * - `documents.fields_text` (declared extra properties, rendered as
- *   `key: value` lines) — added with an empty default.
- * - `documents_fts.fields` — FTS5 tables can't ALTER ADD COLUMN, so the table
- *   is rebuilt from its own stored columns (it's a content-storing FTS table,
- *   so the body is still there) with an empty `fields` column. `fields` sits
- *   AFTER the UNINDEXED `doc_id` so the existing bm25() weight positions for
- *   title/tags/context/body/type don't move.
+ * Reset an index built with another schema version. Nothing is lost that the
+ * vault can't rebuild: the next `qkb ingest` + `qkb embed` (or watch mode)
+ * refills it. Runs under an immediate write lock and re-checks inside it, so
+ * two processes opening an old index at once reset it only once.
  */
-function migrate(db: Database.Database): void {
-  if (!columnNames(db, "documents").includes("fields_text")) {
-    db.exec("ALTER TABLE documents ADD COLUMN fields_text TEXT NOT NULL DEFAULT ''");
-  }
-  if (!columnNames(db, "documents_fts").includes("fields")) {
-    db.transaction(() => {
-      db.exec(
-        "CREATE VIRTUAL TABLE documents_fts_migrated USING fts5(" +
-          "title, tags, context, body, type, doc_id UNINDEXED, fields, " +
-          "tokenize='porter unicode61')",
-      );
-      db.exec(
-        "INSERT INTO documents_fts_migrated (title, tags, context, body, type, doc_id, fields) " +
-          "SELECT title, tags, context, body, type, doc_id, '' FROM documents_fts",
-      );
-      db.exec("DROP TABLE documents_fts");
-      db.exec("ALTER TABLE documents_fts_migrated RENAME TO documents_fts");
-    })();
+function resetIfOutdated(db: Database.Database): void {
+  const before = storedSchemaVersion(db);
+  if (before === null || before === SCHEMA_VERSION) return;
+  let reset = false;
+  db.transaction(() => {
+    if (storedSchemaVersion(db) === SCHEMA_VERSION) return;
+    for (const t of ALL_TABLES) db.exec(`DROP TABLE IF EXISTS ${t}`);
+    reset = true;
+  }).immediate();
+  if (reset) {
+    console.error(
+      `qkb: the index format changed (v${before} → v${SCHEMA_VERSION}); the index was reset.\n` +
+        "     Run `qkb ingest && qkb embed` to rebuild it (watch mode does this on its own).",
+    );
   }
 }
 
@@ -190,9 +237,12 @@ export function connect(dbPath: string, embeddingDim: number): Database.Database
   if (dbPath !== ":memory:") {
     db.pragma("journal_mode = WAL");
   }
+  resetIfOutdated(db);
   db.exec(SCHEMA_SQL);
-  migrate(db);
-  db.exec(POST_MIGRATION_SQL);
+  db.prepare(
+    "INSERT INTO meta (key, value) VALUES ('schema_version', ?) " +
+      "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+  ).run(String(SCHEMA_VERSION));
   createVectorTable(db, embeddingDim);
   return db;
 }

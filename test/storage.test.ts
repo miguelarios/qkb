@@ -6,6 +6,7 @@ import { FakeProvider } from "../src/embed/fake.js";
 import { chunkText } from "../src/ingest/chunker.js";
 import type { ParsedNote } from "../src/types.js";
 import { RESERVED_METADATA_KEY } from "../src/types.js";
+import { type NoteOverrides, withProps } from "./helpers/note.js";
 
 // Ports legacy/python/tests/test_storage.py — SQL/semantic parity with
 // storage.py is what keeps the golden-query scores at 9/10 (see
@@ -13,13 +14,11 @@ import { RESERVED_METADATA_KEY } from "../src/types.js";
 
 const DIM = 8;
 
-function makeNote(overrides: Partial<ParsedNote> = {}): ParsedNote {
+function makeNote(overrides: NoteOverrides = {}): ParsedNote {
   const base: ParsedNote = {
     id: "f47ac10b-58cc-4372-a567-0e02b2c3d401",
     type: "note",
     title: "Traefik Cert Renewal",
-    context: "homelab-traefik",
-    source: null,
     effectiveDate: "2026-03-15",
     createdAt: "2026-03-15T10:00:00-06:00",
     tags: ["networking", "ssl"],
@@ -27,7 +26,7 @@ function makeNote(overrides: Partial<ParsedNote> = {}): ParsedNote {
     body: "# Traefik\n\nRenewing certificates requires restarting the proxy container.",
     filePath: "02-Areas/Homelab/Traefik Cert Renewal.md",
   };
-  return { ...base, ...overrides };
+  return withProps(base, overrides, { context: "homelab-traefik", source: null });
 }
 
 /** Chunk + embed + upsert a note (test helper mirroring the pipeline) —
@@ -248,55 +247,57 @@ describe("db/storage", () => {
     expect(s.getContentHash(note.id)).toBe("");
   });
 
-  it("context descriptions and stats", async () => {
+  it("stats count documents and chunks", async () => {
     await ingestOne(conn, provider, makeNote());
-    const s = new Storage(conn);
-    s.setContextDescription("homelab-traefik", "Reverse proxy and cert notes");
-    let rows = s.listContexts();
-    expect(rows).toEqual([
-      { context: "homelab-traefik", count: 1, description: "Reverse proxy and cert notes" },
-    ]);
-    s.setContextDescription("homelab-traefik", null);
-    rows = s.listContexts();
-    expect(rows[0]?.description).toBeNull();
-    const st = s.stats();
+    const st = new Storage(conn).stats();
     expect(st.documents).toBe(1);
     expect(st.chunks).toBeGreaterThanOrEqual(1);
   });
 
-  it("hasContext: a targeted existence check, not listContexts' full aggregation (issue #14's context-name search tip)", async () => {
-    await ingestOne(conn, provider, makeNote({ context: "homelab-traefik" }));
-    const s = new Storage(conn);
-    expect(s.hasContext("homelab-traefik")).toBe(true);
-    expect(s.hasContext("nonexistent-context")).toBe(false);
-    // exact match only — normalization/casing is the CALLER's job
-    // (src/cli/shared.ts's printContextHint already trims+lowercases the
-    // query before calling this).
-    expect(s.hasContext("Homelab-Traefik")).toBe(false);
-    expect(s.hasContext("")).toBe(false);
-  });
-
-  it("set_context_description normalizes the context", async () => {
-    await ingestOne(conn, provider, makeNote({ context: "homelab" }));
-    const s = new Storage(conn);
-
-    s.setContextDescription("  Homelab  ", "x");
-
-    const row = conn
-      .prepare("SELECT description FROM context_descriptions WHERE context = ?")
-      .get("homelab") as { description: string } | undefined;
-    expect(row?.description).toBe("x");
-    const rawCount = (
-      conn
-        .prepare("SELECT COUNT(*) c FROM context_descriptions WHERE context = ?")
-        .get("  Homelab  ") as { c: number }
-    ).c;
-    expect(rawCount).toBe(0);
-  });
-
-  it("set_context_description rejects empty after normalization", () => {
-    const s = new Storage(conn);
-    expect(() => s.setContextDescription("   ", "x")).toThrow();
+  it("fieldSummary: per declared field, how many notes carry it and its top values (list items counted separately)", async () => {
+    await ingestOne(
+      conn,
+      provider,
+      makeNote({
+        id: "a1",
+        filePath: "a.md",
+        extraMetadata: { company: "Acme", people: "Alice Smith, Bob Jones" },
+      }),
+    );
+    await ingestOne(
+      conn,
+      provider,
+      makeNote({
+        id: "b2",
+        filePath: "b.md",
+        extraMetadata: { company: "Acme", people: "Alice Smith" },
+      }),
+    );
+    const rows = new Storage(conn).fieldSummary(
+      { company: "Employer", people: "", missing: "x" },
+      5,
+      ["people"],
+    );
+    expect(rows).toEqual([
+      {
+        field: "company",
+        description: "Employer",
+        siblings: false,
+        documents: 2,
+        top_values: [{ value: "Acme", count: 2 }],
+      },
+      {
+        field: "people",
+        description: "",
+        siblings: true,
+        documents: 2,
+        top_values: [
+          { value: "Alice Smith", count: 2 },
+          { value: "Bob Jones", count: 1 },
+        ],
+      },
+      { field: "missing", description: "x", siblings: false, documents: 0, top_values: [] },
+    ]);
   });
 
   it("all_metadata_hashes returns stored hashes", async () => {

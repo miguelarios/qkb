@@ -7,6 +7,7 @@ import { chunkText } from "../src/ingest/chunker.js";
 import { Filters } from "../src/search/filters.js";
 import { searchVector } from "../src/search/vector.js";
 import type { ParsedNote } from "../src/types.js";
+import { type NoteOverrides, withProps } from "./helpers/note.js";
 
 // Ports legacy/python/tests/test_vector.py — chunk-level KNN via chunks_vec
 // MATCH, filter pre-restriction of the candidate chunk set, chunk->document
@@ -20,13 +21,11 @@ const DIM = 8;
 const ID_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const ID_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
-function makeNote(overrides: Partial<ParsedNote> = {}): ParsedNote {
+function makeNote(overrides: NoteOverrides = {}): ParsedNote {
   const base: ParsedNote = {
     id: "f47ac10b-58cc-4372-a567-0e02b2c3d401",
     type: "note",
     title: "Traefik Cert Renewal",
-    context: "homelab-traefik",
-    source: null,
     effectiveDate: "2026-03-15",
     createdAt: "2026-03-15T10:00:00-06:00",
     tags: ["networking", "ssl"],
@@ -34,7 +33,7 @@ function makeNote(overrides: Partial<ParsedNote> = {}): ParsedNote {
     body: "# Traefik\n\nRenewing certificates requires restarting the proxy container.",
     filePath: "02-Areas/Homelab/Traefik Cert Renewal.md",
   };
-  return { ...base, ...overrides };
+  return withProps(base, overrides, { context: "homelab-traefik", source: null });
 }
 
 /** Chunk + embed + upsert a note (test helper mirroring the pipeline) —

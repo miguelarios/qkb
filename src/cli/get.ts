@@ -21,7 +21,14 @@ async function runGet(idOrPrefix: string, opts: { raw?: boolean; open?: boolean 
   const conn = openDb(cfgObj);
   let doc: ReturnType<typeof getDocument>;
   try {
-    doc = getDocument(conn, idOrPrefix, (name) => vaultPathFor(cfgObj, name), Boolean(opts.raw));
+    doc = getDocument(
+      conn,
+      idOrPrefix,
+      (name) => vaultPathFor(cfgObj, name),
+      Boolean(opts.raw),
+      true,
+      cfgObj.siblingFields,
+    );
   } catch (e) {
     // Ports cli.py's `except (DocumentFileMissing, KeyError, ValueError)` —
     // click.echo(str(e), err=True); sys.exit(1) (no "Error:" prefix). The TS

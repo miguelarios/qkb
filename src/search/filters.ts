@@ -1,12 +1,13 @@
 /** SQL filter builders for search. Ported from `legacy/python/src/qkb/search/filters.py`.
  *
- * Filters type + buildFilterClause function for context (normalized, case-insensitive),
+ * Filters type + buildFilterClause function for declared/stored fields (case-insensitive;
+ * `context`/`source` are shorthand for a field filter on that key),
  * source, type, tags (AND semantics via junction table), date range (with expansion
  * of partial dates like "2026" to full ISO YYYY-MM-DD bounds).
  */
 
 import { placeholders } from "../db/schema.js";
-import { normalizeContext, parseDateLenient } from "../ingest/parser.js";
+import { parseDateLenient } from "../ingest/parser.js";
 import { SearchValidationError } from "./errors.js";
 
 /**
@@ -107,7 +108,7 @@ function normalizeBound(label: string, value: string | undefined, upper: boolean
  * Empty filters return `["1=1", []]` (no-op clause).
  *
  * Semantics:
- * - context: normalized via `normalizeContext()` (case-insensitive, trimmed);
+ * - context / source: shorthand for a field filter on that key (#35);
  *   empty/whitespace-only raises
  * - source: stripped only (NOT lowercased); empty/whitespace-only raises
  * - docType: stored as "type" in DB, used as-is
@@ -121,23 +122,19 @@ export function buildFilterClause(f: Filters): [string, unknown[]] {
   const conditions: string[] = [];
   const params: unknown[] = [];
 
-  if (f.context !== undefined && f.context !== null) {
-    const normalized = normalizeContext(f.context);
-    if (normalized === null) {
-      throw new SearchValidationError("context filter is empty or whitespace-only");
+  // `context` / `source` are ordinary properties now (#35): these legacy
+  // filters are shorthand for a field filter on that key, matched against
+  // the stored property whether or not it is declared.
+  const fieldFilters: Record<string, string> = { ...(f.fields ?? {}) };
+  for (const [key, value] of [
+    ["context", f.context],
+    ["source", f.source],
+  ] as const) {
+    if (value === undefined || value === null) continue;
+    if (!value.trim()) {
+      throw new SearchValidationError(`${key} filter is empty or whitespace-only`);
     }
-    conditions.push("d.context = ?");
-    params.push(normalized);
-  }
-
-  if (f.source !== undefined && f.source !== null) {
-    // Mirror ingest-time treatment: strip but NOT lowercase (unlike context)
-    const source = f.source.trim();
-    if (!source) {
-      throw new SearchValidationError("source filter is empty or whitespace-only");
-    }
-    conditions.push("d.source = ?");
-    params.push(source);
+    fieldFilters[key] = value;
   }
 
   if (f.docType) {
@@ -177,8 +174,8 @@ export function buildFilterClause(f: Filters): [string, unknown[]] {
     params.push(...names);
   }
 
-  if (f.fields !== undefined && f.fields !== null) {
-    for (const [key, raw] of Object.entries(f.fields)) {
+  if (Object.keys(fieldFilters).length > 0) {
+    for (const [key, raw] of Object.entries(fieldFilters)) {
       const value = String(raw).trim().toLowerCase();
       if (!key.trim() || !value) {
         throw new SearchValidationError(`field filter ${JSON.stringify(key)} is empty`);

@@ -33,7 +33,6 @@ interface StatusPayload {
   chunks: number;
   vectors: number | null;
   dim: number | null;
-  contexts: { context: string; count: number; description: string | null }[];
   last_indexed_at: string | null;
 }
 
@@ -87,11 +86,6 @@ function humanStatus(cfgObj: Config, p: StatusPayload, dbExists: boolean): strin
       out.push(`  Built with: ${p.index_model}  (dim ${p.index_dim})`);
     }
     out.push(`  Last:      ${p.last_indexed_at ?? "—"}`);
-    const names = p.contexts
-      .slice(0, 6)
-      .map((c) => c.context)
-      .join(", ");
-    out.push(`  Contexts:  ${p.contexts.length}${names ? `  (${names})` : ""}`);
     const fieldNames = Object.keys(p.fields);
     if (fieldNames.length > 0) {
       out.push(`  Fields:    ${fieldNames.join(", ")}`);
@@ -171,7 +165,6 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
     chunks: st?.chunks ?? 0,
     vectors: st?.vectors ?? 0,
     dim: st?.dim ?? null,
-    contexts: st?.contexts ?? [],
     last_indexed_at: st?.lastIndexedAt ?? null,
   };
 
