@@ -10,7 +10,6 @@ import type Database from "better-sqlite3";
 import type { Command } from "commander";
 import { type Config, loadConfig } from "../config.js";
 import { connect } from "../db/schema.js";
-import { Storage } from "../db/storage.js";
 import {
   hasMatchMarkers,
   queryTokens,
@@ -71,8 +70,8 @@ export function parseFieldFlags(flags: string[] | undefined): Record<string, str
  * decorator. */
 export function addSearchOptions(cmd: Command): Command {
   return cmd
-    .option("--context <context>", "filter by context")
-    .option("--source <source>", "filter by source")
+    .option("--context <context>", "deprecated: same as --field context=<value>")
+    .option("--source <source>", "deprecated: same as --field source=<value>")
     .option("--type <type>", "filter by document type")
     .option("--tags <tags>", "comma-separated, AND semantics")
     .option("--date-from <date>", "filter: effective date >= this")
@@ -81,11 +80,19 @@ export function addSearchOptions(cmd: Command): Command {
     .option("--vault <name>", "only this vault (repeatable)", collect)
     .option("--field <key=value>", "declared field equals value (repeatable, AND)", collect)
     .option("--json", "output as JSON")
-    .option("--files", "output as document_id,score,file_path,context lines");
+    .option("--files", "output as document_id,score,file_path,vault lines");
 }
 
-/** Ports cli.py's `_filters`. */
+/** Ports cli.py's `_filters`. `--context` / `--source` are kept one release
+ * as shorthand for `--field context=…` / `--field source=…` (#35). */
 export function filtersFromOpts(opts: SearchOpts): Filters {
+  for (const flag of ["context", "source"] as const) {
+    if (opts[flag] !== undefined) {
+      console.error(
+        `note: --${flag} is deprecated and will be removed; use --field ${flag}=${opts[flag]}`,
+      );
+    }
+  }
   return new Filters({
     context: opts.context,
     source: opts.source,
@@ -159,8 +166,10 @@ export function matchAttribution(result: HydratedResult, query: string): string 
   if (tag !== undefined) {
     return `matched: tag "${tag}"`;
   }
-  if (hits(result.context)) {
-    return `matched: context "${result.context}"`;
+  for (const [key, value] of Object.entries(result.fields ?? {})) {
+    if (hits(value)) {
+      return `matched: ${key} "${value}"`;
+    }
   }
   if (hits(result.type)) {
     return `matched: type "${result.type}"`;
@@ -434,7 +443,6 @@ function renderTable(results: HydratedResult[], query: string, tier: SearchTier)
   const columns: { header: string; get: (r: HydratedResult, i: number) => string }[] = [
     { header: "Title", get: (r) => r.title ?? "" },
     { header: "Type", get: (r) => r.type },
-    { header: "Context", get: (r) => r.context ?? "-" },
     { header: "Date", get: (r) => r.effective_date },
     { header: "Score", get: (_r, i) => `${percents[i] ?? 0}%` },
   ];
@@ -493,42 +501,11 @@ export function emit(
   }
   if (asFiles) {
     for (const r of results) {
-      console.log(`${r.document_id},${r.score},${r.file_path},${r.context ?? ""}`);
+      console.log(`${r.document_id},${r.score},${r.file_path},${r.vault}`);
     }
     return;
   }
   renderTable(results, query, tier);
-}
-
-/** Prints a one-line stderr tip when the ORIGINAL (trimmed, lowercased)
- * query string exactly matches an existing context's name — e.g. `qkb
- * search homelab-traefik` when "homelab-traefik" is a context, which
- * otherwise silently degrades into "browse that context ranked by the
- * context FTS column" (issue #14, gap 3) rather than the term-search the
- * user likely meant. Human output only (never `--json`/`--files` — callers
- * gate that) and only when there ARE results to show (an empty result list
- * already got its own "no results" signal; piling a second hint on top of
- * that is noise, not help). Contexts are stored trim+lowercased already
- * (`normalizeContext`, src/ingest/parser.ts) so the comparison needs no
- * further normalization on that side. One cheap indexed existence check
- * (`Storage.hasContext`, `idx_documents_context`) per search — deliberately
- * NOT `listContexts()`'s full `GROUP BY` aggregation over every document,
- * which this only needs a yes/no answer from. */
-export function printContextHint(
-  conn: Database.Database,
-  query: string,
-  resultCount: number,
-): void {
-  if (resultCount === 0) {
-    return;
-  }
-  const trimmed = query.trim().toLowerCase();
-  if (!trimmed) {
-    return;
-  }
-  if (new Storage(conn).hasContext(trimmed)) {
-    console.error(`tip: "${trimmed}" is a context — use --context ${trimmed} to browse it`);
-  }
 }
 
 /** Truncate a path to its most useful tail (filename + nearest folder), used

@@ -7,11 +7,15 @@ export interface ParsedNote {
   id: string;
   type: string;
   title: string;
-  context: string | null;
-  source: string | null;
   effectiveDate: string; // YYYY-MM-DD
   createdAt: string; // full ISO 8601
   tags: string[];
+  /** Obsidian `aliases`: alternative titles, ranked like the title (#34). */
+  aliases?: string[];
+  /** Text of the body's headings, outside code blocks (#34). */
+  headings?: string[];
+  /** Targets of the body's `[[wikilinks]]` (#36). */
+  links?: string[];
   extraMetadata: Record<string, string>;
   /** Declared extra properties (`[frontmatter.fields]`) present on this
    * note, in declaration order — a subset of `extraMetadata`. Searchable,
@@ -34,6 +38,8 @@ export interface IngestStats {
   unchanged: number;
   deindexed: number;
   skipped: number;
+  /** Notes skipped because they have no `id` (part of `skipped`). */
+  withoutId?: number;
 }
 
 /** A structurally-scored slice of a note's body, ready for embedding.

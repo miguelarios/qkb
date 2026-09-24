@@ -30,18 +30,15 @@ function result(overrides: Partial<HydratedResult> = {}): HydratedResult {
     document_id: "f47ac10b-58cc-4372-a567-0e02b2c3d401",
     title: "Alice's traefik notes",
     type: "note",
-    context: "homelab-traefik",
-    context_description: null,
-    source: null,
     effective_date: "2026-01-01",
     score: 1,
     file_path: "a.md",
     obsidian_uri: "obsidian://open?vault=x&file=a",
     matched_text: null,
     tags: [],
-    siblings: [],
+    related: [],
     vault: "Notes",
-    fields: {},
+    fields: { context: "homelab-traefik" },
     ...overrides,
   };
 }
@@ -83,37 +80,41 @@ describe("relativeScorePercents", () => {
 
 describe("matchAttribution", () => {
   it("attributes a title hit", () => {
-    const r = result({ title: "Traefik cert renewal", context: "homelab" });
+    const r = result({ title: "Traefik cert renewal", fields: { context: "homelab" } });
     expect(matchAttribution(r, "traefik")).toBe('matched: title "Traefik cert renewal"');
   });
 
-  it("attributes a context hit when the query is exactly a context name", () => {
-    const r = result({ title: "Unrelated note title", context: "homelab-traefik" });
+  it("attributes a declared-field hit (e.g. context) when the query is exactly its value", () => {
+    const r = result({ title: "Unrelated note title", fields: { context: "homelab-traefik" } });
     expect(matchAttribution(r, "homelab-traefik")).toBe('matched: context "homelab-traefik"');
   });
 
   it("attributes a tag hit", () => {
-    const r = result({ title: "Notes", context: "homelab", tags: ["reverse-proxy", "infra"] });
+    const r = result({
+      title: "Notes",
+      fields: { context: "homelab" },
+      tags: ["reverse-proxy", "infra"],
+    });
     expect(matchAttribution(r, "reverse-proxy")).toBe('matched: tag "reverse-proxy"');
   });
 
   it("attributes a type hit when nothing else matches", () => {
-    const r = result({ title: "Notes", context: "homelab", type: "meeting", tags: [] });
+    const r = result({ title: "Notes", fields: { context: "homelab" }, type: "meeting", tags: [] });
     expect(matchAttribution(r, "meeting")).toBe('matched: type "meeting"');
   });
 
   it("is case-insensitive", () => {
-    const r = result({ title: "Notes", context: "Homelab-Traefik" });
+    const r = result({ title: "Notes", fields: { context: "Homelab-Traefik" } });
     expect(matchAttribution(r, "HOMELAB-TRAEFIK")).toBe('matched: context "Homelab-Traefik"');
   });
 
-  it("prefers title over context/tag/type when multiple fields match", () => {
-    const r = result({ title: "traefik notes", context: "traefik", tags: ["traefik"] });
+  it("prefers title over tag/field/type when multiple fields match", () => {
+    const r = result({ title: "traefik notes", fields: { context: "traefik" }, tags: ["traefik"] });
     expect(matchAttribution(r, "traefik")).toBe('matched: title "traefik notes"');
   });
 
   it("returns null when no field is identifiable", () => {
-    const r = result({ title: "Notes", context: "homelab", type: "note", tags: [] });
+    const r = result({ title: "Notes", fields: { context: "homelab" }, type: "note", tags: [] });
     expect(matchAttribution(r, "traefik")).toBeNull();
   });
 

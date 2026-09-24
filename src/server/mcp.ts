@@ -8,7 +8,7 @@
  *    tiers are collapsed into one MCP tool, same as Python — `rerank` is
  *    accepted but not implemented, matching the Phase 2 stub error).
  *  - `qkb_get`: retrieve a document by id/prefix.
- *  - `qkb_status`: index health (document/chunk/vector counts, contexts).
+ *  - `qkb_status`: index health (counts, vaults, declared fields).
  *
  * The embedding provider and SQLite connection are built ONCE here and
  * shared by every tool call (mirrors Python's finding-9 fix: no fresh
@@ -126,9 +126,9 @@ export async function createContext(cfg?: Config): Promise<QkbContext> {
 function searchToolDescription(cfg: Config): string {
   let d =
     "Search the personal knowledge base (Obsidian vault) with hybrid " +
-    "BM25 + vector retrieval. Filter by context, source, type, tags, or " +
-    "date range. Results include sibling documents and context " +
-    "descriptions.";
+    "BM25 + vector retrieval. Filter by type, tags, date range, vault, or any " +
+    "frontmatter property (`fields: {key: value}`). Each result lists related " +
+    "notes (wikilinks in both directions, shared source).";
   const vaults = configuredVaults(cfg);
   if (vaults.length > 1) {
     d += ` Vaults (filter with \`vaults\`): ${vaults.map((v) => v.name).join(", ")}.`;
@@ -228,12 +228,13 @@ export function createMcpServer(ctx: QkbContext): McpServer {
     "qkb_get",
     {
       description:
-        "Retrieve a document by UUID (full or prefix): metadata, file path, " +
-        "obsidian:// URI, siblings, and optionally the raw markdown body.",
+        "Retrieve a document by id (full or prefix): metadata, every frontmatter " +
+        "property, file path, obsidian:// URI, related notes, and optionally the raw " +
+        "markdown body.",
       inputSchema: {
         document_id: z.string(),
         include_raw: z.boolean().optional(),
-        include_siblings: z.boolean().optional(),
+        include_related: z.boolean().optional(),
       },
     },
     async (args) => {
@@ -244,7 +245,7 @@ export function createMcpServer(ctx: QkbContext): McpServer {
             args.document_id,
             (name) => vaultPathFor(cfgObj, name),
             args.include_raw ?? false,
-            args.include_siblings ?? true,
+            args.include_related ?? true,
           );
           return jsonResult(doc);
         } catch (e) {
@@ -271,8 +272,8 @@ export function createMcpServer(ctx: QkbContext): McpServer {
     "qkb_status",
     {
       description:
-        "Index health: document/chunk counts, vaults, context list with " +
-        "descriptions, declared extra properties, last ingestion time.",
+        "Index health: document/chunk counts, vaults, declared frontmatter " +
+        "fields with their descriptions and most common values, last ingestion time.",
     },
     async () => {
       return withLock(() => {
@@ -288,13 +289,14 @@ export function createMcpServer(ctx: QkbContext): McpServer {
           chunks: stats.chunks,
           vectors: stats.vectors,
           dim: stats.dim,
-          contexts: stats.contexts,
           last_indexed_at: stats.lastIndexedAt,
           vaults: configuredVaults(cfgObj).map((v) => ({
             name: v.name,
             documents: counts.get(v.name) ?? 0,
           })),
           fields: cfgObj.fields,
+          // What each declared field holds, for building `fields` filters.
+          field_values: storage.fieldSummary(cfgObj.fields),
         });
       });
     },

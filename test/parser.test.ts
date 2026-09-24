@@ -1,14 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DEFAULT_FRONTMATTER } from "../src/config.js";
-import {
-  NoteDataError,
-  normalizeContext,
-  parseDateLenient,
-  parseNote,
-} from "../src/ingest/parser.js";
+import { parseDateLenient, parseNote } from "../src/ingest/parser.js";
 
 // Ports legacy/python/tests/test_parser.py — the parser's opt-in/reject
 // decisions and error classification feed the ingestion pipeline's deletion
@@ -128,94 +123,96 @@ describe("ingest/parser", () => {
     });
   });
 
-  describe("normalizeContext", () => {
-    it("trims and lowercases", () => {
-      expect(normalizeContext(" Laundry Tips ")).toBe("laundry tips");
-    });
-
-    it("treats an empty string as absent", () => {
-      expect(normalizeContext("")).toBeNull();
-    });
-
-    it("treats null as absent", () => {
-      expect(normalizeContext(null)).toBeNull();
-    });
-  });
-
-  it("parses a fully-populated indexable note", () => {
+  it("parses a fully-populated note", () => {
     const p = note(
       "a.md",
       "id: f47ac10b-58cc-4372-a567-0e02b2c3d401\n" +
         "type: transcript\n" +
         "title: Project Kickoff\n" +
+        "aliases: [Kickoff, Launch meeting]\n" +
         "context: Acme-Corp-PM-Role\n" +
         "source: 2026-03-15-project-kickoff\n" +
         "created: 2026-03-16T09:00:00-06:00\n" +
         "date: 2026-03-15\n" +
-        "tags: [meeting, kickoff]\n" +
+        "tags: [meeting, '#kickoff']\n" +
         "attendee: Alice Smith",
+      "# Agenda\n\nSee [[Roadmap#Q3|the roadmap]] and ![[diagram.png]].\n\n## Decisions\n",
     );
     const n = parseNote(p, tmpDir, FM);
     expect(n).not.toBeNull();
     expect(n?.effectiveDate).toBe("2026-03-15"); // date > created
     expect(n?.createdAt).toBe("2026-03-16T09:00:00-06:00");
-    expect(n?.context).toBe("acme-corp-pm-role"); // normalized
-    expect(n?.tags).toEqual(["meeting", "kickoff"]);
-    expect(n?.extraMetadata).toEqual({ attendee: "Alice Smith" });
+    expect(n?.tags).toEqual(["meeting", "kickoff"]); // leading # dropped
+    expect(n?.aliases).toEqual(["Kickoff", "Launch meeting"]);
+    expect(n?.headings).toEqual(["Agenda", "Decisions"]);
+    expect(n?.links).toEqual(["Roadmap", "diagram.png"]);
+    // context/source are ordinary properties now (#35)
+    expect(n?.extraMetadata).toEqual({
+      context: "Acme-Corp-PM-Role",
+      source: "2026-03-15-project-kickoff",
+      attendee: "Alice Smith",
+    });
     expect(n?.title).toBe("Project Kickoff");
     expect(n?.filePath).toBe("a.md");
   });
 
-  it("is not indexable without context or source (true opt-out)", () => {
-    const p = note(
-      "b.md",
-      "id: f47ac10b-58cc-4372-a567-0e02b2c3d402\ncreated: 2026-01-01T00:00:00-06:00",
-    );
-    expect(parseNote(p, tmpDir, FM)).toBeNull();
+  it("indexes a note with an id and nothing else (#33)", () => {
+    const p = note("b.md", "id: f47ac10b-58cc-4372-a567-0e02b2c3d402");
+    const n = parseNote(p, tmpDir, FM);
+    expect(n).not.toBeNull();
+    expect(n?.title).toBe("b");
+    expect(n?.type).toBe("note");
   });
 
-  it("treats a blank context as not indexable", () => {
-    const p = note(
-      "c.md",
-      "id: f47ac10b-58cc-4372-a567-0e02b2c3d403\ncontext:\ncreated: 2026-01-01T00:00:00-06:00",
-    );
-    expect(parseNote(p, tmpDir, FM)).toBeNull();
-  });
-
-  it("raises NoteDataError when an opted-in note has no id", () => {
-    // Finding 2 (follow-up): an OPTED-IN note (has context) that is
-    // unindexable because it has no id must RAISE, not return null - so the
-    // pipeline protects a previously-indexed entry instead of de-indexing it.
+  it("does not index a note without an id — returns null, never throws (#33)", () => {
     const p = note("no-id.md", "context: homelab\ncreated: 2026-01-01T00:00:00-06:00");
-    expect(() => parseNote(p, tmpDir, FM)).toThrow(NoteDataError);
+    expect(parseNote(p, tmpDir, FM)).toBeNull();
+    const bare = join(tmpDir, "bare.md");
+    writeFileSync(bare, "Just text, no frontmatter.\n");
+    expect(parseNote(bare, tmpDir, FM)).toBeNull();
   });
 
-  it("raises NoteDataError when an opted-in note has no parseable date", () => {
-    // Finding 2 (follow-up): an OPTED-IN note with no parseable date (and no
-    // valid alias) must RAISE, not return null.
+  it("falls back to the file's modification time when no date property parses (#33)", () => {
     const p = note(
       "no-date.md",
-      "id: f47ac10b-58cc-4372-a567-0e02b2c3d40a\ncontext: homelab\ndate: <% tp.date.now() %>",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d40a\ndate: <% tp.date.now() %>",
     );
-    expect(() => parseNote(p, tmpDir, FM)).toThrow(NoteDataError);
+    const when = new Date("2025-06-01T12:34:56Z");
+    utimesSync(p, when, when);
+    const n = parseNote(p, tmpDir, FM);
+    expect(n?.effectiveDate).toBe("2025-06-01");
+    expect(n?.createdAt).toBe("2025-06-01T12:34:56.000Z");
   });
 
-  it("still returns null for a true opt-out (no context AND no source)", () => {
-    // Regression: a TRUE opt-out still returns null - a legitimate de-index,
-    // not a data error.
+  it("uses `modified` when neither date nor created is present", () => {
+    const p = note("m.md", "id: f47ac10b-58cc-4372-a567-0e02b2c3d40b\nmodified: 2026-04-02");
+    expect(parseNote(p, tmpDir, FM)?.effectiveDate).toBe("2026-04-02");
+  });
+
+  it("ignores headings and links inside fenced code blocks", () => {
     const p = note(
-      "optout.md",
-      "id: f47ac10b-58cc-4372-a567-0e02b2c3d40b\ncreated: 2026-01-01T00:00:00-06:00",
+      "code.md",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d40d",
+      "# Real\n\n```md\n# Not a heading\n[[Not a link]]\n```\n\n~~~\n## Also not\n~~~\n\n[[Real link]]\n",
     );
-    expect(parseNote(p, tmpDir, FM)).toBeNull();
+    const n = parseNote(p, tmpDir, FM);
+    expect(n?.headings).toEqual(["Real"]);
+    expect(n?.links).toEqual(["Real link"]);
+  });
+
+  it("a declared field is picked up from any property, including context", () => {
+    const p = note(
+      "f.md",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d40e\ncontext: homelab\ncompany: Acme",
+    );
+    const n = parseNote(p, tmpDir, FM, ["context", "company"]);
+    expect(n?.fields).toEqual({ context: "homelab", company: "Acme" });
   });
 
   it("falls back to the legacy 'date created' key and filename for title", () => {
     const p = note(
       "My Note.md",
-      "id: f47ac10b-58cc-4372-a567-0e02b2c3d404\n" +
-        "context: homelab\n" +
-        "date created: 2025-09-27T10:31:30-05:00",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d404\n" + "date created: 2025-09-27T10:31:30-05:00",
     );
     const n = parseNote(p, tmpDir, FM);
     expect(n).not.toBeNull();
@@ -228,7 +225,6 @@ describe("ingest/parser", () => {
     const p = note(
       "d.md",
       "id: f47ac10b-58cc-4372-a567-0e02b2c3d405\n" +
-        "context: homelab\n" +
         "date: <% tp.date.now() %>\n" +
         "created: 2026-02-02T08:00:00-06:00",
     );
@@ -244,7 +240,6 @@ describe("ingest/parser", () => {
     const p = note(
       "f.md",
       "id: f47ac10b-58cc-4372-a567-0e02b2c3d407\n" +
-        "context: homelab\n" +
         "created: <% tp.date.now() %>\n" +
         "date created: 2026-07-01",
     );
@@ -262,7 +257,6 @@ describe("ingest/parser", () => {
     const p = note(
       "g.md",
       "id: f47ac10b-58cc-4372-a567-0e02b2c3d408\n" +
-        "context: homelab\n" +
         "date: 2026-06-01\n" +
         "created: <% tp.date.now() %>",
     );
@@ -279,7 +273,6 @@ describe("ingest/parser", () => {
     const p = note(
       "h.md",
       "id: f47ac10b-58cc-4372-a567-0e02b2c3d409\n" +
-        "context: homelab\n" +
         "created: 2026-02-02T08:00:00-06:00\n" +
         "date created: 2020-01-01",
     );
@@ -296,9 +289,7 @@ describe("ingest/parser", () => {
     // see parser.ts), so the parser must canonicalize the separator itself.
     const p = note(
       "space-sep.md",
-      "id: f47ac10b-58cc-4372-a567-0e02b2c3d40d\n" +
-        "context: homelab\n" +
-        "created: 2026-03-16 09:00:00-06:00",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d40d\n" + "created: 2026-03-16 09:00:00-06:00",
     );
     const n = parseNote(p, tmpDir, FM);
     expect(n).not.toBeNull();
@@ -325,9 +316,7 @@ describe("ingest/parser", () => {
   it("normalizes a 'Z' suffix to '+00:00' (T-separated)", () => {
     const p = note(
       "z-suffix-t.md",
-      "id: f47ac10b-58cc-4372-a567-0e02b2c3d410\n" +
-        "context: homelab\n" +
-        "created: 2026-03-16T09:00:00Z",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d410\n" + "created: 2026-03-16T09:00:00Z",
     );
     const n = parseNote(p, tmpDir, FM);
     expect(n).not.toBeNull();
@@ -337,9 +326,7 @@ describe("ingest/parser", () => {
   it("normalizes a 'Z' suffix to '+00:00' (space-separated)", () => {
     const p = note(
       "z-suffix-space.md",
-      "id: f47ac10b-58cc-4372-a567-0e02b2c3d411\n" +
-        "context: homelab\n" +
-        "created: 2026-03-16 09:00:00Z",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d411\n" + "created: 2026-03-16 09:00:00Z",
     );
     const n = parseNote(p, tmpDir, FM);
     expect(n).not.toBeNull();
@@ -349,9 +336,7 @@ describe("ingest/parser", () => {
   it("zero-pads and colonizes a short (hour-only) offset", () => {
     const p = note(
       "short-offset.md",
-      "id: f47ac10b-58cc-4372-a567-0e02b2c3d412\n" +
-        "context: homelab\n" +
-        "created: 2026-03-16T09:00:00-06",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d412\n" + "created: 2026-03-16T09:00:00-06",
     );
     const n = parseNote(p, tmpDir, FM);
     expect(n).not.toBeNull();
@@ -361,9 +346,7 @@ describe("ingest/parser", () => {
   it("zero-pads a single-digit offset hour", () => {
     const p = note(
       "single-digit-offset.md",
-      "id: f47ac10b-58cc-4372-a567-0e02b2c3d413\n" +
-        "context: homelab\n" +
-        "created: 2026-03-16T09:00:00+6:00",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d413\n" + "created: 2026-03-16T09:00:00+6:00",
     );
     const n = parseNote(p, tmpDir, FM);
     expect(n).not.toBeNull();
@@ -373,9 +356,7 @@ describe("ingest/parser", () => {
   it("renders fractional seconds the way Python's isoformat would (padded to 6 digits)", () => {
     const p = note(
       "fraction.md",
-      "id: f47ac10b-58cc-4372-a567-0e02b2c3d414\n" +
-        "context: homelab\n" +
-        "created: 2026-03-16T09:00:00.5",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d414\n" + "created: 2026-03-16T09:00:00.5",
     );
     const n = parseNote(p, tmpDir, FM);
     expect(n).not.toBeNull();
@@ -385,9 +366,7 @@ describe("ingest/parser", () => {
   it("leaves a naive (no-offset) timestamp with 'T' already unchanged", () => {
     const p = note(
       "naive.md",
-      "id: f47ac10b-58cc-4372-a567-0e02b2c3d415\n" +
-        "context: homelab\n" +
-        "created: 2026-03-16T09:00:00",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d415\n" + "created: 2026-03-16T09:00:00",
     );
     const n = parseNote(p, tmpDir, FM);
     expect(n).not.toBeNull();
@@ -400,9 +379,7 @@ describe("ingest/parser", () => {
   it("resolves single-digit month/day/hour with a time part (PyYAML resolver shape)", () => {
     const p = note(
       "single-digit-with-time.md",
-      "id: f47ac10b-58cc-4372-a567-0e02b2c3d416\n" +
-        "context: homelab\n" +
-        "created: 2026-3-16 9:00:00",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d416\n" + "created: 2026-3-16 9:00:00",
     );
     const n = parseNote(p, tmpDir, FM);
     expect(n).not.toBeNull();
@@ -414,34 +391,27 @@ describe("ingest/parser", () => {
     const fm: Record<string, string[]> = Object.fromEntries(
       Object.entries(DEFAULT_FRONTMATTER).map(([k, v]) => [k, [...v]]),
     );
-    fm.context = ["category"];
-    const p = note(
-      "e.md",
-      "id: f47ac10b-58cc-4372-a567-0e02b2c3d406\n" +
-        "category: recipes\ncreated: 2026-01-01T00:00:00-06:00",
-    );
+    fm.id = ["uuid"];
+    const p = note("e.md", "uuid: f47ac10b-58cc-4372-a567-0e02b2c3d406\ncreated: 2026-01-01");
     const n = parseNote(p, tmpDir, fm);
-    expect(n).not.toBeNull();
-    expect(n?.context).toBe("recipes");
+    expect(n?.id).toBe("f47ac10b-58cc-4372-a567-0e02b2c3d406");
   });
 
   it("does not mis-parse a '---' delimiter inside a fenced code block in the body", () => {
     // Fenced example uses a key ("fenced_example_key") that isn't one of the
     // CORE_KEYS aliases: if gray-matter mis-parsed the fence as a second
-    // frontmatter block, this key would surface in extraMetadata and/or
-    // "homelab" would be overwritten by the fence's "context: fake".
+    // frontmatter block, this key (and the fence's "context: fake") would
+    // surface in extraMetadata.
     const p = note(
       "fenced.md",
-      "id: f47ac10b-58cc-4372-a567-0e02b2c3d40c\n" +
-        "context: homelab\n" +
-        "created: 2026-01-01T00:00:00-06:00",
+      "id: f47ac10b-58cc-4372-a567-0e02b2c3d40c\nstatus: real\ncreated: 2026-01-01T00:00:00-06:00",
       "Here is an example frontmatter block:\n\n" +
         "```yaml\n---\ncontext: fake\nfenced_example_key: fenced_example_value\n---\n```\n\n" +
         "More body text after the fence.",
     );
     const n = parseNote(p, tmpDir, FM);
     expect(n).not.toBeNull();
-    expect(n?.context).toBe("homelab");
+    expect(n?.extraMetadata).toEqual({ status: "real" }); // nothing from the fence
     expect(n?.body).toContain(
       "```yaml\n---\ncontext: fake\nfenced_example_key: fenced_example_value\n---\n```",
     );

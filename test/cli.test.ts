@@ -247,42 +247,36 @@ describe("qkb CLI (subprocess)", () => {
     });
 
     it("shows a match attribution (not document-head noise) for a metadata-column-only match", () => {
-      // "homelab-traefik" only appears in frontmatter (context), never in
-      // the body, so the FTS5 body snippet degrades to the document's
-      // opening words with no [markers] — the old behavior printed that
-      // noise verbatim; the new behavior must attribute the hit instead.
+      // "homelab-traefik" only appears in frontmatter (a tag), never in the
+      // body, so the FTS5 body snippet degrades to the document's opening
+      // words with no [markers] — the result must attribute the hit instead.
       writeNote("a.md", ID1, {
-        context: "homelab-traefik",
+        extra: "tags: [homelab-traefik]\n",
         body: "Some unrelated body text about DNS and adguard configuration.",
       });
       run(["ingest"]);
 
       const result = run(["search", "homelab-traefik"]);
       expect(result.exitCode).toBe(0);
-      expect(result.output).toContain('matched: context "homelab-traefik"');
+      expect(result.output).toContain('matched: tag "homelab-traefik"');
       // must NOT print the useless body-head snippet
       expect(result.output).not.toContain("Some unrelated body text");
     });
 
-    it("does not mistake a body's literal markdown brackets for match markers (checklist + wikilink opening, context-only match)", () => {
-      // Reviewer-proven bracket-sniffing bug: a body that legitimately
-      // OPENS with `- [ ]` checklist syntax and a `[[wikilink]]` contains
-      // literal `[`/`]` that have nothing to do with the actual match (the
-      // query only matches the context column) — bracket-sniffing
-      // `matched_text` for "was this a real hit" printed that checklist
-      // text as if it were highlighted evidence. Real match markers must be
-      // an internal signal the document's own content can never produce.
+    it("does not mistake a body's literal markdown brackets for match markers (checklist + wikilink opening, tag-only match)", () => {
+      // A body that OPENS with `- [ ]` checklist syntax and a `[[wikilink]]`
+      // contains literal `[`/`]` that have nothing to do with the match (the
+      // query only matches a tag) — real match markers must be an internal
+      // signal the document's own content can never produce.
       writeNote("a.md", ID1, {
-        context: "homelab-traefik",
+        extra: "tags: [homelab-traefik]\n",
         body: "- [ ] buy milk\nSee [[grocery list]] for more.",
       });
       run(["ingest"]);
 
       const result = run(["search", "homelab-traefik"]);
       expect(result.exitCode).toBe(0);
-      expect(result.output).toContain('matched: context "homelab-traefik"');
-      // must NOT print the checklist/wikilink body text as if it were
-      // real match evidence.
+      expect(result.output).toContain('matched: tag "homelab-traefik"');
       expect(result.output).not.toContain("buy milk");
       expect(result.output).not.toContain("grocery list");
     });
@@ -370,93 +364,6 @@ describe("qkb CLI (subprocess)", () => {
       expect(result.output).not.toMatch(/\b\d+\.\d{4,}\b/);
     });
 
-    it('prints the "is a context" tip on stderr when the query exactly equals a context name', () => {
-      writeNote("a.md", ID1, { context: "homelab-traefik", body: "Renewing certificates." });
-      run(["ingest"]);
-
-      const result = run(["search", "homelab-traefik"]);
-      expect(result.exitCode).toBe(0);
-      expect(result.output).toContain(
-        'tip: "homelab-traefik" is a context — use --context homelab-traefik to browse it',
-      );
-    });
-
-    it("does NOT print the context tip for an ordinary query that isn't a context name", () => {
-      writeNote("a.md", ID1, { context: "homelab-traefik", body: "Renewing certificates." });
-      run(["ingest"]);
-
-      const result = run(["search", "certificates"]);
-      expect(result.exitCode).toBe(0);
-      expect(result.output).not.toContain("is a context");
-    });
-
-    it("does NOT print the context tip when the query matches a context name but there are zero results", () => {
-      writeNote("a.md", ID1, { context: "homelab-traefik", body: "Renewing certificates." });
-      run(["ingest"]);
-
-      // "empty-context" isn't a real context and matches nothing.
-      const result = run(["search", "empty-context"]);
-      expect(result.exitCode).toBe(0);
-      expect(result.output).not.toContain("is a context");
-    });
-
-    it("does NOT print the context tip for --json or --files output", () => {
-      writeNote("a.md", ID1, { context: "homelab-traefik", body: "Renewing certificates." });
-      run(["ingest"]);
-
-      const asJson = run(["search", "homelab-traefik", "--json"]);
-      expect(asJson.output).not.toContain("is a context");
-      JSON.parse(asJson.output); // still valid, unadorned JSON
-
-      const asFiles = run(["search", "homelab-traefik", "--files"]);
-      expect(asFiles.output).not.toContain("is a context");
-    });
-
-    it("--json output is unaffected by the evidence/score/tip changes (byte-identical contract)", () => {
-      writeNote("a.md", ID1, {
-        context: "homelab-traefik",
-        body: "Renewing traefik certificates for the homelab reverse proxy.",
-      });
-      run(["ingest"]);
-
-      const result = run(["search", "traefik", "--json"]);
-      expect(result.exitCode).toBe(0);
-      const results = JSON.parse(result.output) as Array<Record<string, unknown>>;
-      expect(results).toHaveLength(1);
-      expect(results[0]?.document_id).toBe(ID1);
-      // raw score still a plain unbounded float, never a "NN%" string
-      expect(typeof results[0]?.score).toBe("number");
-      expect(results[0]?.matched_text).toContain("[traefik]");
-      // `obsidian_uri` was already part of the --json contract before the
-      // human-output URI line was added — same key, same value, unaffected
-      // by that addition (owner-feedback follow-up).
-      expect(results[0]?.obsidian_uri).toMatch(/^obsidian:\/\/open\?vault=.*&file=.*$/);
-      // the result's key set is exactly hydrate's contract — no stray key
-      // leaked in from either the URI line or stopword-marker stripping.
-      expect(Object.keys(results[0] as object).sort()).toEqual(
-        [
-          "context",
-          "context_description",
-          "document_id",
-          "effective_date",
-          "file_path",
-          "matched_text",
-          "obsidian_uri",
-          "score",
-          "siblings",
-          "source",
-          "tags",
-          "title",
-          "type",
-          // added deliberately for multi-vault (#23) and declared fields (#24)
-          "vault",
-          "fields",
-        ].sort(),
-      );
-      // nothing besides valid JSON on stdout+stderr
-      expect(result.output.trim().startsWith("[")).toBe(true);
-    });
-
     it("--json matched_text round-trips a real match byte-exact to public [markers], with no internal control-char markers leaked, even with unrelated literal brackets in the body (checklist/wikilink)", () => {
       // searchBm25 marks a real hit internally with control chars, not
       // literal `[`/`]` (issue #14 critical fix), specifically so a body's
@@ -487,7 +394,7 @@ describe("qkb CLI (subprocess)", () => {
 
     it("--json matched_text for a marker-less (metadata-only) match stays the plain document-head snippet — no stray brackets inserted, no leaked control chars", () => {
       writeNote("a.md", ID1, {
-        context: "homelab-traefik",
+        extra: "tags: [homelab-traefik]\n",
         body: "Some unrelated body text about DNS and adguard configuration.",
       });
       run(["ingest"]);
@@ -517,34 +424,53 @@ describe("qkb CLI (subprocess)", () => {
     });
   });
 
-  it("search --files format and context filter", () => {
+  it("search --files format, --field filter, and the deprecated --context shorthand", () => {
     writeNote("a.md", ID1, { body: "Renewing traefik certificates." });
     run(["ingest"]);
 
-    const hit = run(["search", "traefik", "--files", "--context", "homelab"]);
+    const hit = run(["search", "traefik", "--files", "--field", "context=homelab"]);
     expect(hit.exitCode).toBe(0);
     expect(hit.output.trim().split(",")[0]).toBe(ID1);
+    expect(hit.output.trim().split(",")[3]).toBe("Notes"); // 4th column: vault
 
-    const miss = run(["search", "traefik", "--files", "--context", "nonexistent"]);
+    const miss = run(["search", "traefik", "--files", "--field", "context=nonexistent"]);
     expect(miss.output.trim()).toBe("");
+
+    // --context still works for one release, with a note on stderr
+    const legacy = run(["search", "traefik", "--files", "--context", "homelab"]);
+    expect(legacy.output).toContain("--context is deprecated");
+    expect(legacy.output).toContain(ID1);
   });
 
-  it("get, contexts, and status", () => {
+  it("get, fields, and status", () => {
+    writeFileSync(
+      env.QKB_CONFIG as string,
+      '[frontmatter.fields]\ncontext = "Area of life a note belongs to"\n',
+    );
     writeNote("a.md", ID1);
     run(["ingest"]);
 
     // `get` and `status` always emit JSON now (the dead --json flag on
     // `get` was removed — see the dedicated test below).
     const got = run(["get", ID1.slice(0, 8)]);
-    expect((JSON.parse(got.output) as { document_id: string }).document_id).toBe(ID1);
+    const doc = JSON.parse(got.output) as { document_id: string; fields: Record<string, string> };
+    expect(doc.document_id).toBe(ID1);
+    expect(doc.fields).toEqual({ context: "homelab" });
 
-    const described = run(["context", "describe", "homelab", "Home server notes"]);
-    expect(described.exitCode).toBe(0);
-
-    const contexts = run(["contexts", "--json"]);
-    const rows = JSON.parse(contexts.output) as Array<{ context: string; description: string }>;
-    expect(rows[0]?.context).toBe("homelab");
-    expect(rows[0]?.description).toBe("Home server notes");
+    const fields = run(["fields", "--json"]);
+    const rows = JSON.parse(fields.output) as Array<{
+      field: string;
+      description: string;
+      documents: number;
+    }>;
+    expect(rows).toEqual([
+      {
+        field: "context",
+        description: "Area of life a note belongs to",
+        documents: 1,
+        top_values: [{ value: "homelab", count: 1 }],
+      },
+    ]);
 
     const statusJson = run(["status", "--json"]);
     expect((JSON.parse(statusJson.output) as { documents: number }).documents).toBe(1);
@@ -555,22 +481,15 @@ describe("qkb CLI (subprocess)", () => {
     expect(statusHuman.output).toContain("fake");
   });
 
-  it("context describe normalizes the label (trim + lowercase, via normalizeContext)", () => {
+  it("the removed context commands point at their replacements", () => {
     writeNote("a.md", ID1);
     run(["ingest"]);
-
-    const described = run(["context", "describe", "  Homelab  ", "Home server notes"]);
-    expect(described.exitCode).toBe(0);
-
     const contexts = run(["contexts", "--json"]);
-    const rows = JSON.parse(contexts.output) as Array<{ context: string; description: string }>;
-    expect(rows[0]?.context).toBe("homelab");
-    expect(rows[0]?.description).toBe("Home server notes");
-  });
-
-  it("context describe rejects an empty/whitespace-only label (exit code 2, like Click's UsageError)", () => {
-    const result = run(["context", "describe", "   ", "desc"]);
-    expect(result.exitCode).toBe(2);
+    expect(contexts.exitCode).toBe(0);
+    expect(contexts.output).toContain("`qkb contexts` is now `qkb fields`");
+    const describe = run(["context", "describe", "homelab", "Home server notes"]);
+    expect(describe.exitCode).toBe(2);
+    expect(describe.output).toContain("[frontmatter.fields]");
   });
 
   it("get rejects the removed --json flag (exit code 2, like Click's UsageError); status still accepts it", () => {
@@ -609,11 +528,11 @@ describe("qkb CLI (subprocess)", () => {
     const lines = hit.output
       .trim()
       .split("\n")
-      .filter((l) => l.length > 0);
+      .filter((l) => l.length > 0 && !l.startsWith("note:"));
     expect(lines).toHaveLength(1);
     expect(lines[0]?.split(",")[0]).toBe(ID1);
 
-    const miss = run(["search", "traefik", "--files", "--source", "nonexistent"]);
+    const miss = run(["search", "traefik", "--files", "--field", "source=nonexistent"]);
     expect(miss.output.trim()).toBe("");
   });
 
@@ -763,40 +682,24 @@ describe("qkb CLI (subprocess)", () => {
     expect(result.output).not.toContain("Loading embedding model");
   });
 
-  it("ingest -v lists every skipped note; without -v it prints a hint instead", () => {
-    // No `id:` -> NoteDataError -> skipped ("no id"), since the note is
-    // opted in (has context) but unindexable.
-    writeFileSync(
-      join(vault, "no-id.md"),
-      "---\ncontext: homelab\ncreated: 2026-01-01T00:00:00-06:00\n---\n\nbody\n",
-    );
+  it("ingest -v lists every skipped note; without -v it prints a hint instead; notes without an id are counted", () => {
+    // Unparseable frontmatter -> skipped with a reason.
+    writeFileSync(join(vault, "broken.md"), "---\nid: [unclosed\n---\n\nbody\n");
+    // No id -> not indexed, counted (not a skip reason).
+    writeFileSync(join(vault, "no-id.md"), "---\ncreated: 2026-01-01\n---\n\nbody\n");
     const quiet = run(["ingest"]);
     expect(quiet.exitCode).toBe(0);
+    expect(quiet.output).toContain("1 note(s) have no `id`");
     expect(quiet.output).toContain("1 note(s) skipped");
     expect(quiet.output).toContain("qkb ingest -v");
-    expect(quiet.output).not.toContain("no-id.md");
+    expect(quiet.output).not.toContain("broken.md");
 
-    writeFileSync(
-      join(vault, "no-id2.md"),
-      "---\ncontext: homelab\ncreated: 2026-01-01T00:00:00-06:00\n---\n\nbody2\n",
-    );
+    writeFileSync(join(vault, "broken2.md"), "---\nid: [unclosed\n---\n\nbody2\n");
     const verbose = run(["ingest", "-v"]);
     expect(verbose.exitCode).toBe(0);
-    expect(verbose.output).toContain("no-id2.md");
+    expect(verbose.output).toContain("broken2.md");
   });
 
-  // Fix round 1 (CLI review, IMPORTANT finding): a real SIGINT during
-  // structural ingest used to never be observed at all — the old handler
-  // called process.exit() directly, but the file loop had no event-loop
-  // yield point for Node to ever run that handler during a run. Fixed via
-  // a cooperative `AbortSignal` the pipeline checks (with a real yield)
-  // once per file — see src/ingest/pipeline.ts. This is a genuine,
-  // non-flaky real-process/real-signal test (not just the deterministic
-  // pipeline-level ones in test/pipeline.test.ts): 1500 files makes
-  // structural ingest take long enough (several hundred ms) that a SIGINT
-  // sent after a fixed 400ms delay reliably lands mid-run — verified by
-  // hand across 5 repeated runs with zero flakes before landing this
-  // delay/count pair (see ts-task-15-report.md's "Fix round 1" section).
   it("real SIGINT during a large ingest run stops it partway, exits 130, and is resumable", async () => {
     for (let i = 0; i < 1500; i++) {
       writeNote(`note-${i}.md`, `aaaaaaaa-bbbb-cccc-dddd-${String(i).padStart(12, "0")}`, {

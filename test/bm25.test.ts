@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DEFAULT_FTS_WEIGHTS } from "../src/config.js";
 import { connect } from "../src/db/schema.js";
 import { contentHash, Storage } from "../src/db/storage.js";
 import { FakeProvider } from "../src/embed/fake.js";
@@ -7,6 +8,7 @@ import { chunkText } from "../src/ingest/chunker.js";
 import { sanitizeQuery, searchBm25 } from "../src/search/bm25.js";
 import { Filters } from "../src/search/filters.js";
 import type { ParsedNote } from "../src/types.js";
+import { type NoteOverrides, withProps } from "./helpers/note.js";
 
 // Ports legacy/python/tests/test_bm25.py — weighted bm25(documents_fts,
 // 5,3,2,1,0.5), FTS5 MATCH query escaping, filter application, candidate
@@ -14,18 +16,16 @@ import type { ParsedNote } from "../src/types.js";
 // SQL and weights must be identical to bm25.py, not just "close enough".
 
 const DIM = 8;
-const W = [5.0, 3.0, 2.0, 1.0, 0.5];
+const W = { ...DEFAULT_FTS_WEIGHTS };
 
 const ID_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const ID_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
-function makeNote(overrides: Partial<ParsedNote> = {}): ParsedNote {
+function makeNote(overrides: NoteOverrides = {}): ParsedNote {
   const base: ParsedNote = {
     id: "f47ac10b-58cc-4372-a567-0e02b2c3d401",
     type: "note",
     title: "Traefik Cert Renewal",
-    context: "homelab-traefik",
-    source: null,
     effectiveDate: "2026-03-15",
     createdAt: "2026-03-15T10:00:00-06:00",
     tags: ["networking", "ssl"],
@@ -33,7 +33,7 @@ function makeNote(overrides: Partial<ParsedNote> = {}): ParsedNote {
     body: "# Traefik\n\nRenewing certificates requires restarting the proxy container.",
     filePath: "02-Areas/Homelab/Traefik Cert Renewal.md",
   };
-  return { ...base, ...overrides };
+  return withProps(base, overrides, { context: "homelab-traefik", source: null });
 }
 
 /** Chunk + embed + upsert a note (test helper mirroring the pipeline) —

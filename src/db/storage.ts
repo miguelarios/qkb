@@ -13,6 +13,14 @@ import type { Chunk, ParsedNote } from "../types.js";
 import { embeddingText, RESERVED_METADATA_KEY, renderFields } from "../types.js";
 import { placeholders, rebuildVectorTable, vectorTableDimension } from "./schema.js";
 
+/** The lowercase keys a `[[wikilink]]` can use to name this file: its file
+ * name and its vault path, both without `.md`. */
+export function linkKeys(filePath: string): { stem: string; path: string } {
+  const path = (filePath.endsWith(".md") ? filePath.slice(0, -3) : filePath).toLowerCase();
+  const slash = path.lastIndexOf("/");
+  return { stem: slash === -1 ? path : path.slice(slash + 1), path };
+}
+
 export function contentHash(body: string): string {
   return createHash("sha256").update(body, "utf-8").digest("hex");
 }
@@ -51,8 +59,7 @@ export function metadataHash(note: ParsedNote, vaultName = "Notes"): string {
   const parts = [
     note.title || "",
     note.type,
-    note.context ?? "",
-    note.source ?? "",
+    [...(note.aliases ?? [])].sort(codepointCompare).join(_ITEM_SEP),
     note.effectiveDate,
     note.createdAt,
     note.filePath,
@@ -72,10 +79,14 @@ export function metadataHash(note: ParsedNote, vaultName = "Notes"): string {
   return createHash("sha256").update(parts.join(_FIELD_SEP), "utf-8").digest("hex");
 }
 
-export interface ContextRow {
-  context: string;
-  count: number;
-  description: string | null;
+/** A declared field's usage, for `qkb fields` / `qkb_status`. */
+export interface FieldRow {
+  field: string;
+  description: string;
+  /** Notes carrying the field. */
+  documents: number;
+  /** Most common values, most frequent first. */
+  top_values: { value: string; count: number }[];
 }
 
 export interface Stats {
@@ -83,7 +94,6 @@ export interface Stats {
   chunks: number;
   vectors: number | null;
   dim: number | null;
-  contexts: ContextRow[];
   lastIndexedAt: string | null;
 }
 
@@ -149,22 +159,21 @@ export class Storage {
     this.conn
       .prepare(
         `INSERT INTO documents
-           (id, type, context, source, effective_date, created_at,
-            file_path, content_hash, title, vault_name, fields_text)
+           (id, type, effective_date, created_at,
+            file_path, content_hash, title, vault_name, fields_text, stem_key, path_key)
            VALUES (?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET
-             type=excluded.type, context=excluded.context, source=excluded.source,
+             type=excluded.type,
              effective_date=excluded.effective_date, created_at=excluded.created_at,
              file_path=excluded.file_path, content_hash=excluded.content_hash,
              title=excluded.title, vault_name=excluded.vault_name,
              fields_text=excluded.fields_text,
+             stem_key=excluded.stem_key, path_key=excluded.path_key,
              indexed_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')`,
       )
       .run(
         note.id,
         note.type,
-        note.context,
-        note.source,
         note.effectiveDate,
         note.createdAt,
         note.filePath,
@@ -172,6 +181,8 @@ export class Storage {
         note.title,
         this.vaultName,
         renderFields(note.fields ?? {}),
+        linkKeys(note.filePath).stem,
+        linkKeys(note.filePath).path,
       );
   }
 
@@ -179,17 +190,19 @@ export class Storage {
     this.conn.prepare("DELETE FROM documents_fts WHERE doc_id = ?").run(note.id);
     this.conn
       .prepare(
-        "INSERT INTO documents_fts (title, tags, context, body, type, doc_id, fields) " +
-          "VALUES (?,?,?,?,?,?,?)",
+        "INSERT INTO documents_fts " +
+          "(title, aliases, headings, tags, fields, body, type, doc_id) " +
+          "VALUES (?,?,?,?,?,?,?,?)",
       )
       .run(
         note.title,
+        (note.aliases ?? []).join("\n"),
+        (note.headings ?? []).join("\n"),
         note.tags.join(" "),
-        note.context ?? "",
+        renderFields(note.fields ?? {}),
         note.body,
         note.type,
         note.id,
-        renderFields(note.fields ?? {}),
       );
   }
 
@@ -199,6 +212,18 @@ export class Storage {
     for (const t of new Set(note.tags)) {
       insertTag.run(note.id, t);
     }
+    this.conn.prepare("DELETE FROM aliases WHERE document_id = ?").run(note.id);
+    const insertAlias = this.conn.prepare("INSERT INTO aliases (document_id, alias) VALUES (?,?)");
+    for (const a of new Set(note.aliases ?? [])) {
+      insertAlias.run(note.id, a);
+    }
+    this.conn.prepare("DELETE FROM links WHERE document_id = ?").run(note.id);
+    const insertLink = this.conn.prepare(
+      "INSERT INTO links (document_id, target, position) VALUES (?,?,?)",
+    );
+    [...new Set((note.links ?? []).map((t) => t.toLowerCase()))].forEach((l, i) => {
+      insertLink.run(note.id, l, i);
+    });
     this.conn.prepare("DELETE FROM metadata WHERE document_id = ?").run(note.id);
     // Drop any user frontmatter key colliding with our reserved hash key —
     // see storage.py's `_write_tags_and_metadata` for why (PK collision would
@@ -489,53 +514,28 @@ export class Storage {
     return row !== undefined && row.value === "1";
   }
 
-  /** Store/clear a context's description, keyed by its NORMALIZED label.
-   * Normalizes `context` here rather than trusting the caller to have
-   * already done it — mirrors `normalize_context`'s
-   * `str(value).strip().lower() or None` exactly. */
-  setContextDescription(context: string, description: string | null): void {
-    const trimmed = String(context).trim().toLowerCase();
-    const normalized = trimmed === "" ? null : trimmed;
-    if (normalized === null) {
-      throw new Error("context must not be empty");
-    }
-    const tx = this.conn.transaction(() => {
-      if (description === null) {
-        this.conn.prepare("DELETE FROM context_descriptions WHERE context = ?").run(normalized);
-      } else {
-        this.conn
-          .prepare(
-            "INSERT INTO context_descriptions (context, description) VALUES (?,?) " +
-              "ON CONFLICT(context) DO UPDATE SET description=excluded.description",
-          )
-          .run(normalized, description);
+  /** Usage of each declared field: how many notes carry it and its most
+   * common values (list values count per item). */
+  fieldSummary(fields: Record<string, string>, topN = 5): FieldRow[] {
+    const rows: FieldRow[] = [];
+    const values = this.conn.prepare("SELECT value FROM metadata WHERE key = ?");
+    for (const [field, description] of Object.entries(fields)) {
+      const counts = new Map<string, number>();
+      let documents = 0;
+      for (const r of values.all(field) as { value: string }[]) {
+        documents++;
+        for (const v of r.value.split(", ")) {
+          const t = v.trim();
+          if (t) counts.set(t, (counts.get(t) ?? 0) + 1);
+        }
       }
-    });
-    tx();
-  }
-
-  listContexts(): ContextRow[] {
-    return this.conn
-      .prepare(
-        `SELECT d.context AS context, COUNT(*) AS count, cd.description AS description
-           FROM documents d
-           LEFT JOIN context_descriptions cd ON cd.context = d.context
-           WHERE d.context IS NOT NULL
-           GROUP BY d.context ORDER BY count DESC, d.context`,
-      )
-      .all() as ContextRow[];
-  }
-
-  /** Cheap existence check for a single context name — an indexed point
-   * lookup (`idx_documents_context`) rather than `listContexts`' full
-   * `GROUP BY` aggregation over every document. Used by the CLI's
-   * search-time "is this query exactly a context name?" tip (issue #14),
-   * which runs on every human-output search and only needs a yes/no. */
-  hasContext(context: string): boolean {
-    return (
-      this.conn.prepare("SELECT 1 FROM documents WHERE context = ? LIMIT 1").get(context) !==
-      undefined
-    );
+      const top_values = [...counts.entries()]
+        .sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1))
+        .slice(0, topN)
+        .map(([value, count]) => ({ value, count }));
+      rows.push({ field, description, documents, top_values });
+    }
+    return rows;
   }
 
   stats(): Stats {
@@ -559,7 +559,6 @@ export class Storage {
       chunks,
       vectors,
       dim: vectorTableDimension(this.conn),
-      contexts: this.listContexts(),
       lastIndexedAt: last.m,
     };
   }

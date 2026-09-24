@@ -22,7 +22,8 @@ export interface Config {
   rrfK: number;
   vecCandidates: number;
   ftsCandidates: number;
-  ftsWeights: number[];
+  /** BM25 weight per FTS column (see FTS_COLUMNS in src/db/schema.ts). */
+  ftsWeights: Record<string, number>;
   frontmatter: Record<string, string[]>;
   openaiBaseUrl: string | null;
   openaiApiKey: string | null;
@@ -60,15 +61,18 @@ export function vaultPathFor(cfg: Config, vaultName: string): string | undefined
   return configuredVaults(cfg).find((v) => v.name === vaultName)?.path;
 }
 
+/** Built-in properties qkb understands without configuration, each with its
+ * accepted aliases. Only `id` is required (#33); everything else is
+ * optional. Any other property can be declared in `[frontmatter.fields]`. */
 export const DEFAULT_FRONTMATTER: Record<string, string[]> = {
   id: ["id"],
   type: ["type"],
   title: ["title"],
-  context: ["context"],
-  source: ["source"],
+  aliases: ["aliases", "alias"],
   date: ["date"],
   created: ["created", "date created"],
-  tags: ["tags"],
+  modified: ["modified", "updated", "date modified"],
+  tags: ["tags", "tag"],
 };
 
 export const DEFAULT_CONFIG_PATH = join(homedir(), ".config", "qkb", "config.toml");
@@ -96,12 +100,46 @@ const TOML_MAP: TomlEntry[] = [
   ["search", "rrf_k", "rrfK", (v) => Number(v)],
   ["search", "vec_candidates", "vecCandidates", (v) => Number(v)],
   ["search", "fts_candidates", "ftsCandidates", (v) => Number(v)],
-  ["search", "fts_weights", "ftsWeights", (v) => (Array.isArray(v) ? v.map((x) => Number(x)) : [])],
+  ["search", "fts_weights", "ftsWeights", (v) => parseFtsWeights(v)],
   ["mcp", "host", "mcpHost", (v) => String(v)],
   ["mcp", "port", "mcpPort", (v) => Number(v)],
   ["mcp", "allowed_origins", "mcpAllowedOrigins", (v) => toList(v)],
   ["watch", "interval", "watchInterval", (v) => Number(v)],
 ];
+
+/** Default BM25 weights: short, deliberate text (title, aliases) counts most;
+ * headings and tags next; declared fields, then body text; `type` barely. */
+export const DEFAULT_FTS_WEIGHTS: Record<string, number> = {
+  title: 5.0,
+  aliases: 5.0,
+  headings: 3.0,
+  tags: 3.0,
+  fields: 2.0,
+  body: 1.0,
+  type: 0.5,
+};
+
+function parseFtsWeights(v: unknown): Record<string, number> {
+  if (Array.isArray(v) || typeof v !== "object" || v === null) {
+    throw new Error(
+      "config: [search] fts_weights is now a table, e.g.\n" +
+        "  [search.fts_weights]\n  title = 5.0\n  body = 1.0\n" +
+        `(columns: ${Object.keys(DEFAULT_FTS_WEIGHTS).join(", ")})`,
+    );
+  }
+  const out = { ...DEFAULT_FTS_WEIGHTS };
+  for (const [k, w] of Object.entries(v as Record<string, unknown>)) {
+    if (!(k in DEFAULT_FTS_WEIGHTS)) {
+      throw new Error(
+        `config: unknown fts_weights column "${k}" (columns: ${Object.keys(DEFAULT_FTS_WEIGHTS).join(", ")})`,
+      );
+    }
+    const n = Number(w);
+    if (!Number.isFinite(n) || n < 0) throw new Error(`config: fts_weights.${k} must be >= 0`);
+    out[k] = n;
+  }
+  return out;
+}
 
 function toList(v: unknown): string[] {
   if (Array.isArray(v)) return v.map((x) => String(x).trim()).filter(Boolean);
@@ -166,7 +204,7 @@ export function loadConfig(
     rrfK: 60,
     vecCandidates: 30,
     ftsCandidates: 30,
-    ftsWeights: [5.0, 3.0, 2.0, 1.0, 0.5],
+    ftsWeights: { ...DEFAULT_FTS_WEIGHTS },
     frontmatter: { ...DEFAULT_FRONTMATTER },
     openaiBaseUrl: null,
     openaiApiKey: null,

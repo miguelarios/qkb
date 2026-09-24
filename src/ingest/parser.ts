@@ -1,7 +1,7 @@
 /** Frontmatter -> ParsedNote. Lenient about real-world vault data (DESIGN.md §4-5).
  * Ported from `legacy/python/src/qkb/ingest/parser.py`. */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { basename, extname, relative, sep } from "node:path";
 import matter from "gray-matter";
 // Default import, not `* as yaml`: js-yaml v3 is CJS with `module.exports =
@@ -284,12 +284,6 @@ function canonicalizeCreatedAt(raw: string): string {
   return matchYamlTimestamp(raw)?.isoformat ?? raw;
 }
 
-export function normalizeContext(value: unknown): string | null {
-  if (value === null || value === undefined) return null;
-  const v = String(value).trim().toLowerCase();
-  return v || null;
-}
-
 function get(meta: Record<string, unknown>, aliases: string[]): unknown {
   for (const key of aliases) {
     if (key in meta) {
@@ -322,6 +316,59 @@ function getParsed<T>(
     }
   }
   return null;
+}
+
+/** A frontmatter value as a list of trimmed, non-empty strings: a YAML list,
+ * or a comma-separated string. */
+function toStringList(value: unknown): string[] {
+  if (value === null || value === undefined) return [];
+  const items = Array.isArray(value) ? value.map((v) => String(v)) : String(value).split(",");
+  return items.map((t) => t.trim()).filter((t) => t.length > 0);
+}
+
+/** Text of every ATX heading (`#` … `######`) outside fenced code blocks.
+ * Headings are short, deliberate summaries of what follows, so they rank
+ * above body text (#34). */
+export function extractHeadings(body: string): string[] {
+  const out: string[] = [];
+  let fence: string | null = null;
+  for (const line of body.split(/\r?\n/)) {
+    const f = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+    if (f) {
+      const marker = (f[1] as string)[0] as string;
+      if (fence === null) fence = marker;
+      else if (fence === marker) fence = null;
+      continue;
+    }
+    if (fence !== null) continue;
+    const h = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/.exec(line);
+    if (h) out.push(h[1] as string);
+  }
+  return out;
+}
+
+/** Targets of every `[[wikilink]]` / `![[embed]]` in the body, outside
+ * fenced code: the part before `#` (heading) or `|` (display text), trimmed,
+ * de-duplicated in first-seen order. `[[#Heading]]` (a same-note link) is
+ * skipped (#36). */
+export function extractWikilinks(body: string): string[] {
+  const seen = new Set<string>();
+  let fence: string | null = null;
+  for (const line of body.split(/\r?\n/)) {
+    const f = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+    if (f) {
+      const marker = (f[1] as string)[0] as string;
+      if (fence === null) fence = marker;
+      else if (fence === marker) fence = null;
+      continue;
+    }
+    if (fence !== null) continue;
+    for (const m of line.matchAll(/!?\[\[([^\]\n]+?)\]\]/g)) {
+      const target = (m[1] as string).split("|")[0]?.split("#")[0]?.trim() ?? "";
+      if (target) seen.add(target);
+    }
+  }
+  return [...seen];
 }
 
 function stringify(value: unknown): string {
@@ -360,42 +407,35 @@ export function parseNote(
   });
   const meta = post.data as Record<string, unknown>;
 
-  const context = normalizeContext(get(meta, aliasesFor(fmMap, "context")));
-  const sourceRaw = get(meta, aliasesFor(fmMap, "source"));
-  const source = sourceRaw !== null && String(sourceRaw).trim() ? String(sourceRaw).trim() : null;
-  if (context === null && source === null) {
-    return null; // true opt-out (no context AND no source): a legitimate de-index
-  }
-
-  // From here the note is OPTED IN. If it's unindexable due to a data error
-  // (missing id, or no parseable date) we THROW rather than return null, so
-  // the pipeline protects a previously-indexed entry instead of de-indexing
-  // it on a transient/graceful failure. Only a true opt-out returns null.
+  // The only requirement is an `id`: it is what tracks a note across
+  // renames and moves (#33). A note without one is simply not indexed — a
+  // legitimate opt-out, so a previously indexed note that loses its id is
+  // de-indexed by the sweep.
   const noteId = get(meta, aliasesFor(fmMap, "id"));
   if (noteId === null) {
-    throw new NoteDataError(`${path}: opted-in note has no id`);
+    return null;
   }
 
+  // Date: `date`, else `created`, else `modified`, else the file's mtime —
+  // never a reason to drop a note.
   const createdHit = getParsed(meta, aliasesFor(fmMap, "created"), parseDateLenient);
   const dateHit = getParsed(meta, aliasesFor(fmMap, "date"), parseDateLenient);
-  const effective = dateHit?.[1] ?? createdHit?.[1] ?? null;
+  const modifiedHit = getParsed(meta, aliasesFor(fmMap, "modified"), parseDateLenient);
+  let effective = dateHit?.[1] ?? createdHit?.[1] ?? modifiedHit?.[1] ?? null;
+  let createdAt: string;
   if (effective === null) {
-    throw new NoteDataError(`${path}: opted-in note has no parseable date`);
-  }
-  const createdAt = createdHit === null ? effective : canonicalizeCreatedAt(String(createdHit[0]));
-
-  const tagsRaw = get(meta, aliasesFor(fmMap, "tags"));
-  let tags: string[];
-  if (typeof tagsRaw === "string") {
-    tags = tagsRaw
-      .split(",")
-      .map((t) => t.trim())
-      .filter((t) => t.length > 0);
-  } else if (Array.isArray(tagsRaw)) {
-    tags = tagsRaw.map((t) => String(t).trim()).filter((t) => t.length > 0);
+    const mtime = statSync(path).mtime;
+    effective = mtime.toISOString().slice(0, 10);
+    createdAt = mtime.toISOString();
   } else {
-    tags = [];
+    createdAt = createdHit === null ? effective : canonicalizeCreatedAt(String(createdHit[0]));
   }
+
+  // Tags drop a leading `#` (Obsidian accepts both `tag` and `#tag`).
+  const tags = toStringList(get(meta, aliasesFor(fmMap, "tags")))
+    .map((t) => t.replace(/^#/, ""))
+    .filter((t) => t.length > 0);
+  const aliases = toStringList(get(meta, aliasesFor(fmMap, "aliases")));
 
   const consumed = new Set(Object.values(fmMap).flat());
   if (RESERVED_METADATA_KEY in meta) {
@@ -428,11 +468,12 @@ export function parseNote(
     id: String(noteId),
     type: typeRaw ? String(typeRaw) : "note",
     title: titleRaw ? String(titleRaw) : basename(path, extname(path)),
-    context,
-    source,
     effectiveDate: effective,
     createdAt,
     tags,
+    aliases,
+    headings: extractHeadings(post.content),
+    links: extractWikilinks(post.content),
     extraMetadata: extra,
     fields,
     body: post.content,

@@ -50,8 +50,10 @@ describe("db/schema", () => {
         "chunks_vec",
         "tags",
         "metadata",
-        "context_descriptions",
+        "aliases",
+        "links",
         "embedding_config",
+        "meta",
       ]) {
         expect(names.has(t), t).toBe(true);
       }

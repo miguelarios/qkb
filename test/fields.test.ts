@@ -5,7 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Config, loadConfig } from "../src/config.js";
 import { connect } from "../src/db/schema.js";
 import { Storage } from "../src/db/storage.js";
@@ -180,7 +180,8 @@ describe("declared frontmatter fields", () => {
     await ingestVault(conn, cfg);
     const doc = getDocument(conn, ID1);
     expect(doc.fields).toEqual({ project: "Apollo" });
-    expect(doc.metadata).toEqual({ project: "Apollo", status: "draft" });
+    // context is an ordinary stored property now (#35)
+    expect(doc.metadata).toEqual({ context: "work", project: "Apollo", status: "draft" });
     conn.close();
   });
 
@@ -242,7 +243,7 @@ describe("[frontmatter.fields] config", () => {
   });
 });
 
-describe("schema migration from a pre-fields database", () => {
+describe("schema reset for an index built by an older qkb", () => {
   let tmp: string;
 
   beforeEach(() => {
@@ -253,46 +254,44 @@ describe("schema migration from a pre-fields database", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("adds the fields columns in place, keeping existing rows searchable and vectors intact", () => {
+  it("resets a v0.5 index on open (with a notice), then leaves the new one alone", () => {
     const path = join(tmp, "old.db");
-    // The v0.4.x layout: no documents.fields_text, no documents_fts.fields.
+    // The v0.5.x layout: no meta table, context/source columns.
     const old = new Database(path);
     sqliteVec.load(old);
     old.exec(`
       CREATE TABLE documents (
         id TEXT PRIMARY KEY, type TEXT NOT NULL, context TEXT, source TEXT,
         effective_date TEXT NOT NULL, created_at TEXT NOT NULL, file_path TEXT NOT NULL,
-        content_hash TEXT NOT NULL, title TEXT, vault_name TEXT NOT NULL DEFAULT 'Notes',
-        indexed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')));
-      CREATE VIRTUAL TABLE documents_fts USING fts5(
-        title, tags, context, body, type, doc_id UNINDEXED, tokenize='porter unicode61');
-      CREATE VIRTUAL TABLE chunks_vec USING vec0(
-        chunk_id INTEGER PRIMARY KEY, embedding float[8] distance_metric=cosine);
-      INSERT INTO documents (id, type, effective_date, created_at, file_path, content_hash, title)
-        VALUES ('${ID1}', 'note', '2026-01-01', '2026-01-01', 'a.md', 'h', 'Traefik');
-      INSERT INTO documents_fts (title, tags, context, body, type, doc_id)
-        VALUES ('Traefik', '', 'homelab', 'certificate renewal', 'note', '${ID1}');
+        content_hash TEXT NOT NULL, title TEXT, vault_name TEXT NOT NULL DEFAULT 'Notes');
+      CREATE TABLE context_descriptions (context TEXT PRIMARY KEY, description TEXT NOT NULL);
+      INSERT INTO documents (id, type, effective_date, created_at, file_path, content_hash)
+        VALUES ('${ID1}', 'note', '2026-01-01', '2026-01-01', 'a.md', 'h');
     `);
-    old
-      .prepare("INSERT INTO chunks_vec (chunk_id, embedding) VALUES (?, ?)")
-      .run(1n, new Float32Array(8).fill(0.5));
     old.close();
 
-    const conn = connect(path, 8);
-    const cols = (conn.prepare("PRAGMA table_info(documents_fts)").all() as { name: string }[]).map(
-      (c) => c.name,
-    );
-    expect(cols).toEqual(["title", "tags", "context", "body", "type", "doc_id", "fields"]);
-    expect(
-      conn.prepare("SELECT doc_id FROM documents_fts WHERE documents_fts MATCH 'renewal'").all(),
-    ).toEqual([{ doc_id: ID1 }]);
-    expect(
-      (conn.prepare("SELECT fields_text FROM documents").get() as { fields_text: string })
-        .fields_text,
-    ).toBe("");
-    expect((conn.prepare("SELECT COUNT(*) c FROM chunks_vec").get() as { c: number }).c).toBe(1);
-    conn.close();
-    // Idempotent: a second open doesn't try to migrate again.
-    connect(path, 8).close();
+    const notices: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((m: string) => {
+      notices.push(m);
+    });
+    try {
+      const conn = connect(path, 8);
+      expect(notices.join("\n")).toMatch(/index format changed \(v1 → v2\).*reset/s);
+      expect((conn.prepare("SELECT COUNT(*) c FROM documents").get() as { c: number }).c).toBe(0);
+      const cols = (conn.prepare("PRAGMA table_info(documents)").all() as { name: string }[]).map(
+        (c) => c.name,
+      );
+      expect(cols).not.toContain("context");
+      expect(
+        conn.prepare("SELECT 1 FROM sqlite_master WHERE name = 'context_descriptions'").get(),
+      ).toBeUndefined();
+      conn.close();
+
+      notices.length = 0;
+      connect(path, 8).close();
+      expect(notices).toEqual([]); // current version: no second reset
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

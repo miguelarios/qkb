@@ -14,7 +14,6 @@ import {
   filtersFromOpts,
   limitFromOpts,
   openDb,
-  printContextHint,
   type SearchOpts,
 } from "./shared.js";
 
@@ -84,11 +83,6 @@ async function doSearch(
   const asJson = Boolean(opts.json);
   const asFiles = Boolean(opts.files);
   emit(results, asJson, asFiles, query, tier);
-  // Human output only (issue #14, gap 3) — --json/--files consumers get
-  // exactly the documented shape, no extra stderr noise mixed in.
-  if (!asJson && !asFiles) {
-    printContextHint(conn, query, results.length);
-  }
 }
 
 export function registerSearchCommands(program: Command): void {
