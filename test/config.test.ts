@@ -387,4 +387,25 @@ overlap_percent = 20
       expect(cfg.vaultName).toBe("CustomFromEnv");
     });
   });
+
+  describe("[rerank] and [expansion] (#37, #38)", () => {
+    it("are off by default and read from config and env", () => {
+      const off = loadConfig(join(testDir, "nonexistent.toml"), {});
+      expect(off.rerankEnabled).toBe(false);
+      expect(off.expansionEnabled).toBe(false);
+      expect(off.rerankCandidates).toBe(30);
+
+      const configPath = join(testDir, "llm.toml");
+      writeFileSync(
+        configPath,
+        "[rerank]\nenabled = true\ncandidates = 50\n[expansion]\nmax_variants = 2\n",
+      );
+      const on = loadConfig(configPath, { QKB_EXPANSION: "yes", QKB_RERANK_PROVIDER: "fake" });
+      expect(on.rerankEnabled).toBe(true);
+      expect(on.rerankCandidates).toBe(50);
+      expect(on.rerankProvider).toBe("fake");
+      expect(on.expansionEnabled).toBe(true);
+      expect(on.expansionMaxVariants).toBe(2);
+    });
+  });
 });

@@ -160,7 +160,7 @@ CREATE TABLE metadata (
 ## ADR-007: FTS5 Column Weights
 
 **Date**: 2026-04-03
-**Status**: Decided
+**Status**: Revised by ADR-018 (named weights; aliases and headings columns; context column removed)
 
 **Question**: What BM25 weights should be assigned to each FTS5 column?
 
@@ -207,7 +207,7 @@ CREATE TABLE metadata (
 ## ADR-009: Context Labels + Description Registry
 
 **Date**: 2026-07-06
-**Status**: Decided
+**Status**: Superseded by ADR-017 (context is an ordinary property; the description registry became `[frontmatter.fields]`, ADR-016)
 
 **Question**: Does `context` have to be a slug? And should qkb adopt QMD's context-description feature?
 
@@ -347,3 +347,64 @@ CREATE TABLE metadata (
 When a note's rendered fields change (a value edit, or the declared set itself changing), the metadata-refresh path drops only that note's vectors, and the next embed pass recomputes them. This replaces a whole-vault `--full` guard. The metadata hash includes the rendered fields only when they're non-empty, so an index without declared fields keeps its existing hashes and doesn't rewrite every note after the upgrade. Old databases migrate in place: the FTS table is rebuilt from its own stored columns and vectors are kept.
 
 **Alternatives rejected**: indexing every frontmatter key (noisy: sync and plugin keys would affect ranking and vectors); a QMD-style namespaced `qkb:` block (forces owners to duplicate properties they already have).
+
+---
+
+## ADR-017: Every Note With an `id` Is Indexed; `context`/`source` Are Ordinary Properties
+
+**Date**: 2026-09-24
+**Status**: Decided (supersedes ADR-009 and the opt-in rule of the original contract)
+
+**Question**: Notes were indexed only if they carried `context` or `source`, plus an `id` and a parseable date. In the owner's vault ~3,000 notes have an `id` but only a few dozen have `context`, so the opt-in rule hid almost everything (#33, #35). What should qualify a note?
+
+**Decision**: The `id` alone. It is the note's identity (unique, stable across renames and vault moves, ADR-015), so it stays required; everything else is optional:
+- the date falls back `date` → `created` → `modified` → file mtime, so a note is never rejected for lacking one;
+- the title falls back to the file name;
+- `context` and `source` lose their dedicated columns and become ordinary stored properties. Declare them in `[frontmatter.fields]` to make them searchable and embedded; filter on them (and any other stored property) with `--field`. `--context`/`--source` remain as deprecated shorthands, and `same_source` related notes (ADR-019) still read `source`.
+
+`qkb ingest` reports how many notes lacked an `id`. The index format changes, so databases carry a schema version (`meta.schema_version`); an older index is dropped and rebuilt empty with a notice to run `qkb ingest && qkb embed`, instead of a hand-written migration. Re-embedding is needed anyway because the embedded text changed.
+
+**Alternatives rejected**: keeping opt-in but switching the trigger to `tags` (arbitrary, and still hides untagged notes); auto-generating ids (writes into a read-only vault).
+
+---
+
+## ADR-018: Title, Aliases and Headings as Ranking Signals; Named FTS Weights
+
+**Date**: 2026-09-24
+**Status**: Decided (revises ADR-007)
+
+**Question**: What should BM25 weigh once every note is indexed (#34)?
+
+**Decision**: FTS5 columns `title, aliases, headings, tags, fields, body, type`, weighted `5, 5, 3, 3, 2, 1, 0.5` by default. Aliases are alternative titles (the Obsidian Linter fills them on ~half the owner's notes), so they weigh like the title. ATX headings are short, deliberate summaries of a section, so they weigh like tags; headings inside fenced code are skipped. `[search.fts_weights]` becomes a table keyed by column name (the old positional array is rejected with a message) so adding a column never silently shifts the meaning of a user's weights.
+
+**Rationale**: BM25F-style field weighting is the standard, cheap way to rank "the note about X" above "a note mentioning X". No new moving parts: same FTS5 table, same query.
+
+---
+
+## ADR-019: Related Notes From Wikilinks, Backlinks and Shared Source
+
+**Date**: 2026-09-24
+**Status**: Decided
+
+**Question**: Sibling surfacing grouped notes by `source` only (#36). Most notes relate through `[[wikilinks]]`. How should results show related notes?
+
+**Decision**: Ingest stores each note's outgoing link targets (`links` table, in order of appearance; `[[target|alias]]`, `[[target#heading]]` and `![[embeds]]` reduce to the target, fenced code is skipped). Targets are resolved at query time, within the same vault, against file stem, vault path, title and alias, so a link to a note that doesn't exist yet starts resolving when it's indexed and renames need no re-ingest of the linking note. Each result lists `related` notes with a `relation` of `links_to`, `linked_from` or `same_source`; search results cap the list at 10 per result, `qkb get` returns all.
+
+**Alternatives rejected**: resolving links at ingest time (stale on renames and new notes); vector-similarity "more like this" (costly per result, and duplicates what vector search already does).
+
+---
+
+## ADR-020: Optional Local Reranking and Query Expansion
+
+**Date**: 2026-09-24
+**Status**: Decided
+
+**Question**: Should qkb add the second-stage mechanisms QMD has (#37, #38), and how, without making search slow or cloud-dependent by default?
+
+**Decision**: Both are optional stages around hybrid search, off by default, enabled per search (`--rerank`/`--expand`, MCP `rerank`/`expand`) or in config (`[rerank]`, `[expansion]`). Both run in-process through node-llama-cpp with the same GGUFs QMD uses (Qwen3-Reranker-0.6B; QMD's fine-tuned 1.7B expansion model with its grammar and sampling settings), loaded lazily and downloaded on first use.
+- **Reranking** re-scores the top `candidates` (default 30) hits. Each is shown as title + declared-field lines + one passage (the matching vector chunk, or the chunk sharing most query words when only a BM25 snippet matched). Passages are truncated to the context budget and identical ones scored once. The final score is QMD's position-aware blend `w·(1/rank) + (1−w)·rerank`, with `w` = 0.75 for ranks 1–3, 0.60 for 4–10, 0.40 below, so the reranker can promote deep hits but can't bury a strong retrieval match.
+- **Expansion** turns the query into `lex` (→ BM25) and `vec`/`hyde` (→ vector) variants, dropping any that share no word with the query. Each variant adds one RRF list; the original query's two lists weigh 2.
+- Either stage failing (model missing, out of memory) logs a warning and returns plain hybrid results.
+
+**Rationale**: Reranking is the largest precision gain available once recall is good; expansion helps short or vague queries. Keeping them optional keeps the default path at one small embedding model and millisecond keyword search, which matters for the watch-mode server on modest hardware. Declared-field descriptions are not fed to either model: they exist for agents choosing filters (self-query), while the reranker reads the field values themselves.
+

@@ -3,6 +3,8 @@
  * `legacy/python/src/qkb/cli.py`. */
 import type { Command } from "commander";
 import { getProvider } from "../embed/provider.js";
+import { getExpander } from "../llm/expand.js";
+import { getReranker } from "../llm/rerank.js";
 import { executeSearch } from "../search/service.js";
 import { createDownloadProgressRenderer } from "./progress.js";
 import {
@@ -21,15 +23,9 @@ async function doSearch(
   tier: "bm25" | "vector" | "hybrid",
   query: string,
   opts: SearchOpts,
-  rerank = false,
+  stages: { rerank?: boolean; expand?: boolean } = {},
 ): Promise<void> {
   const cfgObj = cfg();
-  if (rerank) {
-    // Ports cli.py's `_do_search`: click.echo(..., err=True); sys.exit(2) —
-    // printed verbatim, no "Error:" prefix, before any DB/provider work.
-    console.error("re-ranking not configured (Phase 2)");
-    process.exit(2);
-  }
   const conn = openDb(cfgObj);
   // A vector/hybrid search's first call to provider.embedQuery() can trigger
   // the same first-run GGUF download `qkb embed` does (llama provider only)
@@ -45,6 +41,13 @@ async function doSearch(
       : await getProvider(cfgObj, {
           onDownloadProgress: (received, total) => downloadRenderer?.update(received, total),
         });
+  // --rerank/--expand (or --no-*) override the config's [rerank]/[expansion]
+  // `enabled`; both stages load their model on first use.
+  const onProgress = (received: number, total: number | null) =>
+    downloadRenderer?.update(received, total);
+  const reranker = (stages.rerank ?? cfgObj.rerankEnabled) ? getReranker(cfgObj, onProgress) : null;
+  const expander =
+    (stages.expand ?? cfgObj.expansionEnabled) ? getExpander(cfgObj, onProgress) : null;
   let results: Awaited<ReturnType<typeof executeSearch>>;
   try {
     results = await executeSearch(
@@ -55,6 +58,7 @@ async function doSearch(
       filtersFromOpts(opts),
       limitFromOpts(opts),
       tier,
+      { reranker, expander, onWarning: (m) => console.error(`warning: ${m}`) },
     );
   } catch (e) {
     // executeSearch/buildFilterClause throw SearchValidationError (extends
@@ -80,6 +84,8 @@ async function doSearch(
     failUsage(e instanceof Error ? e.message : String(e));
   }
   downloadRenderer?.stop();
+  await reranker?.close?.();
+  await expander?.close?.();
   const asJson = Boolean(opts.json);
   const asFiles = Boolean(opts.files);
   emit(results, asJson, asFiles, query, tier);
@@ -107,10 +113,13 @@ export function registerSearchCommands(program: Command): void {
       .command("query")
       .description("Tier 3: hybrid BM25 + vector with RRF fusion")
       .argument("<query>")
-      .option("--rerank", "re-ranking (not yet configured)"),
+      .option("--rerank", "re-score the top hits with a local reranker model ([rerank])")
+      .option("--no-rerank", "skip reranking even if [rerank] enabled = true")
+      .option("--expand", "also search model-written variants of the query ([expansion])")
+      .option("--no-expand", "skip query expansion even if [expansion] enabled = true"),
   ).action(
-    action(async (query: string, opts: SearchOpts & { rerank?: boolean }) => {
-      await doSearch("hybrid", query, opts, Boolean(opts.rerank));
+    action(async (query: string, opts: SearchOpts & { rerank?: boolean; expand?: boolean }) => {
+      await doSearch("hybrid", query, opts, { rerank: opts.rerank, expand: opts.expand });
     }),
   );
 }

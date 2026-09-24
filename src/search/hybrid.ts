@@ -23,6 +23,7 @@
 import type Database from "better-sqlite3";
 import type { Config } from "../config.js";
 import type { EmbeddingProvider } from "../embed/types.js";
+import type { QueryVariant } from "../llm/expand.js";
 import { searchBm25 } from "./bm25.js";
 import { SearchValidationError } from "./errors.js";
 import type { Filters } from "./filters.js";
@@ -79,6 +80,12 @@ export function rrfMerge(
  *   list is cut to `limit`. Matched text prefers the vector chunk text and
  *   falls back to the BM25 snippet.
  *
+ * `variants` (query expansion, #38) add one extra list per variant to the
+ * hybrid fusion — `lex` ones through BM25, `vec` ones through vector search —
+ * with the original query's two lists weighted double so a rewrite can
+ * support, but not outvote, what was actually asked. No variants leaves the
+ * fusion exactly as before.
+ *
  * Ported from `hybrid.py`'s `search`.
  */
 export async function search(
@@ -89,6 +96,7 @@ export async function search(
   filters: Filters,
   limit: number,
   tier: string,
+  variants: QueryVariant[] = [],
 ): Promise<RankedResult[]> {
   if (tier === "bm25") {
     const rows = searchBm25(conn, query, filters, limit, cfg.ftsWeights);
@@ -113,15 +121,24 @@ export async function search(
     // intended values distinctly instead of duplicating the max(limit, ...)
     // policy at this call site.
     const vec = await searchVector(conn, query, filters, vecN, cfg.vecCandidates, provider);
-    const merged = rrfMerge(
-      [
-        bm.map(([d, s]) => [d, s] as [string, number]),
-        vec.map(([d, s]) => [d, s] as [string, number]),
-      ],
-      cfg.rrfK,
-    );
+    const lists: Array<Array<[string, number]>> = [
+      bm.map(([d, s]) => [d, s] as [string, number]),
+      vec.map(([d, s]) => [d, s] as [string, number]),
+    ];
     const chunkText = new Map<string, string>(vec.map(([d, , t]) => [d, t]));
     const snippet = new Map<string, string>(bm.map(([d, , s]) => [d, s]));
+    for (const v of variants) {
+      const rows =
+        v.type === "lex"
+          ? searchBm25(conn, v.text, filters, bmN, cfg.ftsWeights)
+          : await searchVector(conn, v.text, filters, vecN, cfg.vecCandidates, provider);
+      lists.push(rows.map(([d, s]) => [d, s] as [string, number]));
+      // The original query's text wins; a variant only fills gaps.
+      const target = v.type === "lex" ? snippet : chunkText;
+      for (const [d, , t] of rows) if (!target.has(d)) target.set(d, t);
+    }
+    const weights = variants.length > 0 ? [2, 2, ...variants.map(() => 1)] : undefined;
+    const merged = rrfMerge(lists, cfg.rrfK, weights);
     return merged.slice(0, limit).map(
       ([docId, score]) =>
         // `||` (not `??`) matches Python's `chunk_text.get(d) or snippet.get(d)`:

@@ -5,8 +5,8 @@
  * Three tools, mirroring Python's FastMCP server exactly (names, arg names,
  * result shapes):
  *  - `qkb`: hybrid BM25 + vector search (the `query`/`search`/`vsearch`
- *    tiers are collapsed into one MCP tool, same as Python — `rerank` is
- *    accepted but not implemented, matching the Phase 2 stub error).
+ *    tiers are collapsed into one MCP tool, same as Python), with optional
+ *    `rerank` and `expand` stages (defaults from `[rerank]`/`[expansion]`).
  *  - `qkb_get`: retrieve a document by id/prefix.
  *  - `qkb_status`: index health (counts, vaults, declared fields).
  *
@@ -34,6 +34,8 @@ import { Storage } from "../db/storage.js";
 import { getProvider } from "../embed/provider.js";
 import type { EmbeddingProvider } from "../embed/types.js";
 import { describeRun, startWatch, type Watcher } from "../ingest/watch.js";
+import { getExpander, type QueryExpander } from "../llm/expand.js";
+import { getReranker, type Reranker } from "../llm/rerank.js";
 import { toPublicMarkers } from "../search/bm25.js";
 import { SearchValidationError } from "../search/errors.js";
 import { Filters } from "../search/filters.js";
@@ -97,6 +99,9 @@ export interface QkbContext {
   cfg: Config;
   conn: Database.Database;
   provider: EmbeddingProvider;
+  /** Built up front but load their models only on first use. */
+  reranker: Reranker;
+  expander: QueryExpander;
   withLock: Lock;
   close(): void;
 }
@@ -105,16 +110,22 @@ export async function createContext(cfg?: Config): Promise<QkbContext> {
   const cfgObj = cfg ?? loadConfig();
   const conn: Database.Database = connect(cfgObj.dbPath, cfgObj.embeddingDim);
   const provider = serializeProvider(await getProvider(cfgObj));
+  const reranker = getReranker(cfgObj);
+  const expander = getExpander(cfgObj);
   let closed = false;
   return {
     cfg: cfgObj,
     conn,
     provider,
+    reranker,
+    expander,
     withLock: makeLock(),
     close() {
       if (closed) return;
       closed = true;
       provider.close?.();
+      void reranker.close?.();
+      void expander.close?.();
       conn.close();
     },
   };
@@ -128,7 +139,9 @@ function searchToolDescription(cfg: Config): string {
     "Search the personal knowledge base (Obsidian vault) with hybrid " +
     "BM25 + vector retrieval. Filter by type, tags, date range, vault, or any " +
     "frontmatter property (`fields: {key: value}`). Each result lists related " +
-    "notes (wikilinks in both directions, shared source).";
+    "notes (wikilinks in both directions, shared source). `rerank: true` re-scores " +
+    "the top hits with a local reranker (slower, more precise); `expand: true` also " +
+    "searches model-written rewrites of the query (helps vague or short queries).";
   const vaults = configuredVaults(cfg);
   if (vaults.length > 1) {
     d += ` Vaults (filter with \`vaults\`): ${vaults.map((v) => v.name).join(", ")}.`;
@@ -150,7 +163,7 @@ function searchToolDescription(cfg: Config): string {
  * provider open (the HTTP transport makes one server per request).
  */
 export function createMcpServer(ctx: QkbContext): McpServer {
-  const { cfg: cfgObj, conn, provider, withLock } = ctx;
+  const { cfg: cfgObj, conn, provider, reranker, expander, withLock } = ctx;
   const server = new McpServer({ name: "qkb", version: "0.1.0" });
 
   server.registerTool(
@@ -169,12 +182,10 @@ export function createMcpServer(ctx: QkbContext): McpServer {
         fields: z.record(z.string(), z.string()).optional(),
         limit: z.number().int().optional(),
         rerank: z.boolean().optional(),
+        expand: z.boolean().optional(),
       },
     },
     async (args) => {
-      if (args.rerank) {
-        return jsonResult({ error: "re-ranking not configured (Phase 2)" });
-      }
       return withLock(async () => {
         try {
           const results = await executeSearch(
@@ -194,6 +205,11 @@ export function createMcpServer(ctx: QkbContext): McpServer {
             }),
             args.limit ?? null,
             "hybrid",
+            {
+              reranker: (args.rerank ?? cfgObj.rerankEnabled) ? reranker : null,
+              expander: (args.expand ?? cfgObj.expansionEnabled) ? expander : null,
+              onWarning: (m) => process.stderr.write(`qkb: ${m}\n`),
+            },
           );
           // `matched_text` may internally carry searchBm25's control-char
           // match markers (issue #14 critical fix — bracket-sniffing broke

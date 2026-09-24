@@ -2,7 +2,7 @@
 
 An on-device hybrid search engine for Obsidian vaults that understands YAML frontmatter metadata. Combines BM25 keyword search (SQLite FTS5) and vector semantic search (sqlite-vec) with metadata filtering, sibling-document surfacing, and two first-class interfaces: a CLI for humans and an MCP server for LLM agents.
 
-**Status**: v0.4 on npm — a TypeScript rewrite of the original Python `qkb-search`, with multi-provider embeddings and GPU-accelerated (Metal) local embedding on Apple Silicon. The roadmap lives in GitHub issues; the MVP is tracked in [#19](https://github.com/miguelarios/qkb/issues/19).
+**Status**: v0.5 on npm — a TypeScript rewrite of the original Python `qkb-search`, with multi-provider embeddings and GPU-accelerated (Metal) local embedding on Apple Silicon. The roadmap lives in GitHub issues; the MVP is tracked in [#19](https://github.com/miguelarios/qkb/issues/19).
 
 ## Quickstart
 
@@ -22,17 +22,18 @@ path = "~/Documents/MyVault"   # your Obsidian vault (read-only to qkb)
 name = "MyVault"               # used to build obsidian:// links
 ```
 
-**3. Opt notes in.** Only notes whose frontmatter has a `context` and/or
-`source` property are indexed — and an opted-in note also needs an `id` and
-a parseable date (`created` or `date`):
+**3. Give notes an `id`.** Every note whose frontmatter has an `id` is
+indexed; that id is how qkb tells notes apart, so it must be unique. Nothing
+else is required: the date falls back from `date` to `created` to `modified`
+to the file's modification time, and the title falls back to the file name.
 
 ```yaml
 ---
 id: f47ac10b-58cc-4372-a567-0e02b2c3d401
-context: homelab
-created: 2026-03-15
 ---
 ```
+
+`qkb ingest` reports how many notes were skipped for having no `id`.
 
 **4. Index in two phases, then search:**
 
@@ -141,13 +142,26 @@ default_limit = 10
 rrf_k = 60
 vec_candidates = 30
 fts_candidates = 30
-fts_weights = [5.0, 3.0, 2.0, 1.0, 0.5]   # title, tags, context, body, type
-                                          # (+ optional 6th: declared fields, default 3.0)
+
+[search.fts_weights]      # keyword-ranking weight per field (0 = ignore)
+title = 5.0
+aliases = 5.0
+headings = 3.0
+tags = 3.0
+fields = 2.0              # declared [frontmatter.fields]
+body = 1.0
+type = 0.5
 
 [frontmatter]
-# Optional alias mapping for non-default frontmatter property names, e.g.:
-# id = ["uuid"]
-# created = ["created", "date created"]
+# Which property names feed each core field (first present wins). Defaults:
+# id       = ["id"]
+# type     = ["type"]
+# title    = ["title"]            # falls back to the file name
+# aliases  = ["aliases", "alias"]
+# date     = ["date"]
+# created  = ["created", "date created"]
+# modified = ["modified", "updated", "date modified"]
+# tags     = ["tags", "tag"]
 
 [frontmatter.fields]
 # Optional: extra properties to search, embed, return and describe to agents
@@ -161,6 +175,20 @@ allowed_origins = []      # browser origins allowed besides loopback; ["*"] disa
 
 [watch]
 interval = 300            # seconds between re-index runs in watch mode
+
+[rerank]                  # see "Reranking and query expansion"
+enabled = false
+provider = "llama"        # llama | fake
+gguf_repo = "ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF"
+gguf_file = "qwen3-reranker-0.6b-q8_0.gguf"
+candidates = 30           # top hybrid hits the reranker re-scores
+
+[expansion]
+enabled = false
+provider = "llama"        # llama | fake
+gguf_repo = "tobil/qmd-query-expansion-1.7B-gguf"
+gguf_file = "qmd-query-expansion-1.7B-q4_k_m.gguf"
+max_variants = 4
 ```
 
 Several vaults: replace `[vault]` with a list (see "Multiple vaults" below):
@@ -199,6 +227,10 @@ Only the keys below have a `QKB_*` environment-variable override — `[chunking]
 | `mcp.port` | `QKB_MCP_PORT` |
 | `mcp.allowed_origins` | `QKB_ALLOWED_ORIGINS` (comma-separated) |
 | `watch.interval` | `QKB_WATCH_INTERVAL` |
+| `rerank.enabled` | `QKB_RERANK` |
+| `rerank.provider` | `QKB_RERANK_PROVIDER` |
+| `expansion.enabled` | `QKB_EXPANSION` |
+| `expansion.provider` | `QKB_EXPANSION_PROVIDER` |
 
 `QKB_VAULT_PATH` names exactly one vault: when set, it replaces a
 configured `[[vaults]]` list.
@@ -210,9 +242,9 @@ different `config.toml` path entirely.
 
 qkb exposes three tools to LLM agents:
 
-- **`qkb`** — hybrid BM25 + vector search with the same filters as the CLI (`context`, `source`, `type`, `tags`, date range, `vaults`, `fields`, `limit`). Its description lists your vaults and declared fields, so an agent knows what it can filter on.
-- **`qkb_get`** — retrieve a single document by id (or unambiguous id prefix), including every stored frontmatter property.
-- **`qkb_status`** — index health: document/chunk/vector counts, per-vault counts, contexts, declared fields.
+- **`qkb`** — hybrid BM25 + vector search with the same filters as the CLI (`type`, `tags`, date range, `vaults`, `fields`, `limit`), plus optional `rerank` and `expand` (defaults from `[rerank]`/`[expansion]`). Its description lists your vaults and declared fields, so an agent knows what it can filter on. Each result lists its related notes.
+- **`qkb_get`** — retrieve a single document by id (or unambiguous id prefix), including every stored frontmatter property and all related notes (`include_related: false` to skip them).
+- **`qkb_status`** — index health: document/chunk/vector counts, per-vault counts, declared fields and their most common values (`field_values`), so an agent can build `fields` filters.
 
 It speaks two transports:
 
@@ -274,21 +306,65 @@ Note `id`s are unique across all vaults: the same id in a second vault is
 skipped and reported as a duplicate, exactly like a duplicate within one
 vault. A note moved from one vault to another is followed (not re-embedded).
 
+## Ranking and related notes
+
+Keyword search weighs where a word appears, not just whether it does: a
+match in the title or an alias counts most, then headings and tags, then
+declared fields, then body text (`[search.fts_weights]` tunes each). A note
+titled, aliased or headed with your query words beats one that merely
+mentions them. Headings inside fenced code blocks are ignored.
+
+Every result lists **related notes**:
+
+- `links_to`: notes it links to with `[[wikilinks]]` (or `![[embeds]]`), in
+  the order they appear. A link resolves by file name, vault path, title or
+  alias, and one written before its target exists starts resolving once the
+  target is indexed;
+- `linked_from`: notes that link to it (backlinks);
+- `same_source`: notes sharing its `source` property (e.g. several clips of
+  one web page, or a transcript and the notes taken from it).
+
+Search results show up to 10 related notes each; `qkb get` shows them all.
+
+## Reranking and query expansion
+
+Two optional, local-model stages sit around hybrid search. Both are off by
+default, run in-process through `node-llama-cpp` (the models download once
+to `model_cache_dir`), and fall back to plain search with a warning if the
+model fails.
+
+- **Reranking** (`qkb query --rerank`, MCP `rerank: true`, or `[rerank]
+  enabled = true`): a cross-encoder (Qwen3-Reranker-0.6B, ~640 MB) reads the
+  query with each of the top `candidates` hits (title, declared fields and
+  the best-matching passage) and scores the fit. The score is blended with
+  the retrieval rank, trusting retrieval more at the top: a confident
+  reranker can lift a deep hit, but can't bury an exact title match.
+- **Query expansion** (`qkb query --expand`, MCP `expand: true`, or
+  `[expansion] enabled = true`): a small fine-tuned model (~1.1 GB) rewrites
+  the query into a few keyword and paraphrase variants. Each variant's
+  results are fused in, with the original query weighted double. Helps
+  short or vaguely worded queries; adds a second or two per search.
+
+`--no-rerank` / `--no-expand` (or `false` over MCP) turn a stage off for one
+search when the config enables it. These are the same models QMD uses.
+
 ## Extra frontmatter properties
 
-The core properties (`id`, `type`, `title`, `context`, `source`, `date`,
-`created`, `tags`) are always understood. Any other property is stored, but
-by default it doesn't affect search. Declare the ones that matter:
+The core properties (`id`, `type`, `title`, `aliases`, `date`, `created`,
+`modified`, `tags`) are always understood. Any other property is stored (and
+returned by `qkb get`), but by default it doesn't affect search. Declare the
+ones that matter:
 
 ```toml
 [frontmatter.fields]
 project   = "Project this note belongs to"
 attendees = "People present in a meeting"
+source    = "Where a web clip or transcript came from"
 ```
 
 Declared properties are:
 
-- **searchable**: keyword search matches their values (weighted like tags; a 6th `fts_weights` entry tunes it);
+- **searchable**: keyword search matches their values (`fts_weights.fields` tunes the weight);
 - **embedded**: prepended to each chunk's text as `project: Apollo` lines, so semantic search sees them;
 - **returned**: as a `fields` object in `--json`, `qkb get` and MCP results;
 - **filterable**: `--field project=Apollo` (repeatable, AND) / MCP `fields: {"project": "Apollo"}`. The match is case-insensitive, and a list property matches any one of its items;
@@ -296,7 +372,23 @@ Declared properties are:
 
 Declaring a new field, or editing a declared value, refreshes the affected
 notes on the next `ingest` and re-embeds just those notes on the next
-`embed`. No `--full` is needed.
+`embed`. No `--full` is needed. `qkb fields` lists each declared field with
+its description and most common values.
+
+Filtering works on any stored property, declared or not: `--field
+source=clip-2026` matches notes whose `source` is that value. (`--context X`
+and `--source X` still work, as shorthand for `--field context=X` and
+`--field source=X`.)
+
+## Upgrading to 0.6
+
+0.6 changes the index format (every note with an `id` is now indexed, and
+aliases, headings and links are stored). The first qkb 0.6 command resets an
+older index and says so; rebuild it with:
+
+```bash
+qkb ingest && qkb embed
+```
 
 ## Running as a service (Docker)
 
@@ -331,7 +423,7 @@ brew install --formula https://raw.githubusercontent.com/miguelarios/qkb/main/Fo
 
 ## The Short Version
 
-Notes opt in to indexing via frontmatter (`context` and/or `source` properties). An ingestion pipeline walks the vault, chunks markdown with structure-aware break-point scoring, embeds in-process (`node-llama-cpp`/GGUF by default; Ollama or an OpenAI-compatible endpoint optional), and stores everything in a single SQLite file. A search engine layers BM25 (document-level, weighted columns), vector similarity (chunk-level), and Reciprocal Rank Fusion on top — exposed as `qkb search` / `vsearch` / `query`, `qkb get <UUID>`, and `qkb mcp`.
+Every note with a frontmatter `id` is indexed. An ingestion pipeline walks the vault, chunks markdown with structure-aware break-point scoring, embeds in-process (`node-llama-cpp`/GGUF by default; Ollama or an OpenAI-compatible endpoint optional), and stores everything in a single SQLite file. A search engine layers BM25 (document-level, weighted columns), vector similarity (chunk-level), and Reciprocal Rank Fusion on top, with optional local reranking and query expansion — exposed as `qkb search` / `vsearch` / `query`, `qkb get <UUID>`, and `qkb mcp`.
 
 Inspired by [QMD](https://github.com/tobi/qmd)'s search architecture and its GPU-fast native-binary distribution model, adapted for structured knowledge systems with frontmatter metadata.
 

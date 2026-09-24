@@ -99,7 +99,7 @@ describe("server/mcp build_server tools", () => {
     conn.close();
   }
 
-  it("ports test_mcp_tools: tool list, qkb, qkb_get, qkb_status, rerank stub", async () => {
+  it("ports test_mcp_tools: tool list, qkb, qkb_get, qkb_status", async () => {
     const cfg = makeCfg(tmpPath);
     await ingestOne(cfg, "a.md", ID1, "Renewing traefik certificates.");
 
@@ -120,9 +120,16 @@ describe("server/mcp build_server tools", () => {
 
     const statusOut = await call(client, "qkb_status");
     expect(statusOut.documents).toBe(1);
+  });
 
-    const rerankOut = await call(client, "qkb", { query: "x", rerank: true });
-    expect(rerankOut).toEqual({ error: "re-ranking not configured (Phase 2)" });
+  it("qkb accepts rerank and expand (fake models)", async () => {
+    const cfg = makeCfg(tmpPath);
+    cfg.rerankProvider = "fake";
+    cfg.expansionProvider = "fake";
+    await ingestOne(cfg, "a.md", ID1, "Renewing traefik certificates.");
+    const client = await connectClient(await buildServer(cfg));
+    const out = await call(client, "qkb", { query: "traefik", rerank: true, expand: true });
+    expect(out.result[0].document_id).toBe(ID1);
   });
 
   it("ports test_qkb_uses_cfg_default_limit_when_omitted", async () => {

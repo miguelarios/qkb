@@ -103,7 +103,7 @@ export async function ensureModel(
   }
   await mkdir(cacheDir, { recursive: true });
   const url = ggufUrl(repo, filename);
-  process.stderr.write(`qkb: downloading embedding model ${filename} to ${cacheDir} ...\n`);
+  process.stderr.write(`qkb: downloading model ${filename} to ${cacheDir} ...\n`);
   const tmp = `${target}.part`;
   try {
     await fetchFn(url, tmp, onDownloadProgress);

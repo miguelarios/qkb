@@ -511,11 +511,21 @@ describe("qkb CLI (subprocess)", () => {
     expect(result.output.toLowerCase()).not.toContain("traceback");
   });
 
-  it("--rerank is rejected as not-yet-configured (exit code 2)", () => {
+  it("query --rerank --expand runs both stages (fake models)", () => {
+    writeNote("a.md", ID1, { body: "Renewing traefik certificates." });
+    run(["ingest"]);
+    const fakeEnv = { ...env, QKB_RERANK_PROVIDER: "fake", QKB_EXPANSION_PROVIDER: "fake" };
+    const result = run(["query", "traefik", "--rerank", "--expand", "--files"], fakeEnv);
+    expect(result.exitCode).toBe(0);
+    expect(result.output.trim().split(",")[0]).toBe(ID1);
+  });
+
+  it("an unknown rerank provider is reported, not crashed on", () => {
     writeNote("a.md", ID1);
     run(["ingest"]);
-    const result = run(["query", "anything", "--rerank"]);
-    expect(result.exitCode).toBe(2);
+    const result = run(["query", "anything", "--rerank"], { ...env, QKB_RERANK_PROVIDER: "nope" });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.output).toContain("unknown rerank provider");
   });
 
   it("--source filter", () => {
