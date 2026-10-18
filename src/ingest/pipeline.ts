@@ -221,6 +221,7 @@ export async function ingestVault(
   const declaredFields = Object.keys(cfg.fields ?? {});
   // Batch the per-unchanged-doc metadata-hash SELECT into one upfront query.
   const metaHashes = storage.allMetadataHashes(); // doc id -> stored metadata_hash
+  const missingLines = storage.docsMissingLines();
   const seen = new Map<string, string>(); // note id -> first abs path claiming it this run
 
   interface VaultRun {
@@ -343,6 +344,9 @@ export async function ingestVault(
       // actually changed (a true no-op opens no transaction, bumps no
       // indexed_at). Counted as `unchanged` either way.
       vaultStorage.updateMetadataIfChanged(note, chash, metaHashes[note.id] ?? null);
+      vaultStorage.syncLocations(note, missingLines.has(note.id), () =>
+        chunkText(note.body, cfg.chunkTargetTokens, cfg.chunkOverlapPercent),
+      );
       stats.unchanged++;
       continue;
     }

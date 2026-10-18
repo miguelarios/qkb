@@ -259,7 +259,7 @@ and whether it may fetch one at all (`0` = no).
 
 qkb exposes three tools to LLM agents:
 
-- **`qkb`** — hybrid BM25 + vector search with the same filters as the CLI (`type`, `tags`, date range, `vaults`, `fields`, `limit`), plus optional `rerank` and `expand` (defaults from `[rerank]`/`[expansion]`). Its description lists your vaults and declared fields, so an agent knows what it can filter on. Each result lists its related notes.
+- **`qkb`** — hybrid BM25 + vector search with the same filters as the CLI (`type`, `tags`, date range, `vaults`, `fields`, `limit`), plus optional `rerank` and `expand` (defaults from `[rerank]`/`[expansion]`). Its description lists your vaults and declared fields, so an agent knows what it can filter on. Each result lists its related notes. Each result also carries `line`, the 1-based line of `file_path` where the match is (the keyword hit, or the first line of the matched passage), so an agent can open `file_path:line` directly; the human CLI output prints the same `path:line` above each `obsidian://` link.
 - **`qkb_get`** — retrieve a single document by id (or unambiguous id prefix), including every stored frontmatter property and all related notes (`include_related: false` to skip them).
 - **`qkb_status`** — index health: document/chunk/vector counts, per-vault counts, declared fields and their most common values (`field_values`), so an agent can build `fields` filters.
 

@@ -352,6 +352,17 @@ describe("qkb CLI (subprocess)", () => {
       expect(result.output).toMatch(/^\s{2}obsidian:\/\/open\?vault=.*&file=.*$/m);
     });
 
+    it("prints the matching file:line above the URI (#15)", () => {
+      // frontmatter is lines 1-5, a blank line 6, so the match is on line 9
+      writeNote("dir/a.md", ID1, { body: "Intro paragraph.\n\nRenewing traefik certificates." });
+      run(["ingest"]);
+
+      const result = run(["search", "traefik"]);
+      expect(result.exitCode).toBe(0);
+      expect(result.output).toMatch(/^\s{2}dir\/a\.md:9\n\s{2}obsidian:\/\//m);
+      expect(JSON.parse(run(["search", "traefik", "--json"]).output)[0].line).toBe(9);
+    });
+
     it("prints relative percentage scores (top result = 100%), not raw scores", () => {
       writeNote("a.md", ID1, { body: "traefik traefik traefik certificate renewal notes" });
       writeNote("b.md", ID2, { body: "a passing mention of traefik once" });

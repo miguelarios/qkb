@@ -248,6 +248,7 @@ case-insensitively, and a list property matches if any item matches.
 | `[rerank]`, `[expansion]` | immediately |
 | embedding model or provider | `qkb embed --full` |
 | upgrading from qkb 0.5 or earlier | the index is reset automatically; run `qkb ingest && qkb embed` |
+| upgrading from 0.6.0 (result `line` numbers) | next `ingest` fills them in; nothing re-embeds |
 
 With `qkb mcp --watch` or `qkb watch` running, the `ingest` and `embed` steps
 happen on their own.
