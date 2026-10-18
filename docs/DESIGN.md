@@ -1,8 +1,8 @@
 # QKB — Query Knowledge Base — Technical Design Document
 
-**Project**: qkb (distribution name: `qkb-search`)
-**Status**: Reconciled with ADR-001–008, ready for implementation
-**Date**: 2026-07-06 (original design 2026-04-02)
+**Project**: qkb (npm package: `@miguelarios/qkb`)
+**Status**: Describes the TypeScript implementation (0.6); ADR-014–021 refine it
+**Date**: 2026-10-17 (reconciled with ADR-001–008 on 2026-07-06; original design 2026-04-02)
 **Positioning**: An Obsidian-native semantic search engine — QMD's search philosophy adapted for structured knowledge systems with frontmatter metadata
 **Source of truth**: Obsidian vault markdown files with YAML frontmatter
 **Decision log**: [adr/architecture-decisions.md](adr/architecture-decisions.md) — where this document and an ADR conflict, the ADR wins and this document has a bug.
@@ -61,7 +61,7 @@ Concerns: query parsing, metadata filtering, BM25 keyword search, vector similar
 │                       │       │                                       │
 │  Vault Walker         │       │  CLI: qkb search/query/get            │
 │  Frontmatter Parser   │       │  MCP: tool server (stdio or HTTP)     │
-│  Content Hasher       │       │  HTTP: FastAPI (optional)             │
+│  Content Hasher       │       │  HTTP: GET /health (container probe)  │
 │  Smart Chunker        │       │                                       │
 │  Embedding Provider   │       │  Query Expansion (optional, needs LLM)│
 │  SQLite Writer        │       │  BM25 Document Search (FTS5, weighted)│
@@ -91,21 +91,25 @@ Concerns: query parsing, metadata filtering, BM25 keyword search, vector similar
 
 ## 3. Language & Dependencies
 
-### Primary language: Python
+### Primary language: TypeScript (Node.js ≥ 20)
 
-Rationale: the transcription tooling upstream of qkb is already Python, `sqlite-vec` has first-class Python bindings, the data/ML ecosystem is Python-native, and a single language reduces operational complexity.
+qkb started in Python (`qkb-search` on PyPI, last copy under `legacy/python/` at tag `v0.4.3`) and was rewritten in TypeScript, published to npm from 0.4. The reason is embedding throughput: `node-llama-cpp` ships prebuilt Metal-accelerated binaries, so a full re-embed on Apple Silicon takes minutes instead of hours (README, "Why the rewrite"). It is also the stack QMD uses. Code sketches in this document are illustrative pseudocode carried over from the original design; `src/` is authoritative.
 
 ### Key dependencies
 
 | Package | Purpose |
 |---------|---------|
+| `better-sqlite3` | Synchronous SQLite driver (FTS5 included) |
 | `sqlite-vec` | Vector similarity search extension for SQLite |
-| `python-frontmatter` | Parse YAML frontmatter from markdown |
-| `click` | CLI framework |
-| `rich` | Terminal output formatting |
-| `mcp` | MCP server SDK (stdio transport, Phase 1) |
-| `fastapi` + `uvicorn` | HTTP API (Phase 2, optional) |
-| `llama-cpp-python` (optional, `[local]` extra) | In-process GGUF embeddings — no Ollama service needed |
+| `node-llama-cpp` | In-process GGUF inference: the default `llama` embedding provider, plus optional reranking and query expansion |
+| `gray-matter` + `js-yaml` | Parse YAML frontmatter from markdown |
+| `smol-toml` | Parse `config.toml` |
+| `commander` | CLI framework |
+| `cli-progress` | Progress bars for `ingest` / `embed` |
+| `@modelcontextprotocol/sdk` | MCP server (stdio and Streamable HTTP transports) |
+| `zod` | MCP tool input schemas |
+
+Dev tooling: TypeScript (`tsc`), `vitest` (tests), `biome` (lint + format), `tsx` (scripts). The HTTP transport uses Node's built-in `node:http`; there is no web framework.
 
 Embedding and LLM dependencies are runtime-selected via the provider abstraction (see §7.3).
 
@@ -408,53 +412,29 @@ Splits markdown into chunks of approximately 500 tokens with 15% overlap, using 
 
 The embedding layer supports multiple backends. The choice of provider and model is a configuration decision, not a code change.
 
-```python
-class EmbeddingProvider(Protocol):
-    """Abstract interface for embedding providers."""
-    def embed(self, texts: list[str]) -> list[list[float]]: ...
-    def embed_query(self, query: str) -> list[float]: ...
-    @property
-    def dimension(self) -> int: ...
-    @property
-    def model_name(self) -> str: ...
-
-class OllamaProvider(EmbeddingProvider):
-    """Local embeddings via Ollama HTTP API.
-
-    Default provider. Requires Ollama running with the model pulled.
-    Supports nomic-embed-text, Qwen3-Embedding, or any Ollama-hosted model.
-    Handles asymmetric prefixing (search_document: / search_query:) per model.
-    """
-
-class OpenAICompatibleProvider(EmbeddingProvider):
-    """Remote embeddings via any OpenAI-compatible API.
-
-    Works with OpenAI, Azure OpenAI, Together AI, or any provider
-    that implements the /v1/embeddings endpoint.
-    Configured via base_url + api_key.
-    """
-
-class FakeProvider(EmbeddingProvider):
-    """Deterministic in-memory provider for unit tests and CI.
-
-    Produces stable pseudo-embeddings from text hashes — no network,
-    no model. Keeps the test suite runnable anywhere (including CI)
-    and keeps the provider abstraction honest.
-    """
-
-class LlamaCppProvider(EmbeddingProvider):
-    """In-process embeddings via llama-cpp-python (GGUF).
-
-    No resident service. The GGUF (default: embeddinggemma-300M-Q8_0 from
-    ggml-org, same model QMD uses) is auto-downloaded to
-    ~/.cache/qkb/models/ on first use. Install: pip install 'qkb-search[local]'.
-    model_name is the GGUF stem, so switching provider forces --full re-embed.
-    """
+```ts
+// src/embed/types.ts
+interface EmbeddingProvider {
+  embed(texts: string[]): Promise<number[][]>;
+  embedQuery(query: string): Promise<number[]>;
+  readonly dimension: number;
+  readonly modelName: string;
+  close?(): void;
+}
 ```
+
+| Provider (`[embedding].provider`) | Class | Notes |
+|---|---|---|
+| `llama` (default) | `LlamaProvider` | In-process GGUF via node-llama-cpp, Metal-accelerated on Apple Silicon. No resident service; the GGUF (default `embeddinggemma-300M-Q8_0` from `ggml-org`, the model QMD uses) is downloaded to `~/.cache/qkb/models/` on first use. Model load is deferred to the first embed call. |
+| `ollama` | `OllamaProvider` | Ollama HTTP API (`/api/embed`); for a shared or GPU host. |
+| `openai` | `OpenAIProvider` | Any OpenAI-compatible `/v1/embeddings` endpoint; key from `QKB_OPENAI_API_KEY` only. |
+| `fake` | `FakeProvider` | Deterministic, offline; unit tests and CI. |
+
+All providers apply the same per-model asymmetric prompt templates (`src/embed/templates.ts`), overridable with `doc_template` / `query_template`. `modelName` is recorded in `embedding_config`, so switching provider or model forces `qkb embed --full`.
 
 **Model switching**: The `embedding_config` table tracks which model produced the current embeddings. If the configured model differs from what's stored, the ingestion pipeline requires a `--full` re-embed. This prevents mixing vectors from incompatible models.
 
-**Default model**: `embeddinggemma` via Ollama (300M params, 768 dimensions, 100+ languages including Spanish, local, zero API cost — and the same model QMD defaults to). It runs comfortably on CPU-only hardware (verified target: Ryzen 3900X), so the GPU-less server deployment works. Alternatives, one config line away: `nomic-embed-text` (~140M, faster, English-focused) and `qwen3-embedding:0.6b` (1024d, strongest multilingual quality, slower on CPU). Switching models forces a full re-embed via the `embedding_config` check — at personal-vault scale that costs minutes, so it's not a one-way door. On machines without a resident Ollama (e.g. a laptop used for occasional searches), `provider = "local"` runs the same model in-process via llama-cpp-python — a ~1s model load per CLI invocation, loaded once for the MCP server.
+**Default model**: `embeddinggemma` (300M params, 768 dimensions, 100+ languages including Spanish, local, zero API cost — and the same model QMD defaults to). It runs comfortably on CPU-only hardware (verified target: Ryzen 3900X), so the GPU-less server deployment works. Alternatives, one config line away: `nomic-embed-text` (~140M, faster, English-focused) and `qwen3-embedding:0.6b` (1024d, strongest multilingual quality, slower on CPU). Switching models forces a full re-embed via the `embedding_config` check — at personal-vault scale that costs minutes, so it's not a one-way door. The default `llama` provider runs it in-process via node-llama-cpp (a ~1s model load per CLI invocation, loaded once for the MCP server); `provider = "ollama"` with `model = "embeddinggemma"` uses the same model on an Ollama host, which is how the container image embeds.
 
 ---
 
@@ -469,7 +449,7 @@ Inspired by QMD's `search` / `vsearch` / `query` split, but with an additional t
 | 1 | `qkb search` | BM25 document search (FTS5, weighted columns) | ~ms | No |
 | 2 | `qkb vsearch` | Vector semantic search over chunks | ~100s of ms | No (just embedding) |
 | 3 | `qkb query` | Hybrid: BM25 + vector + RRF fusion | ~100s of ms | No |
-| 4 | `qkb query --rerank` | Hybrid + query expansion + LLM re-ranking | ~20-60s | Yes |
+| 4 | `qkb query --rerank` / `--expand` | Hybrid + LLM re-ranking and/or query expansion | ~20-60s | Yes |
 
 **Tier 1 — BM25 document search** (`search`): Fast exact-term matching via SQLite FTS5 against `documents_fts`, with column weights (title 5.0 > tags 3.0 > context 2.0 > body 1.0 > type 0.5). Returns ranked *documents* — best for when you know the specific words and want the right note to open. Matched-term snippets come from FTS5's `snippet()` on the body column.
 
@@ -477,7 +457,7 @@ Inspired by QMD's `search` / `vsearch` / `query` split, but with an additional t
 
 **Tier 3 — Hybrid with RRF** (`query`): Runs both searches in parallel and merges at the *document* level: BM25 already returns documents; the vector chunk list is deduplicated to documents (best chunk per document, preserving rank order) before fusion. RRF then merges the two document-level ranked lists. This is the default for most queries. Matching passages from the vector path are attached to results when available; BM25-only hits use FTS5 snippets.
 
-**Tier 4 — Hybrid + LLM re-ranking** (`query --rerank`): Adds query expansion (LLM generates alternative phrasings) and position-aware re-ranking. Best quality, significant latency. Optional — requires a local LLM like Qwen3.5-2B via Ollama. **Phase 2** — in Phase 1 the flag exists and returns "re-ranking not configured".
+**Tier 4 — Hybrid + LLM stages** (`query --rerank` and/or `--expand`): Adds query expansion (LLM generates alternative phrasings) and/or position-aware re-ranking; the two are independent. Best quality, significant latency. Optional and off by default: `--rerank` / `--expand` per query, or `[rerank]` / `[expansion] enabled = true`. Both run in-process through node-llama-cpp with QMD's GGUFs (Qwen3-Reranker-0.6B; QMD's fine-tuned 1.7B expansion model), downloaded on first use. Either stage failing logs a warning and returns plain hybrid results (ADR-020).
 
 ### 8.2 Reciprocal Rank Fusion (RRF)
 
@@ -631,89 +611,89 @@ qkb get <UUID> --open        # open in Obsidian via URI
 
 ## 9. Interfaces
 
-qkb exposes three interfaces. All three call the same underlying search and retrieval logic.
+qkb exposes two interfaces, the CLI and the MCP server (over stdio or Streamable HTTP). Both call the same search and retrieval logic (`src/search/service.ts`).
 
-### 9.1 CLI (Click)
+### 9.1 CLI (commander)
 
 ```
-# Ingestion
-qkb ingest [--vault-path PATH] [--db-path PATH] [--full]
-qkb ingest --stats
+# Ingestion (two-phase, ADR-014)
+qkb ingest [--full] [-v]     # structural index: documents, chunks, FTS (no model)
+qkb embed [--full]           # vectors for chunks that lack them (resumable)
+qkb watch [--interval S]     # re-run ingest + embed on a timer
 
 # Search (four tiers)
 qkb search "query"              [filters] [--limit N]
 qkb vsearch "query"             [filters] [--limit N]
 qkb query "query"               [filters] [--limit N]
-qkb query "query" --rerank      [filters] [--limit N]
+qkb query "query" --rerank      [--expand]  [filters] [--limit N]
 
 # Filters (apply to any search command)
---context CTX    --type TYPE    --tags T1,T2    --date-from YYYY-MM-DD    --date-to YYYY-MM-DD
+--type TYPE    --tags T1,T2    --date-from YYYY-MM-DD    --date-to YYYY-MM-DD
+--vault NAME   (repeatable)    --field key=value (repeatable, AND)
+--context / --source           (deprecated shorthands for --field)
 
 # Output formats
 --json          # structured JSON
---files         # uuid,score,filepath,context (for piping)
+--files         # document_id,score,file_path,vault (for piping)
 
 # Retrieval
 qkb get <UUID>               # metadata + paths + obsidian URI
 qkb get <UUID> --raw         # include full markdown body
 qkb get <UUID> --open        # open in Obsidian
 
-# Contexts
-qkb contexts                             # list context values with counts + descriptions
-qkb context describe <label> "<text>"    # attach/update a description
-qkb context describe <label> --remove
+# Declared fields (replaces `qkb contexts` / `qkb context describe`, ADR-016/017)
+qkb fields [--json]          # declared fields, descriptions, top values
 
 # Status
-qkb status                   # index health, counts, last ingestion
+qkb status [--json]          # index health, counts, pending vectors, last ingestion
 ```
 
 ### 9.2 MCP Server
 
-Exposes search and retrieval as MCP tools for LLM agents. Supports stdio (subprocess) in Phase 1; HTTP (long-lived daemon) in Phase 2.
+Exposes search and retrieval as MCP tools for LLM agents, over two transports: stdio (the client spawns qkb as a subprocess) and Streamable HTTP (one long-lived process, one model load, any number of clients). Both serve the same tools (`src/server/mcp.ts`); `--watch` on either re-indexes on a timer while serving.
 
 ```yaml
 tools:
   - qkb:
-      description: "Search personal knowledge base with hybrid BM25 + vector retrieval"
+      description: "Hybrid BM25 + vector search; lists configured vaults and declared fields"
       params:
         query: string (required)
-        context: string (optional)
         type: string (optional)
         tags: list[string] (optional)
         date_from: string (optional)
         date_to: string (optional)
+        vaults: list[string] (optional)
+        fields: map[string, string] (optional, AND)
         limit: int (optional, default 10)
-        rerank: bool (optional, default false)
+        rerank: bool (optional, default from [rerank])
+        expand: bool (optional, default from [expansion])
+        context / source: string (optional, deprecated shorthands for fields)
 
   - qkb_get:
-      description: "Retrieve a document by UUID"
+      description: "Retrieve a document by UUID, with every stored property and all related notes"
       params:
         document_id: string (required — full or prefix)
         include_raw: bool (optional, default false)
-        include_siblings: bool (optional, default true)
+        include_related: bool (optional, default true)
 
   - qkb_status:
-      description: "Index health and stats, including the list of context values with counts and descriptions"
+      description: "Index health: counts, per-vault counts, declared fields and their common values"
 ```
-
-Search results carry `context_description` when available; `qkb_get` raw text is prefixed with `<!-- Context: ... -->` (see §8.7).
 
 ```bash
-qkb mcp                       # stdio (subprocess per client)
-qkb mcp --http                # HTTP daemon on localhost:8181  (Phase 2)
-qkb mcp --http --port 8080    #                                (Phase 2)
-qkb mcp --http --daemon       # background, PID file           (Phase 2)
-qkb mcp stop                  #                                (Phase 2)
+qkb mcp                                 # stdio (subprocess per client)
+qkb mcp --http                          # Streamable HTTP at http://127.0.0.1:8181/mcp
+qkb mcp --http --port 9000 --watch      # custom port, re-index every [watch].interval
+qkb mcp --http --host 0.0.0.0           # all interfaces (containers, LAN)
 ```
 
-### 9.3 HTTP API (Phase 2, Optional)
+### 9.3 HTTP Transport
 
-Thin FastAPI wrapper for web UIs or non-MCP integrations. Not part of Phase 1.
+`qkb mcp --http` (`src/server/http.ts`) is the only HTTP surface; there is no separate REST API. It is stateless: every `POST /mcp` gets a fresh MCP server and transport over one shared context (connection, provider, lock), with plain JSON responses rather than SSE. `GET /health` serves container probes. It binds to loopback by default (`[mcp] host`/`port`, `QKB_MCP_HOST`/`QKB_MCP_PORT`). Requests carrying a browser `Origin` are refused unless it is loopback or listed in `[mcp] allowed_origins` / `QKB_ALLOWED_ORIGINS` (DNS-rebinding guard). There is no authentication; on a shared network put it behind a firewall or an authenticating reverse proxy.
 
 ```
-GET  /search?q=...&context=...&type=...&limit=...
-GET  /get/<uuid>?raw=true
-GET  /status
+POST /mcp       # MCP JSON-RPC (Streamable HTTP, stateless)
+GET  /health    # liveness probe
 ```
 
 ---
@@ -722,97 +702,119 @@ GET  /status
 
 ```
 qkb/
-├── pyproject.toml              # dist name qkb-search, console script qkb
-├── README.md
-├── LICENSE
+├── package.json                # npm package @miguelarios/qkb, bin `qkb` -> dist/cli.js
+├── tsconfig.json / tsconfig.build.json / biome.json / vitest.config.ts
+├── Dockerfile                  # HTTP MCP service image (`qkb mcp --http --watch`)
+├── docker-compose.example.yml
+├── Formula/qkb.rb              # Homebrew formula wrapping the npm tarball
+├── CHANGELOG.md / README.md / CLAUDE.md / LICENSE
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml              # lint + typecheck + tests (push/PR)
-│       └── release.yml         # build + PyPI trusted publishing (v* tags)
+│       ├── ci.yml              # tests + biome + tsc + build (Node 20/22), docker build
+│       ├── release.yml         # release on merge: npm trusted publishing, tag, GitHub Release
+│       ├── gitleaks.yml        # secret scan
+│       └── claude-code-review.yml
 ├── docs/
 │   ├── PRD.md
 │   ├── DESIGN.md               # this document
+│   ├── GUIDE.md                # how qkb reads your notes
 │   ├── adr/                    # decision log
-│   └── plans/                  # implementation plans
+│   └── plans/                  # implementation plans (historical)
+├── scripts/
+│   └── golden-queries.ts       # PRD acceptance benchmark (+ .example.yaml schema)
 ├── src/
-│   └── qkb/
-│       ├── __init__.py
-│       ├── cli.py                  # Click CLI commands
-│       ├── config.py               # Paths, defaults, constants
-│       ├── db.py                   # SQLite connection, schema, migrations
-│       ├── models.py               # Dataclasses: Document, Chunk, SearchResult, etc.
-│       │
-│       ├── ingest/                 # Subsystem 1
-│       │   ├── __init__.py
-│       │   ├── walker.py           # Vault walking + frontmatter parsing
-│       │   ├── chunker.py          # Smart break-point chunking
-│       │   ├── hasher.py           # SHA-256 content hashing
-│       │   └── storage.py          # SQLite write operations (documents, FTS, chunks, tags, metadata)
-│       │
-│       ├── search/                 # Subsystem 2
-│       │   ├── __init__.py
-│       │   ├── bm25.py             # FTS5 document search (weighted columns)
-│       │   ├── vector.py           # sqlite-vec chunk search + document dedup
-│       │   ├── hybrid.py           # RRF fusion + tier orchestration
-│       │   ├── reranker.py         # LLM re-ranking + position-aware blending (Phase 2)
-│       │   ├── expander.py         # LLM query expansion (Phase 2)
-│       │   ├── filters.py          # Metadata filter builder
-│       │   ├── grouping.py         # Source grouping + sibling surfacing
-│       │   └── retrieval.py        # Document get by UUID (3 formats)
-│       │
-│       ├── embed/                  # Embedding provider abstraction
-│       │   ├── __init__.py
-│       │   ├── base.py             # EmbeddingProvider protocol
-│       │   ├── ollama.py           # Ollama HTTP provider
-│       │   ├── openai_compat.py    # OpenAI-compatible remote provider
-│       │   └── fake.py             # Deterministic test provider
-│       │
-│       └── server/                 # Interface layer
-│           ├── __init__.py
-│           ├── mcp.py              # MCP tool server (stdio; HTTP in Phase 2)
-│           └── http.py             # FastAPI REST wrapper (Phase 2)
+│   ├── cli.ts                  # entry point: assembles the commander program
+│   ├── config.ts               # layered config: defaults, TOML, env, flags
+│   ├── types.ts                # shared types: ParsedNote, results, etc.
+│   │
+│   ├── cli/                    # one module per command group
+│   │   ├── ingest.ts           # `ingest` (structural) + `embed` (vectors)
+│   │   ├── search.ts           # `search` / `vsearch` / `query`
+│   │   ├── get.ts              # `get`
+│   │   ├── fields.ts           # `fields` (+ hidden `contexts`/`context` pointers)
+│   │   ├── status.ts           # `status`
+│   │   ├── mcp.ts              # `mcp` (stdio / --http) + `watch`
+│   │   ├── progress.ts         # TTY progress bars
+│   │   └── shared.ts           # filter flags, output formats, error exits
+│   │
+│   ├── db/
+│   │   ├── schema.ts           # SQLite connection + DDL, schema version
+│   │   └── storage.ts          # write operations, one transaction each
+│   │
+│   ├── ingest/                 # Subsystem 1
+│   │   ├── parser.ts           # frontmatter -> ParsedNote (lenient dates, aliases, fields)
+│   │   ├── chunker.ts          # break-point-scored chunking
+│   │   ├── pipeline.ts         # walk, diff, chunk, store, embed (multi-vault)
+│   │   └── watch.ts            # timed re-index for long-running processes
+│   │
+│   ├── search/                 # Subsystem 2
+│   │   ├── bm25.ts             # FTS5 document search (weighted columns)
+│   │   ├── vector.ts           # sqlite-vec chunk search + document dedup
+│   │   ├── hybrid.ts           # RRF fusion + tier orchestration
+│   │   ├── filters.ts          # metadata / field / vault filter builder
+│   │   ├── hydrate.ts          # result JSON contract + related notes
+│   │   ├── retrieval.ts        # document get by UUID (3 formats)
+│   │   ├── service.ts          # shared orchestration for CLI and MCP
+│   │   └── errors.ts           # user-facing validation errors
+│   │
+│   ├── llm/                    # optional tier-4 stages (ADR-020)
+│   │   ├── rerank.ts           # reranker + position-aware blending
+│   │   └── expand.ts           # query expansion
+│   │
+│   ├── embed/                  # embedding provider abstraction
+│   │   ├── types.ts            # EmbeddingProvider interface
+│   │   ├── provider.ts         # getProvider dispatch
+│   │   ├── llama.ts            # node-llama-cpp in-process GGUF (default)
+│   │   ├── models.ts           # GGUF download + cache
+│   │   ├── ollama.ts           # Ollama HTTP provider
+│   │   ├── openai.ts           # OpenAI-compatible remote provider
+│   │   ├── templates.ts        # per-model prompt templates
+│   │   └── fake.ts             # deterministic test provider
+│   │
+│   └── server/                 # interface layer
+│       ├── mcp.ts              # MCP tool server (stdio + shared context)
+│       └── http.ts             # Streamable HTTP transport + /health
 │
-└── tests/
-    ├── test_chunker.py
-    ├── test_walker.py
-    ├── test_storage.py
-    ├── test_bm25.py
-    ├── test_vector.py
-    ├── test_rrf.py
-    ├── test_filters.py
-    ├── test_cli.py
-    ├── test_mcp.py
-    └── fixtures/                   # Synthetic markdown files with frontmatter (no real personal data)
+└── test/                       # vitest; *.test.ts per module, plus cli/, embed/, helpers/
+    └── integration/            # real-model tests, `npm run test:integration` only
 ```
+
+Fixtures and tests use synthetic notes only (no real personal data).
 
 ---
 
 ## 11. Configuration
 
-Layered resolution, later wins: built-in defaults → config file (`~/.config/qkb/config.toml`, overridable via `QKB_CONFIG`) → environment variables (`QKB_*`) → CLI flags. Everything below is a default.
+Layered resolution, later wins: built-in defaults → config file (`~/.config/qkb/config.toml`, overridable via `QKB_CONFIG`) → environment variables (`QKB_*`, for a subset of keys; the README lists them) → CLI flags. Everything below is a default; the README's configuration reference is the full list.
 
 ```toml
 # ~/.config/qkb/config.toml — all values shown are the defaults
 
-[vault]
+[vault]                               # shorthand for a one-entry [[vaults]] list (ADR-015)
 path = "~/Notes"
 name = "Notes"                        # for Obsidian URI construction
+
+# Several vaults, one index: replace [vault] with
+# [[vaults]]
+# name = "Notes"
+# path = "~/Notes"
+# [[vaults]]
+# name = "Wiki"
+# path = "~/Wiki"
 
 [database]
 path = "~/.local/share/qkb/qkb.db"
 
 [embedding]
-provider = "ollama"                   # "ollama" | "local" | "openai_compatible"
-model = "embeddinggemma"              # alternatives: "nomic-embed-text", "qwen3-embedding:0.6b"
+provider = "llama"                    # llama | ollama | openai | fake
+model = "embeddinggemma-300M-Q8_0"    # for ollama: e.g. "embeddinggemma"
 dimension = 768
 ollama_host = "http://localhost:11434"
-# For provider = "local" (in-process llama.cpp, no Ollama service):
-# local_gguf_repo = "ggml-org/embeddinggemma-300M-GGUF"
-# local_gguf_file = "embeddinggemma-300M-Q8_0.gguf"
-# model_cache_dir = "~/.cache/qkb/models"
-# For remote provider:
-# api_base = "https://api.openai.com/v1"
-# api_key comes from env only (QKB_EMBEDDING_API_KEY) — never in the file
+local_gguf_repo = "ggml-org/embeddinggemma-300M-GGUF"
+local_gguf_file = "embeddinggemma-300M-Q8_0.gguf"
+model_cache_dir = "~/.cache/qkb/models"
+openai_base_url = ""                  # API key from env only (QKB_OPENAI_API_KEY), never in the file
+# doc_template / query_template: optional "{t}" prompt templates
 
 [chunking]
 target_tokens = 500
@@ -823,22 +825,52 @@ default_limit = 10
 rrf_k = 60
 vec_candidates = 30
 fts_candidates = 30
-fts_weights = [5.0, 3.0, 2.0, 1.0, 0.5]   # title, tags, context, body, type (ADR-007)
 
-[rerank]                              # tier 4, Phase 2
-model = "qwen3.5:2b"                  # via Ollama
-enabled = false
-query_expansion = false
+[search.fts_weights]                  # per FTS column, 0 = ignore (ADR-018, ADR-021)
+title = 5.0
+aliases = 5.0
+headings = 3.0
+tags = 3.0
+sibling_fields = 3.0
+fields = 2.0
+body = 1.0
+type = 0.5
 
 [frontmatter]                         # user-remappable (see §4); list = aliases, first present wins
-id      = "id"
-type    = "type"
-title   = "title"
-context = "context"
-source  = "source"
-date    = "date"
-created = ["created", "date created"]
-tags    = "tags"
+id       = ["id"]
+type     = ["type"]
+title    = ["title"]                  # falls back to the file name
+aliases  = ["aliases", "alias"]
+date     = ["date"]
+created  = ["created", "date created"]
+modified = ["modified", "updated", "date modified"]
+tags     = ["tags", "tag"]
+
+[frontmatter.fields]                  # declared extra properties (ADR-016/021); none by default
+# project = "Project this note belongs to"
+# source  = { description = "Recording a note came from", siblings = true }
+
+[mcp]                                 # HTTP transport only (`qkb mcp --http`)
+host = "127.0.0.1"
+port = 8181
+allowed_origins = []                  # browser origins besides loopback; ["*"] disables the check
+
+[watch]
+interval = 300                        # seconds between re-index runs (`--watch`, `qkb watch`)
+
+[rerank]                              # tier 4, optional (ADR-020)
+enabled = false
+provider = "llama"                    # llama | fake
+gguf_repo = "ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF"
+gguf_file = "qwen3-reranker-0.6b-q8_0.gguf"
+candidates = 30
+
+[expansion]                           # tier 4, optional (ADR-020)
+enabled = false
+provider = "llama"                    # llama | fake
+gguf_repo = "tobil/qmd-query-expansion-1.7B-gguf"
+gguf_file = "qmd-query-expansion-1.7B-q4_k_m.gguf"
+max_variants = 4
 ```
 
 ---
@@ -847,34 +879,33 @@ tags    = "tags"
 
 ### Packaging
 
-- **Distribution name `qkb-search`** (the name `qkb` is taken on PyPI by an unrelated package); **import package `qkb`**; **console script `qkb`**. Same pattern as `beautifulsoup4`/`bs4`.
-- `pyproject.toml` with the **hatchling** build backend, PEP 621 metadata, `requires-python = ">=3.11"`.
-- Version single-sourced in `pyproject.toml`; releases are cut by tagging `vX.Y.Z`.
-- Install paths: `pip install qkb-search`, `pipx install qkb-search`, `uvx --from qkb-search qkb`.
+- **npm package `@miguelarios/qkb`** (scoped; `qkb` on npm is unrelated), **bin `qkb`** → `dist/cli.js`. ESM, `engines.node >= 20`; `tsc -p tsconfig.build.json` builds `dist/`, which is all that ships (plus README).
+- Version single-sourced in `package.json`; `CHANGELOG.md` has a `## X.Y.Z (YYYY-MM-DD)` section per release.
+- Install paths: `npm install -g @miguelarios/qkb`, `npx @miguelarios/qkb`, Homebrew (`Formula/qkb.rb`, `depends_on "node"`, installs the published npm tarball), or the container image built from `Dockerfile` (§13).
+- The original Python package (`qkb-search` on PyPI, last `v0.3.0`) is superseded and gets no further releases.
 
 ### CI workflow (`.github/workflows/ci.yml`)
 
-On every push and pull request:
+On every push to `main` and every pull request:
 
-- **ruff** — lint + format check
-- **mypy** — type check
-- **pytest** — unit tests on a matrix: {ubuntu, macos} × Python {3.11, 3.12, 3.13}
+- **vitest** (`npm test`), **biome** (lint + format), **tsc --noEmit** (types), `npm run build`, on Node {20, 22}
+- `docker build` of the service image (build only, nothing pushed)
 
-Tests never require Ollama: unit tests use the `FakeProvider`; tests that need a real embedding model are marked `integration` and excluded in CI. This keeps CI fast and forces the provider abstraction to stay honest.
+Unit tests never require a model or network: they use the `fake` provider. Tests that need a real model live in `test/integration/` and run only with `npm run test:integration`. This keeps CI fast and forces the provider abstraction to stay honest. `gitleaks.yml` scans for secrets.
 
 ### Release workflow (`.github/workflows/release.yml`)
 
-On pushing a `v*` tag:
+Release on merge. A release is a PR titled `chore(release): X.Y.Z` that bumps `package.json` / `package-lock.json` and adds the CHANGELOG section. On every push to `main` the workflow checks whether `package.json`'s version changed; if so it:
 
-1. Build sdist + wheel (`python -m build`).
-2. Publish to PyPI via **trusted publishing** (OIDC) — no long-lived API token stored in GitHub.
-3. Create a GitHub release with the artifacts attached.
+1. Runs the checks and builds (`npm ci`, test, tsc, biome, build, `npm pack`).
+2. Publishes to npm via **trusted publishing** (OIDC) with provenance — no npm token is stored in the repo. Skipped if that version is already on npm, so re-runs are safe.
+3. Waits until npm serves the version, then creates the `vX.Y.Z` tag and a GitHub Release whose notes are the CHANGELOG section.
 
-One-time manual setup: register the GitHub repo as a *pending publisher* for `qkb-search` on PyPI before the first release.
+A hand-pushed `v*` tag matching `package.json` still publishes as a fallback. After a release, `Formula/qkb.rb` is bumped to the new tarball and checksum.
 
 ### Public repo hygiene
 
-The repo is public. All docs, examples, tests, and fixtures use synthetic data only (RFC 2606 domains, reserved IPs, fiction-range phone numbers, synthetic names/contexts). Real vault content only ever exists in the local runtime database, which is never committed. `.gitignore` covers `*.db`, local config, and virtualenvs; the repo owner's global gitleaks pre-commit hook provides a second line of defense.
+The repo is public. All docs, examples, tests, and fixtures use synthetic data only (RFC 2606 domains, reserved IPs, fiction-range phone numbers, synthetic names/contexts). Real vault content only ever exists in the local runtime database, which is never committed. `.gitignore` covers `*.db`, local config, and build output; the repo owner's global gitleaks pre-commit hook provides a second line of defense.
 
 ---
 
@@ -885,72 +916,63 @@ qkb runs in multiple environments with the same codebase.
 ### Local (macOS)
 
 ```bash
-pip install qkb-search
-qkb ingest
+npm install -g @miguelarios/qkb      # or the Homebrew formula
+qkb ingest && qkb embed
 qkb query "traefik certificate renewal"
 qkb mcp  # stdio for Claude Code / Claude Desktop
 ```
 
 ### Docker (home server / NAS)
 
+The `Dockerfile` image runs `qkb mcp --http --watch`: Streamable HTTP MCP on port 8181 plus a timed re-index, with a `/health` healthcheck. It drops node-llama-cpp's CUDA builds and is meant to embed through Ollama (`provider = "llama"` still works on the CPU). `docker-compose.example.yml` is the reference setup:
+
 ```yaml
 services:
   qkb:
     build: .
+    restart: unless-stopped
+    ports:
+      - "8181:8181"                  # http://<host>:8181/mcp
     volumes:
       - /path/to/obsidian-vault:/vault:ro
-      - /path/to/qkb-data:/data
+      - qkb-data:/data               # index + model cache
+      # - ./qkb-config.toml:/config/config.toml:ro   # [[vaults]], [frontmatter.fields]
     environment:
       - QKB_VAULT_PATH=/vault
-      - QKB_DB_PATH=/data/qkb.db
-      - QKB_OLLAMA_HOST=http://ollama:11434
-    ports:
-      - "8181:8181"
+      - QKB_EMBEDDING_PROVIDER=ollama
+      - QKB_EMBEDDING_MODEL=embeddinggemma
+      - QKB_OLLAMA_HOST=http://gpu-host.example.com:11434
 ```
 
-Cron ingestion:
-```bash
-*/15 * * * * docker exec qkb qkb ingest
-```
-
-MCP daemon for remote agents (Phase 2):
-```bash
-docker exec qkb qkb mcp --http --daemon
-```
+No cron job is needed: the server re-indexes every `[watch].interval` seconds (default 300). A one-off `docker exec qkb node /app/dist/cli.js ingest` also works while it serves (the database runs in WAL mode).
 
 ---
 
 ## 14. Phased Implementation
 
-### Phase 1: Core (MVP)
+### Phase 1: Core (MVP) — shipped
 
-Both subsystems with tiers 1-3 (no LLM re-ranking), CLI, MCP stdio server, packaging, and CI/CD.
+Both subsystems with tiers 1-3, CLI, MCP stdio server, packaging, and CI/CD. Built first in Python (`qkb-search` 0.1–0.3 on PyPI), then rewritten in TypeScript and published to npm as `@miguelarios/qkb` 0.4.
 
-- Repo scaffolding: pyproject (qkb-search), CI workflow, release workflow
 - Layered configuration (TOML file + env + flags) with user-remappable frontmatter keys
-- Vault walker + frontmatter parser (lenient dates, alias keys, blank-value handling)
+- Frontmatter parser (lenient dates, alias keys, blank-value handling)
 - Smart chunker (break-point scoring with transcript awareness)
-- Embedding provider abstraction (Ollama + Fake providers; embeddinggemma default)
-- SQLite schema + storage with content-hash diffing (documents, documents_fts, chunks, chunks_vec, tags, metadata, context_descriptions)
-- Context descriptions: `qkb contexts`, `qkb context describe`, result enrichment
-- BM25 document search (FTS5 weighted columns)
-- Vector search (sqlite-vec) with document dedup
-- Hybrid search with document-level RRF fusion
-- Metadata filtering (context, source, type, tags, date range)
-- Source grouping + sibling surfacing
-- Document retrieval (3 formats: file path, Obsidian URI, raw text)
-- CLI (Click) with all four search commands (tier 4 returns "reranking not configured" until Phase 2)
-- MCP server (stdio)
-- v0.1.0 released to PyPI
+- Embedding provider abstraction (`llama` default, `ollama`, `openai`, `fake`; embeddinggemma default)
+- SQLite schema + storage with content-hash diffing; two-phase `ingest` / `embed` (ADR-014)
+- BM25 document search (FTS5 weighted columns), vector search (sqlite-vec) with document dedup, document-level RRF fusion
+- Metadata filtering (type, tags, date range) and document retrieval (file path, Obsidian URI, raw text)
+- CLI (commander) and MCP server (stdio)
 
-### Phase 2: Enhanced Search
+### Phase 2: Enhanced Search — shipped (0.5–0.6)
 
-LLM-powered search features (tier 4) and extended interfaces.
-
-- Query expansion via local LLM
-- LLM re-ranking with position-aware blending
-- MCP HTTP transport (daemon mode)
-- HTTP REST API (FastAPI)
+- MCP over Streamable HTTP (`qkb mcp --http`) alongside stdio, with `/health` (0.5); no separate REST API
+- Watch mode (`qkb mcp --watch`, `qkb watch`) and WAL-mode SQLite for a long-running server (0.5)
+- Multiple vaults in one index (`[[vaults]]`, `--vault`, ADR-015) (0.5)
+- Declared extra frontmatter properties (`[frontmatter.fields]`, `--field`, ADR-016) (0.5)
+- Container image (`Dockerfile`) and compose example (0.5); Homebrew formula; release on merge to npm
+- Every note with an `id` indexed; `context`/`source` become ordinary properties (ADR-017) (0.6)
+- Title, aliases and headings as ranking signals (ADR-018); related notes from wikilinks, backlinks and declared sibling fields (ADR-019/021) (0.6)
+- Optional local reranking with position-aware blending and optional query expansion, via node-llama-cpp (ADR-020) (0.6)
 
 ### Phase 3: Attachment Extraction (Future)
 
@@ -966,7 +988,7 @@ Extraction by file type:
 ### Phase 4: Additional Enhancements (Future)
 
 - Web search UI served from the home server
-- Filesystem watcher (`watchdog`) for real-time indexing
+- Event-driven filesystem watching (watch mode today re-indexes on a timer)
 - Domain-specific extensions (e.g., recipe-aware chunking for a dedicated context)
 - Fine-tuned query expansion model (following QMD's approach)
 
@@ -985,24 +1007,24 @@ Extraction by file type:
 | **Sibling documents** | Documents sharing the same `source` slug — e.g., a transcript and its AI notes from the same recording. |
 | **Effective date** | Resolved date for a document: `frontmatter["date"]` if present, otherwise `frontmatter["date created"]`. |
 | **Smart chunking** | Break-point-scored text splitting that respects markdown structure (headings, paragraphs, code blocks, speaker turns). |
-| **Trusted publishing** | PyPI's OIDC-based release mechanism — GitHub Actions authenticates directly to PyPI without a stored API token. |
+| **Trusted publishing** | npm's OIDC-based release mechanism — GitHub Actions authenticates directly to npm without a stored API token. |
 
 ## Appendix B: QMD Feature Comparison
 
 | Feature | QMD | qkb |
 |---------|-----|------------|
-| **Language** | TypeScript (node-llama-cpp) | Python (Ollama / OpenAI-compatible) |
+| **Language** | TypeScript (node-llama-cpp) | TypeScript (node-llama-cpp; also Ollama / OpenAI-compatible) |
 | **Metadata model** | Collections (dirs) + user-added context descriptions | Frontmatter: type, context, source, date, tags |
 | **Indexing trigger** | All files in a collection | Opt-in via `context` or `source` in frontmatter |
 | **BM25 granularity** | Document-level, weighted columns | Document-level, weighted columns (ADR-005) |
 | **Sibling documents** | Not supported | Automatic via shared `source` slug |
 | **Date handling** | File modification date | `date` > `created` priority resolution |
 | **Filtering** | By collection | By context, source, type, tags, date range |
-| **Embedding** | embeddinggemma-300M (GGUF, in-process) | Configurable: Ollama, OpenAI-compatible |
+| **Embedding** | embeddinggemma-300M (GGUF, in-process) | embeddinggemma-300M in-process by default; Ollama or OpenAI-compatible |
 | **Search tiers** | 3 (search, vsearch, query) | 4 (search, vsearch, query, query --rerank) |
-| **Re-ranking** | Always on for `query` | Optional, explicit `--rerank` flag (Phase 2) |
-| **Query expansion** | Fine-tuned 1.7B model | Optional, via local LLM (tier 4, Phase 2) |
+| **Re-ranking** | Always on for `query` | Optional: `--rerank` or `[rerank] enabled` (Qwen3-Reranker-0.6B) |
+| **Query expansion** | Fine-tuned 1.7B model | Optional: `--expand` or `[expansion] enabled` (same QMD model) |
 | **Document retrieval** | By path or 6-char docid | By frontmatter UUID → file path + Obsidian URI + raw text |
-| **MCP server** | Yes (stdio + HTTP) | Yes (stdio Phase 1, HTTP Phase 2) |
-| **Distribution** | — | PyPI (`qkb-search`), GitHub Actions CI/CD |
+| **MCP server** | Yes (stdio + HTTP) | Yes (stdio + Streamable HTTP) |
+| **Distribution** | npm | npm (`@miguelarios/qkb`), Homebrew formula, Docker image; release on merge |
 | **Attachment extraction** | No | Planned (Phase 3) |
