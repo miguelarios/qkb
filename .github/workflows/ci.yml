@@ -20,6 +20,26 @@ jobs:
       - run: npx biome check .
       - run: npx tsc --noEmit
       - run: npm run build
+  node-mismatch:
+    # Installs under one Node and runs under another (#41, #42): qkb must
+    # fetch a better-sqlite3 build for the running Node instead of dying on a
+    # NODE_MODULE_VERSION mismatch.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: node --version
+      - run: >-
+          node --input-type=module -e "const { connect } = await import('./dist/db/schema.js');
+          const db = connect(':memory:', 8); console.log(db.prepare('select vec_version() v').get()); db.close();"
   docker:
     # Build-only: proves the service image still builds. Nothing is pushed.
     runs-on: ubuntu-latest

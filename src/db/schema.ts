@@ -4,6 +4,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
+import { nativeBinding } from "./native.js";
 
 /** Bump when the table layout changes. An index built with another version
  * is reset on open (see `resetIfOutdated`): everything in it is derived from
@@ -226,7 +227,9 @@ export function connect(dbPath: string, embeddingDim: number): Database.Database
   if (dbPath !== ":memory:") {
     mkdirSync(dirname(dbPath), { recursive: true });
   }
-  const db = new Database(dbPath);
+  // nativeBinding() is undefined unless the installed addon does not fit
+  // this Node; see ./native.ts.
+  const db = new Database(dbPath, { nativeBinding: nativeBinding() });
   sqliteVec.load(db);
   db.pragma("foreign_keys = ON");
   // A long-running server reads while `qkb ingest`/`embed` (or the server's

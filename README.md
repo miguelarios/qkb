@@ -14,6 +14,18 @@ npm i -g @miguelarios/qkb
 
 Requires Node ≥20. No separate service, no compile step for the default provider — `node-llama-cpp` ships prebuilt native binaries (Metal-accelerated on Apple Silicon) that download automatically on install.
 
+qkb runs under any Node ≥20, not only the one that installed it, so an MCP
+client that launches `qkb` with its own bundled Node works without pinning.
+Its SQLite addon (`better-sqlite3`) is compiled per Node major; when the
+installed build doesn't fit the running Node, qkb fetches the upstream
+prebuilt for that Node once into `~/.cache/qkb/native` (override with
+`QKB_NATIVE_CACHE_DIR`; `QKB_NATIVE_DOWNLOAD=0` turns the fetch off) and
+prints a note to stderr. Upstream publishes prebuilts for Node 22, 24, 25
+and 26; on other versions (e.g. Node 20), or offline, qkb exits with a
+message naming both Node versions and the `npm rebuild` command that fixes
+it. If npm warns that install scripts for `better-sqlite3` were skipped
+(npm's `allow-scripts` policy), the same fallback applies.
+
 **2. Point qkb at your vault** — create `~/.config/qkb/config.toml`:
 
 ```toml
@@ -238,6 +250,10 @@ configured `[[vaults]]` list.
 
 Plus `QKB_CONFIG`, which isn't a per-key override — it points qkb at a
 different `config.toml` path entirely.
+
+`QKB_NATIVE_CACHE_DIR` and `QKB_NATIVE_DOWNLOAD` (env only) control where
+qkb keeps a SQLite addon fetched for a Node other than the install-time one,
+and whether it may fetch one at all (`0` = no).
 
 ## MCP usage
 
