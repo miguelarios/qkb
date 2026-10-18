@@ -378,6 +378,12 @@ function stringify(value: unknown): string {
   return String(value);
 }
 
+function countNewlines(s: string): number {
+  let n = 0;
+  for (let i = s.indexOf("\n"); i !== -1; i = s.indexOf("\n", i + 1)) n++;
+  return n;
+}
+
 /** Required frontmatter alias-map keys (mirrors `qkb.config.DEFAULT_FRONTMATTER`). */
 function aliasesFor(fmMap: Record<string, string[]>, key: string): string[] {
   const v = fmMap[key];
@@ -479,6 +485,8 @@ export function parseNote(
     fields,
     siblingKeys: siblingFields.filter((k) => k in fields),
     body: post.content,
+    // gray-matter's content is always a suffix of the file.
+    bodyLine: countNewlines(raw.slice(0, raw.length - post.content.length)) + 1,
     filePath,
   };
 }

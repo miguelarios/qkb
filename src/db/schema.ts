@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS documents (
     indexed_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     fields_text    TEXT NOT NULL DEFAULT '',
     stem_key       TEXT NOT NULL DEFAULT '',  -- lower(file name without .md), for [[links]]
-    path_key       TEXT NOT NULL DEFAULT ''   -- lower(vault path without .md), for [[dir/Note]]
+    path_key       TEXT NOT NULL DEFAULT '',  -- lower(vault path without .md), for [[dir/Note]]
+    body_line      INTEGER                    -- file line the body starts on (#15)
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
     title, aliases, headings, tags, sibling_fields, fields, body, type, doc_id UNINDEXED,
@@ -45,6 +46,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     chunk_text    TEXT NOT NULL,
     chunk_source  TEXT NOT NULL DEFAULT 'body',
     token_count   INTEGER,
+    start_line    INTEGER,  -- 1-based line span within the body (#15)
+    end_line      INTEGER,
     UNIQUE(document_id, chunk_index)
 );
 CREATE TABLE IF NOT EXISTS tags (
@@ -84,6 +87,36 @@ CREATE INDEX IF NOT EXISTS idx_metadata_key ON metadata(key, value);
 CREATE INDEX IF NOT EXISTS idx_aliases_alias ON aliases(lower(alias));
 CREATE INDEX IF NOT EXISTS idx_links_target ON links(target);
 `;
+
+/** Columns added after a schema version shipped. They are nullable and
+ * derived, so they are added in place rather than resetting the index (which
+ * would force a full re-embed); ingest fills them in for existing notes. */
+const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
+  ["documents", "body_line", "INTEGER"],
+  ["chunks", "start_line", "INTEGER"],
+  ["chunks", "end_line", "INTEGER"],
+];
+
+function missingColumns(db: Database.Database): typeof ADDED_COLUMNS {
+  return ADDED_COLUMNS.filter(
+    ([table, column]) =>
+      !(db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).some(
+        (c) => c.name === column,
+      ),
+  );
+}
+
+/** Add `ADDED_COLUMNS` to an index created before them. Re-checked under
+ * the write lock so two processes opening the index at once don't both
+ * ALTER. */
+function addMissingColumns(db: Database.Database): void {
+  if (missingColumns(db).length === 0) return;
+  db.transaction(() => {
+    for (const [table, column, type] of missingColumns(db)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
+  }).immediate();
+}
 
 /** Every table qkb has ever created — dropped on a schema reset. */
 const ALL_TABLES = [
@@ -239,6 +272,7 @@ export function connect(dbPath: string, embeddingDim: number): Database.Database
   }
   resetIfOutdated(db);
   db.exec(SCHEMA_SQL);
+  addMissingColumns(db);
   db.prepare(
     "INSERT INTO meta (key, value) VALUES ('schema_version', ?) " +
       "ON CONFLICT(key) DO UPDATE SET value = excluded.value",

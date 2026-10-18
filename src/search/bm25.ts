@@ -54,6 +54,23 @@ export function hasMatchMarkers(text: string): boolean {
   return text.includes(MATCH_START);
 }
 
+/** The text of the snippet line holding its first match, markers and
+ * `…` elisions removed — a needle to find that line in the note (#15). A
+ * single line is never split across chunks, so it is found even when the
+ * snippet as a whole straddles a chunk boundary. `null` without a match. */
+export function firstMatchLine(snippet: string): string | null {
+  const at = snippet.indexOf(MATCH_START);
+  if (at === -1) return null;
+  const from = snippet.lastIndexOf("\n", at) + 1;
+  const to = snippet.indexOf("\n", at);
+  const line = snippet
+    .slice(from, to === -1 ? undefined : to)
+    .replaceAll(MATCH_START, "")
+    .replaceAll(MATCH_END, "")
+    .replace(/^…|…$/g, "");
+  return line.trim() ? line : null;
+}
+
 /** Translates internal control-char match markers back to the public `[`/`]`
  * bracket markers every external consumer (Python parity, `--json`, MCP)
  * expects. A no-op on text with no markers (vector chunk text, marker-less

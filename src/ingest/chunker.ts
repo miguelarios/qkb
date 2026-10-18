@@ -131,12 +131,21 @@ export function chunkText(text: string, targetTokens = 500, overlapPercent = 15)
       }
     }
 
-    const body = lines
-      .slice(start, cut)
-      .join("\n")
-      .replace(/^\n+|\n+$/g, "");
+    // Blank lines at either edge are dropped from the chunk; its line span
+    // (1-based, inclusive) covers exactly what is kept.
+    let first = start;
+    while (first < cut && lines[first] === "") first++;
+    let last = cut;
+    while (last > first && lines[last - 1] === "") last--;
+    const body = lines.slice(first, last).join("\n");
     if (body.trim()) {
-      chunks.push({ index: chunks.length, text: body, tokenCount: estimateTokens(body) });
+      chunks.push({
+        index: chunks.length,
+        text: body,
+        tokenCount: estimateTokens(body),
+        startLine: first + 1,
+        endLine: last,
+      });
     }
     if (cut >= n) {
       break;

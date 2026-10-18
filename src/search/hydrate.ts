@@ -14,6 +14,7 @@
 
 import type Database from "better-sqlite3";
 import { placeholders } from "../db/schema.js";
+import { firstMatchLine } from "./bm25.js";
 import type { RankedResult } from "./hybrid.js";
 
 /** How a related note connects to a result. */
@@ -48,6 +49,10 @@ export interface HydratedResult {
   effective_date: string;
   score: number;
   file_path: string;
+  /** 1-based line of `file_path` where the match is (`note.md:42`): the
+   * keyword hit's line, or the first line of the matched chunk. `null` when
+   * there is no matched text or the index predates line numbers (#15). */
+  line: number | null;
   obsidian_uri: string;
   matched_text: string | null;
   tags: string[];
@@ -118,6 +123,7 @@ interface DocumentRow {
   fields_text: string;
   stem_key: string;
   path_key: string;
+  body_line: number | null;
 }
 
 type RefRow = Pick<DocumentRow, "id" | "title" | "type" | "file_path" | "vault_name">;
@@ -134,6 +140,58 @@ function batchDocRows(conn: Database.Database, docIds: string[]): Map<string, Do
     byId.set(r.id, r);
   }
   return byId;
+}
+
+interface ChunkLines {
+  chunk_text: string;
+  start_line: number | null;
+}
+
+function batchChunks(conn: Database.Database, docIds: string[]): Map<string, ChunkLines[]> {
+  const byDoc = new Map<string, ChunkLines[]>();
+  if (docIds.length === 0) return byDoc;
+  const rows = conn
+    .prepare(
+      "SELECT document_id, chunk_text, start_line FROM chunks " +
+        `WHERE document_id IN (${placeholders(docIds.length)}) ORDER BY chunk_index`,
+    )
+    .all(...docIds) as (ChunkLines & { document_id: string })[];
+  for (const r of rows) {
+    const list = byDoc.get(r.document_id) ?? [];
+    list.push(r);
+    byDoc.set(r.document_id, list);
+  }
+  return byDoc;
+}
+
+/** The file line `matchedText` points at (#15): a vector match is a whole
+ * chunk (its first line); a keyword snippet is located by the line holding
+ * its first match. */
+function matchLine(
+  bodyLine: number | null,
+  chunks: ChunkLines[],
+  matchedText: string | null,
+): number | null {
+  if (bodyLine === null || !matchedText) return null;
+  const toFile = (bodyRelative: number) => bodyLine - 1 + bodyRelative;
+  const whole = chunks.find((c) => c.chunk_text === matchedText);
+  if (whole) return whole.start_line === null ? null : toFile(whole.start_line);
+  const needle = firstMatchLine(matchedText);
+  if (needle === null) return null;
+  for (const c of chunks) {
+    const at = c.chunk_text.indexOf(needle);
+    if (at === -1 || c.start_line === null) continue;
+    let newlines = 0;
+    for (
+      let i = c.chunk_text.indexOf("\n");
+      i !== -1 && i < at;
+      i = c.chunk_text.indexOf("\n", i + 1)
+    ) {
+      newlines++;
+    }
+    return toFile(c.start_line + newlines);
+  }
+  return null;
 }
 
 function batchTags(conn: Database.Database, docIds: string[]): Map<string, string[]> {
@@ -370,6 +428,8 @@ export function hydrate(
   const docRows = batchDocRows(conn, docIds);
   const presentIds = docIds.filter((id) => docRows.has(id));
   const tagsByDoc = batchTags(conn, presentIds);
+  const needLines = ranked.filter(([id, , text]) => text && docRows.has(id)).map(([id]) => id);
+  const chunksByDoc = batchChunks(conn, [...new Set(needLines)]);
   const related = relatedNotes(
     conn,
     presentIds.map((id) => docRows.get(id) as DocumentRow),
@@ -390,6 +450,7 @@ export function hydrate(
       effective_date: d.effective_date,
       score: round6(score),
       file_path: d.file_path,
+      line: matchLine(d.body_line ?? null, chunksByDoc.get(docId) ?? [], matchedText),
       obsidian_uri: obsidianUri(d.vault_name, d.file_path),
       matched_text: matchedText,
       tags: tagsByDoc.get(docId) ?? [],

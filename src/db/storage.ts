@@ -152,6 +152,44 @@ export class Storage {
     return result;
   }
 
+  /** Ids of documents with a chunk that has no line span yet — indexed
+   * before line numbers were stored (#15). One query, for the ingest loop. */
+  docsMissingLines(): Set<string> {
+    const rows = this.conn
+      .prepare("SELECT DISTINCT document_id FROM chunks WHERE start_line IS NULL")
+      .all() as { document_id: string }[];
+    return new Set(rows.map((r) => r.document_id));
+  }
+
+  /** Keeps line numbers right for a note whose body did not change (#15):
+   * a frontmatter edit can move the body within the file, and an index from
+   * before line numbers were stored has none on its chunks. Chunk spans are
+   * backfilled only where re-chunking reproduces the stored text exactly, so
+   * nothing is re-embedded. Writes nothing when everything is already right. */
+  syncLocations(note: ParsedNote, missingLines: boolean, rechunk: () => Chunk[]): void {
+    this.conn
+      .prepare("UPDATE documents SET body_line = ? WHERE id = ? AND body_line IS NOT ?")
+      .run(note.bodyLine ?? null, note.id, note.bodyLine ?? null);
+    if (!missingLines) return;
+    const stored = new Map(
+      (
+        this.conn
+          .prepare("SELECT chunk_index, chunk_text FROM chunks WHERE document_id = ?")
+          .all(note.id) as { chunk_index: number; chunk_text: string }[]
+      ).map((r) => [r.chunk_index, r.chunk_text]),
+    );
+    const update = this.conn.prepare(
+      "UPDATE chunks SET start_line = ?, end_line = ? WHERE document_id = ? AND chunk_index = ?",
+    );
+    this.conn.transaction(() => {
+      for (const c of rechunk()) {
+        if (stored.get(c.index) === c.text && c.startLine !== undefined) {
+          update.run(c.startLine, c.endLine ?? null, note.id, c.index);
+        }
+      }
+    })();
+  }
+
   /** Map of vault-relative file_path -> document id for the documents
    * indexed from this Storage's vault (paths are only unique per vault). */
   indexedPaths(): Record<string, string> {
@@ -173,8 +211,9 @@ export class Storage {
       .prepare(
         `INSERT INTO documents
            (id, type, effective_date, created_at,
-            file_path, content_hash, title, vault_name, fields_text, stem_key, path_key)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            file_path, content_hash, title, vault_name, fields_text, stem_key, path_key,
+            body_line)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET
              type=excluded.type,
              effective_date=excluded.effective_date, created_at=excluded.created_at,
@@ -182,6 +221,7 @@ export class Storage {
              title=excluded.title, vault_name=excluded.vault_name,
              fields_text=excluded.fields_text,
              stem_key=excluded.stem_key, path_key=excluded.path_key,
+             body_line=excluded.body_line,
              indexed_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')`,
       )
       .run(
@@ -196,6 +236,7 @@ export class Storage {
         renderFields(note.fields ?? {}),
         linkKeys(note.filePath).stem,
         linkKeys(note.filePath).path,
+        note.bodyLine ?? null,
       );
   }
 
@@ -273,7 +314,8 @@ export class Storage {
       this.writeFtsRow(note);
       this.writeTagsAndMetadata(note, metadataHash(note, this.vaultName));
       const insertChunk = this.conn.prepare(
-        "INSERT INTO chunks (document_id, chunk_index, chunk_text, token_count) VALUES (?,?,?,?)",
+        "INSERT INTO chunks (document_id, chunk_index, chunk_text, token_count, start_line, end_line) " +
+          "VALUES (?,?,?,?,?,?)",
       );
       const insertVec = this.conn.prepare(
         "INSERT INTO chunks_vec (chunk_id, embedding) VALUES (?,?)",
@@ -281,7 +323,14 @@ export class Storage {
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i] as Chunk;
         const vec = vecs[i] as number[] | null;
-        const cur = insertChunk.run(note.id, chunk.index, chunk.text, chunk.tokenCount);
+        const cur = insertChunk.run(
+          note.id,
+          chunk.index,
+          chunk.text,
+          chunk.tokenCount,
+          chunk.startLine ?? null,
+          chunk.endLine ?? null,
+        );
         if (vec !== null) {
           // CRITICAL: chunk_id must bind as BigInt — chunks_vec is a vec0
           // virtual table's INTEGER PRIMARY KEY, which rejects a plain

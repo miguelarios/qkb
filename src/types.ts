@@ -24,6 +24,9 @@ export interface ParsedNote {
   /** Which of `fields` are sibling fields (`siblings = true` in config). */
   siblingKeys?: string[];
   body: string;
+  /** 1-based line of the file on which `body` starts (after frontmatter), so
+   * body-relative chunk lines map back to file lines (#15). */
+  bodyLine?: number;
   filePath: string; // vault-relative, POSIX separators
 }
 
@@ -71,6 +74,9 @@ export interface Chunk {
   index: number;
   text: string;
   tokenCount: number;
+  /** 1-based, inclusive line span of `text` within the note body (#15). */
+  startLine?: number;
+  endLine?: number;
 }
 
 // Reserved frontmatter key for the Storage layer's metadata-change hash row

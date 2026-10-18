@@ -33,6 +33,7 @@ function result(overrides: Partial<HydratedResult> = {}): HydratedResult {
     effective_date: "2026-01-01",
     score: 1,
     file_path: "a.md",
+    line: null,
     obsidian_uri: "obsidian://open?vault=x&file=a",
     matched_text: null,
     tags: [],

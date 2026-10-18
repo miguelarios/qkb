@@ -466,6 +466,9 @@ function renderTable(results: HydratedResult[], query: string, tier: SearchTier)
     // evidence line, so a terminal that linkifies `obsidian://` URIs (or
     // supports cmd/ctrl-click) can jump straight to the note. Human output
     // only — --json/--files/MCP already carry `obsidian_uri` unchanged.
+    // `path:line` (#15) on its own line, so editors and terminals that jump
+    // to grep-style locations can open the match directly.
+    console.log(`  ${dimIfTty(r.line === null ? r.file_path : `${r.file_path}:${r.line}`)}`);
     console.log(`  ${dimIfTty(r.obsidian_uri)}`);
   });
 }
