@@ -11,8 +11,8 @@
 class Qkb < Formula
   desc "Hybrid BM25 + vector search for Obsidian vaults with frontmatter awareness"
   homepage "https://github.com/miguelarios/qkb"
-  url "https://registry.npmjs.org/@miguelarios/qkb/-/qkb-0.6.0.tgz"
-  sha256 "0af4df094fd1cad73563bcf08119394e76dd13a803f2cbdab782ae57b4a01d4c"
+  url "https://registry.npmjs.org/@miguelarios/qkb/-/qkb-0.7.0.tgz"
+  sha256 "09b45eba047ad670979c68a4d1a402a74e19f1f2878ac562fff7c044feaaefe9"
   license "MIT"
 
   depends_on "node"
