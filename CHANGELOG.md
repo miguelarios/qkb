@@ -3,6 +3,20 @@
 Release PRs (`chore(release): X.Y.Z`) add a section here; the release
 workflow uses it as the GitHub Release notes.
 
+## 0.7.0 (2026-10-17)
+
+### Features
+
+- Search results point at the matching line: every result carries `line` (`--json`, MCP), and the CLI prints `path:line` above each `obsidian://` link. The next `qkb ingest` fills line numbers in for an existing index; nothing re-embeds (#15)
+
+### Bug fixes
+
+- qkb runs under any Node ≥20, not only the one that installed it. When the SQLite addon doesn't fit the running Node, qkb fetches the matching prebuilt once into `~/.cache/qkb/native`; where none exists (e.g. Node 20) or offline, it says which Node versions are involved and how to fix it. `QKB_NATIVE_CACHE_DIR` and `QKB_NATIVE_DOWNLOAD=0` control this (#41, #42)
+
+### Docs
+
+- `docs/DESIGN.md` and `docs/PRD.md` describe the TypeScript implementation (#26)
+
 ## 0.6.0 (2026-09-24)
 
 ### Breaking changes
