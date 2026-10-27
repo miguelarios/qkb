@@ -22,7 +22,8 @@ import {
   reportAbortAndExit,
   summarizeSkips,
 } from "../src/cli/ingest.js";
-import { createProgram, readVersion } from "../src/cli.js";
+import { createProgram } from "../src/cli.js";
+import { readVersion } from "../src/version.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..");

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -98,6 +98,17 @@ describe("server/mcp build_server tools", () => {
     await ingestVault(conn, cfg, { provider: new FakeProvider(cfg.embeddingDim) });
     conn.close();
   }
+
+  it("advertises the package version, not a hardcoded one", async () => {
+    const cfg = makeCfg(tmpPath);
+    const server = await buildServer(cfg);
+    const client = await connectClient(server);
+    const packageJson = JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf-8"),
+    ) as { version: string };
+    expect(client.getServerVersion()).toEqual({ name: "qkb", version: packageJson.version });
+    await client.close();
+  });
 
   it("ports test_mcp_tools: tool list, qkb, qkb_get, qkb_status", async () => {
     const cfg = makeCfg(tmpPath);

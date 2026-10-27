@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-import { readFileSync, realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { Command, CommanderError } from "commander";
 import { registerFieldsCommands } from "./cli/fields.js";
 import { registerGetCommand } from "./cli/get.js";
@@ -9,19 +8,7 @@ import { registerIngestCommands } from "./cli/ingest.js";
 import { registerMcpCommand } from "./cli/mcp.js";
 import { registerSearchCommands } from "./cli/search.js";
 import { registerStatusCommand } from "./cli/status.js";
-
-const here = dirname(fileURLToPath(import.meta.url));
-
-/** Reads the package version from package.json, which sits one level up
- * from this file both as compiled (`dist/cli.js`) and as source
- * (`src/cli.ts` run directly). */
-export function readVersion(): string {
-  const packageJsonPath = join(here, "..", "package.json");
-  const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as {
-    version: string;
-  };
-  return packageJson.version;
-}
+import { readVersion } from "./version.js";
 
 /** Builds the full `qkb` command tree: `ingest`, `embed`, `search`,
  * `vsearch`, `query`, `get`, `fields`, `status`,
