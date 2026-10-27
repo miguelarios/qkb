@@ -47,6 +47,7 @@ import {
   getDocument,
 } from "../search/retrieval.js";
 import { executeSearch } from "../search/service.js";
+import { readVersion } from "../version.js";
 
 /** Wraps a JS value as the single-text-content `CallToolResult` shape every
  * tool below returns — the JSON text mirrors Python's `dict` return value
@@ -170,7 +171,7 @@ function searchToolDescription(cfg: Config): string {
  */
 export function createMcpServer(ctx: QkbContext): McpServer {
   const { cfg: cfgObj, conn, provider, reranker, expander, withLock } = ctx;
-  const server = new McpServer({ name: "qkb", version: "0.1.0" });
+  const server = new McpServer({ name: "qkb", version: readVersion() });
 
   server.registerTool(
     "qkb",

@@ -13,6 +13,7 @@ import { FakeProvider } from "../src/embed/fake.js";
 import * as embedProvider from "../src/embed/provider.js";
 import { ingestVault } from "../src/ingest/pipeline.js";
 import { buildServer } from "../src/server/mcp.js";
+import { readVersion } from "../src/version.js";
 
 // Ports legacy/python/tests/test_mcp.py — drives the qkb MCP server
 // in-process over a linked InMemoryTransport pair (client <-> server),
@@ -98,6 +99,14 @@ describe("server/mcp build_server tools", () => {
     await ingestVault(conn, cfg, { provider: new FakeProvider(cfg.embeddingDim) });
     conn.close();
   }
+
+  it("advertises the package version, not a hardcoded one", async () => {
+    const cfg = makeCfg(tmpPath);
+    const server = await buildServer(cfg);
+    const client = await connectClient(server);
+    expect(client.getServerVersion()).toEqual({ name: "qkb", version: readVersion() });
+    await client.close();
+  });
 
   it("ports test_mcp_tools: tool list, qkb, qkb_get, qkb_status", async () => {
     const cfg = makeCfg(tmpPath);
