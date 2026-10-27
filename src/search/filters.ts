@@ -23,6 +23,9 @@ export class Filters {
   dateTo: string | undefined;
   /** Restrict to these vault names (OR). */
   vaults: string[] | undefined;
+  /** Search every vault, including those with `include_by_default = false`.
+   * Only meaningful when `vaults` is unset (`resolveVaultScope`). */
+  allVaults: boolean | undefined;
   /** Declared-field equality filters (AND across keys). A value matches the
    * whole stored value or one item of a list value, case-insensitively. */
   fields: Record<string, string> | undefined;
@@ -35,6 +38,7 @@ export class Filters {
     this.dateFrom = init.dateFrom;
     this.dateTo = init.dateTo;
     this.vaults = init.vaults;
+    this.allVaults = init.allVaults;
     this.fields = init.fields;
   }
 }

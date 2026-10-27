@@ -40,8 +40,8 @@ describe("multiple vaults", () => {
     mkdirSync(wiki);
     cfg = loadConfig("/nonexistent/qkb-test-config.toml", {});
     cfg.vaults = [
-      { name: "Personal", path: personal },
-      { name: "Wiki", path: wiki },
+      { name: "Personal", path: personal, includeByDefault: true },
+      { name: "Wiki", path: wiki, includeByDefault: true },
     ];
     cfg.dbPath = join(tmp, "qkb.db");
     cfg.embeddingProvider = "fake";
@@ -62,13 +62,18 @@ describe("multiple vaults", () => {
     return { conn, stats, skips };
   }
 
-  function search(conn: ReturnType<typeof connect>, q: string, vaults?: string[]) {
+  function search(
+    conn: ReturnType<typeof connect>,
+    q: string,
+    vaults?: string[],
+    allVaults?: boolean,
+  ) {
     return executeSearch(
       conn,
       cfg,
       new FakeProvider(cfg.embeddingDim),
       q,
-      new Filters({ vaults }),
+      new Filters({ vaults, allVaults }),
       null,
       "bm25",
     );
@@ -102,7 +107,36 @@ describe("multiple vaults", () => {
     const { conn } = await ingest();
     expect((await search(conn, "traefik", ["Wiki"])).map((h) => h.document_id)).toEqual([ID2]);
     expect(await search(conn, "traefik", ["Personal", "Wiki"])).toHaveLength(2);
-    expect(await search(conn, "traefik", ["Nope"])).toHaveLength(0);
+    conn.close();
+  });
+
+  it("rejects a vault name that isn't configured instead of returning nothing (#53)", async () => {
+    note(personal, "a.md", ID1, "Traefik certificate renewal.");
+    const { conn } = await ingest();
+    await expect(search(conn, "traefik", ["Nope"])).rejects.toThrow(
+      'unknown vault "Nope" (configured: Personal, Wiki)',
+    );
+    // Names are exact: a case mismatch is an unknown vault too.
+    await expect(search(conn, "traefik", ["personal"])).rejects.toThrow(/unknown vault "personal"/);
+    await expect(search(conn, "traefik", ["Personal", "Nope"])).rejects.toThrow(/"Nope"/);
+    conn.close();
+  });
+
+  it("leaves include_by_default = false vaults out unless named or all_vaults (#54)", async () => {
+    note(personal, "a.md", ID1, "Traefik certificate renewal.");
+    note(wiki, "b.md", ID2, "Traefik routing rules.");
+    const { conn } = await ingest();
+    cfg.vaults = [
+      { name: "Personal", path: personal, includeByDefault: true },
+      { name: "Wiki", path: wiki, includeByDefault: false },
+    ];
+    const ids = async (vaults?: string[], all?: boolean) =>
+      (await search(conn, "traefik", vaults, all)).map((h) => h.document_id).sort();
+    expect(await ids()).toEqual([ID1]);
+    expect(await ids(["Wiki"])).toEqual([ID2]);
+    expect(await ids(["Personal", "Wiki"])).toEqual([ID1, ID2]);
+    expect(await ids(undefined, true)).toEqual([ID1, ID2]);
+    await expect(search(conn, "traefik", ["Wiki"], true)).rejects.toThrow(/not both/);
     conn.close();
   });
 
@@ -155,7 +189,7 @@ describe("multiple vaults", () => {
     note(wiki, "b.md", ID2, "Traefik routing rules.");
     (await ingest()).conn.close();
 
-    cfg.vaults = [{ name: "Personal", path: personal }];
+    cfg.vaults = [{ name: "Personal", path: personal, includeByDefault: true }];
     const { conn, stats } = await ingest();
     expect(stats.deindexed).toBe(1);
     expect(new Storage(conn).vaultCounts()).toEqual([{ vault: "Personal", documents: 1 }]);
@@ -204,7 +238,9 @@ describe("[[vaults]] config", () => {
 
   it("a single [vault] still means one vault", () => {
     const cfg = load('[vault]\npath = "/data/notes"\nname = "Notes"\n');
-    expect(configuredVaults(cfg)).toEqual([{ name: "Notes", path: "/data/notes" }]);
+    expect(configuredVaults(cfg)).toEqual([
+      { name: "Notes", path: "/data/notes", includeByDefault: true },
+    ]);
   });
 
   it("[[vaults]] lists several; name defaults to the directory name", () => {
@@ -212,8 +248,8 @@ describe("[[vaults]] config", () => {
       '[[vaults]]\nname = "Personal"\npath = "/data/personal"\n\n[[vaults]]\npath = "/data/agent-wiki"\n',
     );
     expect(configuredVaults(cfg)).toEqual([
-      { name: "Personal", path: "/data/personal" },
-      { name: "agent-wiki", path: "/data/agent-wiki" },
+      { name: "Personal", path: "/data/personal", includeByDefault: true },
+      { name: "agent-wiki", path: "/data/agent-wiki", includeByDefault: true },
     ]);
     expect(cfg.vaultName).toBe("Personal");
   });
@@ -227,6 +263,22 @@ describe("[[vaults]] config", () => {
 
   it("QKB_VAULT_PATH replaces a configured [[vaults]] list", () => {
     const cfg = load('[[vaults]]\npath = "/data/personal"\n', { QKB_VAULT_PATH: "/data/other" });
-    expect(configuredVaults(cfg)).toEqual([{ name: "Notes", path: "/data/other" }]);
+    expect(configuredVaults(cfg)).toEqual([
+      { name: "Notes", path: "/data/other", includeByDefault: true },
+    ]);
+  });
+
+  it("include_by_default = false is read per vault; at least one vault must stay included", () => {
+    const cfg = load(
+      '[[vaults]]\nname = "Personal"\npath = "/data/personal"\n\n' +
+        '[[vaults]]\nname = "Wiki"\npath = "/data/wiki"\ninclude_by_default = false\n',
+    );
+    expect(configuredVaults(cfg).map((v) => [v.name, v.includeByDefault])).toEqual([
+      ["Personal", true],
+      ["Wiki", false],
+    ]);
+    expect(() => load('[[vaults]]\npath = "/data/wiki"\ninclude_by_default = false\n')).toThrow(
+      /at least one vault must be searched by default/,
+    );
   });
 });

@@ -90,7 +90,7 @@ function omit(fields: Record<string, string>, keys: Set<string>): Record<string,
   return Object.fromEntries(Object.entries(fields).filter(([k]) => !keys.has(k)));
 }
 
-/** A declared field's usage, for `qkb fields` / `qkb_status`. */
+/** A declared field's usage, for `qkb fields` / the MCP `status` tool. */
 export interface FieldRow {
   field: string;
   description: string;

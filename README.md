@@ -214,6 +214,7 @@ path = "~/Documents/Personal"
 [[vaults]]
 name = "AgentWiki"
 path = "~/agent-wiki"
+include_by_default = false   # optional: searched only when named (default true)
 ```
 
 ### Environment-variable overrides
@@ -257,11 +258,13 @@ and whether it may fetch one at all (`0` = no).
 
 ## MCP usage
 
-qkb exposes three tools to LLM agents:
+qkb exposes three tools to LLM agents. Clients prefix them with the server's
+name, so in Claude Code (`claude mcp add qkb …`) they appear as
+`mcp__qkb__search`, `mcp__qkb__get` and `mcp__qkb__status`.
 
-- **`qkb`** — hybrid BM25 + vector search with the same filters as the CLI (`type`, `tags`, date range, `vaults`, `fields`, `limit`), plus optional `rerank` and `expand` (defaults from `[rerank]`/`[expansion]`). Its description lists your vaults and declared fields, so an agent knows what it can filter on. Each result lists its related notes. Each result also carries `line`, the 1-based line of `file_path` where the match is (the keyword hit, or the first line of the matched passage), so an agent can open `file_path:line` directly; the human CLI output prints the same `path:line` above each `obsidian://` link.
-- **`qkb_get`** — retrieve a single document by id (or unambiguous id prefix), including every stored frontmatter property and all related notes (`include_related: false` to skip them).
-- **`qkb_status`** — index health: document/chunk/vector counts, per-vault counts, declared fields and their most common values (`field_values`), so an agent can build `fields` filters.
+- **`search`** — hybrid BM25 + vector search with the same filters as the CLI (`type`, `tags`, date range, `vaults`, `all_vaults`, `fields`, `limit`), plus optional `rerank` and `expand` (defaults from `[rerank]`/`[expansion]`). Its description lists your vaults and declared fields, so an agent knows what it can filter on. Each result lists its related notes. Each result also carries `line`, the 1-based line of `file_path` where the match is (the keyword hit, or the first line of the matched passage), so an agent can open `file_path:line` directly; the human CLI output prints the same `path:line` above each `obsidian://` link.
+- **`get`** — retrieve a single document by id (or unambiguous id prefix), including every stored frontmatter property and all related notes (`include_related: false` to skip them).
+- **`status`** — index health: document/chunk/vector counts, per-vault counts (and whether each is searched by default), declared fields and their most common values (`field_values`), so an agent can build `fields` filters.
 
 It speaks two transports:
 
@@ -318,6 +321,17 @@ qkb query "deploy checklist" --vault AgentWiki     # repeatable: --vault A --vau
 
 MCP: `{"query": "...", "vaults": ["AgentWiki"]}`. `qkb status` shows counts
 per vault.
+
+A vault name must match a configured vault exactly (names are
+case-sensitive). An unknown name is an error that lists the configured
+names, rather than an empty result.
+
+**Leaving a vault out by default.** Set `include_by_default = false` on a
+vault to keep it indexed but out of searches that don't name it. It is still
+searched when named (`--vault AgentWiki`, MCP `vaults`), or together with
+every other vault with `--all-vaults` (MCP `all_vaults: true`). The MCP
+`search` description and `status` say which vaults are left out, so an agent
+knows to ask for them. At least one vault must stay included.
 
 Note `id`s are unique across all vaults: the same id in a second vault is
 skipped and reported as a duplicate, exactly like a duplicate within one
@@ -386,7 +400,7 @@ Declared properties are:
 - **embedded**: prepended to each chunk's text as `project: Apollo` lines, so semantic search sees them;
 - **returned**: as a `fields` object in `--json`, `qkb get` and MCP results;
 - **filterable**: `--field project=Apollo` (repeatable, AND) / MCP `fields: {"project": "Apollo"}`. The match is case-insensitive, and a list property matches any one of its items;
-- **described to agents**: each key and its description appear in the `qkb` tool description and in `qkb_status` (with the most common values), so an agent knows what it can filter on. Descriptions are for agents only; the search models read the values.
+- **described to agents**: each key and its description appear in the MCP `search` tool description and in `status` (with the most common values), so an agent knows what it can filter on. Descriptions are for agents only; the search models read the values.
 
 **Sibling fields.** A property whose shared values group notes (a `source`
 shared by clips of one page or a meeting's transcript and notes, an

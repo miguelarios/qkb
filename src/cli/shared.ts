@@ -44,6 +44,7 @@ export interface SearchOpts {
   dateTo?: string;
   limit?: string;
   vault?: string[];
+  allVaults?: boolean;
   field?: string[];
   json?: boolean;
   files?: boolean;
@@ -78,6 +79,7 @@ export function addSearchOptions(cmd: Command): Command {
     .option("--date-to <date>", "filter: effective date <= this")
     .option("--limit <n>", "max results")
     .option("--vault <name>", "only this vault (repeatable)", collect)
+    .option("--all-vaults", "also search vaults with include_by_default = false")
     .option("--field <key=value>", "frontmatter property equals value (repeatable, AND)", collect)
     .option("--json", "output as JSON")
     .option("--files", "output as document_id,score,file_path,vault lines");
@@ -106,6 +108,7 @@ export function filtersFromOpts(opts: SearchOpts): Filters {
     dateFrom: opts.dateFrom,
     dateTo: opts.dateTo,
     vaults: opts.vault,
+    allVaults: opts.allVaults,
     fields: parseFieldFlags(opts.field),
   });
 }
