@@ -67,6 +67,7 @@ describe("multiple vaults", () => {
     q: string,
     vaults?: string[],
     allVaults?: boolean,
+    tier = "bm25",
   ) {
     return executeSearch(
       conn,
@@ -75,7 +76,7 @@ describe("multiple vaults", () => {
       q,
       new Filters({ vaults, allVaults }),
       null,
-      "bm25",
+      tier,
     );
   }
 
@@ -137,6 +138,31 @@ describe("multiple vaults", () => {
     expect(await ids(["Personal", "Wiki"])).toEqual([ID1, ID2]);
     expect(await ids(undefined, true)).toEqual([ID1, ID2]);
     await expect(search(conn, "traefik", ["Wiki"], true)).rejects.toThrow(/not both/);
+    // An empty name is reported as such, even alongside all_vaults.
+    await expect(search(conn, "traefik", [" "], true)).rejects.toThrow(/empty or whitespace-only/);
+    // The vector and hybrid tiers scope the same way (the vector KNN is pre-filtered).
+    for (const tier of ["vector", "hybrid"]) {
+      const tierIds = async (vaults?: string[], all?: boolean) =>
+        [
+          ...new Set((await search(conn, "traefik", vaults, all, tier)).map((h) => h.document_id)),
+        ].sort();
+      expect(await tierIds()).toEqual([ID1]);
+      expect(await tierIds(["Wiki"])).toEqual([ID2]);
+      expect(await tierIds(undefined, true)).toEqual([ID1, ID2]);
+    }
+    conn.close();
+  });
+
+  it("a single [vault] config still validates names", async () => {
+    note(personal, "a.md", ID1, "Traefik certificate renewal.");
+    cfg.vaults = [];
+    cfg.vaultPath = personal;
+    cfg.vaultName = "Solo";
+    const { conn } = await ingest();
+    expect(await search(conn, "traefik", ["Solo"])).toHaveLength(1);
+    await expect(search(conn, "traefik", ["Notes"])).rejects.toThrow(
+      'unknown vault "Notes" (configured: Solo)',
+    );
     conn.close();
   });
 
@@ -279,6 +305,10 @@ describe("[[vaults]] config", () => {
     ]);
     expect(() => load('[[vaults]]\npath = "/data/wiki"\ninclude_by_default = false\n')).toThrow(
       /at least one vault must be searched by default/,
+    );
+    // A typo or non-boolean is an error, not a silently excluded vault.
+    expect(() => load('[[vaults]]\npath = "/data/wiki"\ninclude_by_default = "ture"\n')).toThrow(
+      /include_by_default must be true or false/,
     );
   });
 });

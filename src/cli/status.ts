@@ -49,7 +49,7 @@ function humanStatus(cfgObj: Config, p: StatusPayload, dbExists: boolean): strin
   if (p.vaults.length > 1) {
     out.push("Vaults:");
     for (const v of p.vaults) {
-      const scope = v.include_by_default ? "" : "  — searched only when named";
+      const scope = v.include_by_default ? "" : "  — searched only when named or with --all-vaults";
       out.push(`  ${v.name}: ${v.path}  [${mark(v.exists)}]  (${v.documents} documents)${scope}`);
     }
   } else {

@@ -342,8 +342,14 @@ export function loadConfig(
         }
         const path = v.path;
         const name = typeof v.name === "string" && v.name.trim() ? v.name.trim() : basename(path);
-        const includeByDefault =
-          v.include_by_default === undefined ? true : toBool(v.include_by_default);
+        // Strict: a typo here would silently drop a vault from every
+        // unscoped search, the kind of quiet empty result #53 removes.
+        if (v.include_by_default !== undefined && typeof v.include_by_default !== "boolean") {
+          throw new Error(
+            `config: [[vaults]] entry ${i + 1}: include_by_default must be true or false`,
+          );
+        }
+        const includeByDefault = v.include_by_default !== false;
         return { name, path, includeByDefault };
       });
     }

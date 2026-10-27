@@ -45,12 +45,14 @@ export function resolveVaultScope(cfg: Config, filters: Filters): Filters {
   const names = vaults.map((v) => v.name);
   const requested = filters.vaults?.map((v) => v.trim());
   if (requested !== undefined && requested.length > 0) {
+    if (requested.some((v) => !v)) {
+      throw new SearchValidationError("vault filter is empty or whitespace-only");
+    }
     if (filters.allVaults) {
       throw new SearchValidationError("name vaults or ask for all vaults, not both");
     }
     for (const name of requested) {
-      // Empty names are reported by buildFilterClause, as before.
-      if (name && !names.includes(name)) {
+      if (!names.includes(name)) {
         throw new SearchValidationError(
           `unknown vault ${JSON.stringify(name)} (configured: ${names.join(", ")})`,
         );

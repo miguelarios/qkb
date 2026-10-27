@@ -629,7 +629,8 @@ qkb query "query" --rerank      [--expand]  [filters] [--limit N]
 
 # Filters (apply to any search command)
 --type TYPE    --tags T1,T2    --date-from YYYY-MM-DD    --date-to YYYY-MM-DD
---vault NAME   (repeatable)    --field key=value (repeatable, AND)
+--vault NAME   (repeatable)    --all-vaults (include vaults with include_by_default = false)
+--field key=value (repeatable, AND)
 --context / --source           (deprecated shorthands for --field)
 
 # Output formats
@@ -803,6 +804,7 @@ name = "Notes"                        # for Obsidian URI construction
 # [[vaults]]
 # name = "Wiki"
 # path = "~/Wiki"
+# include_by_default = false          # optional (default true): searched only when named or with --all-vaults
 
 [database]
 path = "~/.local/share/qkb/qkb.db"

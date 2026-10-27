@@ -487,6 +487,13 @@ describe("qkb CLI (subprocess)", () => {
     expect(typo.output).toContain('unknown vault "wiki" (configured: Personal, Wiki)');
 
     expect(run(["status"], vaultsEnv).output).toMatch(/Wiki: .*searched only when named/);
+    const statusJson = JSON.parse(run(["status", "--json"], vaultsEnv).output) as {
+      vaults: { name: string; include_by_default: boolean }[];
+    };
+    expect(statusJson.vaults.map((v) => [v.name, v.include_by_default])).toEqual([
+      ["Personal", true],
+      ["Wiki", false],
+    ]);
   });
 
   it("get, fields, and status", () => {

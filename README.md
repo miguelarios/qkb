@@ -214,7 +214,7 @@ path = "~/Documents/Personal"
 [[vaults]]
 name = "AgentWiki"
 path = "~/agent-wiki"
-include_by_default = false   # optional: searched only when named (default true)
+include_by_default = false   # optional: searched only when named or with --all-vaults (default true)
 ```
 
 ### Environment-variable overrides
