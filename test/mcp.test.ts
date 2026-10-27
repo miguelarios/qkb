@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -13,7 +13,6 @@ import { FakeProvider } from "../src/embed/fake.js";
 import * as embedProvider from "../src/embed/provider.js";
 import { ingestVault } from "../src/ingest/pipeline.js";
 import { buildServer } from "../src/server/mcp.js";
-import { readVersion } from "../src/version.js";
 
 // Ports legacy/python/tests/test_mcp.py — drives the qkb MCP server
 // in-process over a linked InMemoryTransport pair (client <-> server),
@@ -104,7 +103,10 @@ describe("server/mcp build_server tools", () => {
     const cfg = makeCfg(tmpPath);
     const server = await buildServer(cfg);
     const client = await connectClient(server);
-    expect(client.getServerVersion()).toEqual({ name: "qkb", version: readVersion() });
+    const packageJson = JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf-8"),
+    ) as { version: string };
+    expect(client.getServerVersion()).toEqual({ name: "qkb", version: packageJson.version });
     await client.close();
   });
 
