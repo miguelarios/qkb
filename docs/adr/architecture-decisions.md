@@ -340,7 +340,7 @@ CREATE TABLE metadata (
 **Decision**: Opt in per key, with a description: `[frontmatter.fields] key = "description"`. Declared values are rendered as `key: value` lines, then:
 - stored in `documents.fields_text` and in a new FTS5 `fields` column, placed after the UNINDEXED `doc_id` so the existing bm25() weight positions don't move (weight = optional 6th `fts_weights` entry, default 3.0, like tags);
 - prepended to every chunk's embedded text (`embeddingText`), identically on the inline and the two-phase embed paths;
-- returned as `fields` in results, filterable (`--field` / MCP `fields`), and listed with their descriptions in the `qkb` tool description and `qkb_status`, so agents learn what the properties mean.
+- returned as `fields` in results, filterable (`--field` / MCP `fields`), and listed with their descriptions in the MCP `search` tool description and `status` tool, so agents learn what the properties mean.
 
 `qkb get` returns every stored property (`metadata`), declared or not.
 
@@ -425,3 +425,18 @@ No field is a sibling field by default. Which fields are sibling fields is part 
 
 **Alternatives rejected**: keeping `source` built in (a name only some vaults use, silently special); making every declared field a sibling field (a low-cardinality field like `status` would relate most of the vault to itself).
 
+---
+
+## ADR-022: MCP Tools Are Bare Verbs; Vaults Can Be Left Out of Unscoped Searches
+
+**Date**: 2026-10-27
+**Status**: Decided (amends ADR-015)
+
+**Question**: The MCP tools were `qkb`, `qkb_get` and `qkb_status`. Claude Code already prefixes tools with the server name, so they appeared as `mcp__qkb__qkb`, `mcp__qkb__qkb_get` and `mcp__qkb__qkb_status` (#52). Separately, a vault filter with a wrong name silently matched nothing (#53), and every unscoped search covered every vault, so a secondary vault competed with the main one on every query (#54).
+
+**Decision**:
+- The tools are `search`, `get` and `status`. Arguments and result shapes are unchanged. Old names are not kept as aliases.
+- A vault name in `vaults` / `--vault` must be a configured vault, matched exactly. An unknown name is a validation error listing the configured names.
+- `[[vaults]]` entries take `include_by_default` (default `true`). With no vault named, a search covers only included vaults. Naming a vault always searches it, and `all_vaults: true` / `--all-vaults` searches every vault; combining it with names is an error. At least one vault must stay included. The `search` description and `status` list which vaults are left out.
+
+**Alternatives rejected**: a consistent `qkb_` prefix (`qkb_search`), which stays unique in clients that don't namespace tools but still stutters in the main client; keeping the old names as deprecated aliases (every tool listed twice, costing agents context); case-insensitive vault matching (silently accepting a near-miss hides which vault was meant; the error message lists the exact names instead); a global `default_vaults` list (kept apart from each vault's definition, and has to follow renames).

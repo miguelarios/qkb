@@ -38,10 +38,10 @@ Two first-class consumers, equal priority: **the vault owner at the terminal** (
 ## What: Roughly, what does it look like?
 
 - `qkb ingest` + `qkb embed` — walk the vault(s) and index notes (frontmatter contract), incremental via content hashing; the slow vector pass is separate and resumable. `qkb watch` / `qkb mcp --watch` re-index on a timer.
-- `qkb search` / `vsearch` / `query` — keyword, semantic, and hybrid (RRF-fused) search, with filters: `--type`, `--tags`, `--date-from/to`, `--vault`, `--field key=value`. Optional local reranking (`--rerank`) and query expansion (`--expand`).
+- `qkb search` / `vsearch` / `query` — keyword, semantic, and hybrid (RRF-fused) search, with filters: `--type`, `--tags`, `--date-from/to`, `--vault` / `--all-vaults`, `--field key=value`. Optional local reranking (`--rerank`) and query expansion (`--expand`).
 - `qkb get <UUID>` — retrieve any document as file path, `obsidian://` URI, or raw markdown.
 - `qkb fields` — declared frontmatter properties (`[frontmatter.fields]`) with descriptions, surfaced to agents so they understand what each property means (QMD-inspired).
-- `qkb mcp` — MCP server exposing `qkb`, `qkb_get`, `qkb_status` tools over stdio, or Streamable HTTP with `qkb mcp --http`.
+- `qkb mcp` — MCP server exposing `search`, `get`, `status` tools over stdio, or Streamable HTTP with `qkb mcp --http`.
 - Local-first and adaptable: `embeddinggemma` embeddings in-process via node-llama-cpp by default (multilingual, Metal-accelerated on Apple Silicon, runs on CPU-only hardware), or via Ollama / an OpenAI-compatible API; frontmatter keys remappable in config so any vault's conventions work. GitHub Actions CI (tests, lint, types, build) and release on merge to npm: merging a `chore(release): X.Y.Z` PR publishes via trusted publishing, then tags and creates the GitHub Release.
 
 ## How: What is the experiment plan?

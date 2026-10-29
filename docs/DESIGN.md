@@ -587,7 +587,7 @@ qkb context describe family-health "Health tracking for the kids: appointments, 
 qkb contexts                        # list all context values, counts, and descriptions
 ```
 
-Every search result and document retrieval whose document has a described context includes a `context_description` field. The MCP server also prepends it to raw document text (`<!-- Context: ... -->`) the way QMD does, and `qkb_status` returns the full context list — giving agents immediate orientation about what's searchable without a tool call.
+Every search result and document retrieval whose document has a described context includes a `context_description` field. The MCP server also prepends it to raw document text (`<!-- Context: ... -->`) the way QMD does, and the MCP `status` tool returns the full context list — giving agents immediate orientation about what's searchable without a tool call.
 
 ### 8.8 Document Retrieval — Three Formats
 
@@ -629,7 +629,8 @@ qkb query "query" --rerank      [--expand]  [filters] [--limit N]
 
 # Filters (apply to any search command)
 --type TYPE    --tags T1,T2    --date-from YYYY-MM-DD    --date-to YYYY-MM-DD
---vault NAME   (repeatable)    --field key=value (repeatable, AND)
+--vault NAME   (repeatable)    --all-vaults (include vaults with include_by_default = false)
+--field key=value (repeatable, AND)
 --context / --source           (deprecated shorthands for --field)
 
 # Output formats
@@ -653,31 +654,33 @@ qkb status [--json]          # index health, counts, pending vectors, last inges
 Exposes search and retrieval as MCP tools for LLM agents, over two transports: stdio (the client spawns qkb as a subprocess) and Streamable HTTP (one long-lived process, one model load, any number of clients). Both serve the same tools (`src/server/mcp.ts`); `--watch` on either re-indexes on a timer while serving.
 
 ```yaml
+# Bare verbs: clients namespace tools by server (mcp__qkb__search), ADR-022.
 tools:
-  - qkb:
-      description: "Hybrid BM25 + vector search; lists configured vaults and declared fields"
+  - search:
+      description: "Hybrid BM25 + vector search; lists configured vaults (and which are left out by default) and declared fields"
       params:
         query: string (required)
         type: string (optional)
         tags: list[string] (optional)
         date_from: string (optional)
         date_to: string (optional)
-        vaults: list[string] (optional)
+        vaults: list[string] (optional; must name configured vaults)
+        all_vaults: bool (optional; include vaults with include_by_default = false)
         fields: map[string, string] (optional, AND)
         limit: int (optional, default 10)
         rerank: bool (optional, default from [rerank])
         expand: bool (optional, default from [expansion])
         context / source: string (optional, deprecated shorthands for fields)
 
-  - qkb_get:
+  - get:
       description: "Retrieve a document by UUID, with every stored property and all related notes"
       params:
         document_id: string (required — full or prefix)
         include_raw: bool (optional, default false)
         include_related: bool (optional, default true)
 
-  - qkb_status:
-      description: "Index health: counts, per-vault counts, declared fields and their common values"
+  - status:
+      description: "Index health: counts, per-vault counts and include_by_default, declared fields and their common values"
 ```
 
 ```bash
@@ -801,6 +804,7 @@ name = "Notes"                        # for Obsidian URI construction
 # [[vaults]]
 # name = "Wiki"
 # path = "~/Wiki"
+# include_by_default = false          # optional (default true): searched only when named or with --all-vaults
 
 [database]
 path = "~/.local/share/qkb/qkb.db"

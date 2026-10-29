@@ -1,7 +1,7 @@
 /** Shared search orchestration for the CLI and MCP entry points. Ported from
  * `legacy/python/src/qkb/search/service.py`.
  *
- * Both the CLI query path and the MCP `qkb` tool call `executeSearch` so the
+ * Both the CLI query path and the MCP `search` tool call `executeSearch` so the
  * "resolve limit -> validate -> guard -> run tiered search -> hydrate"
  * pipeline can't diverge between them (Python review finding: the MCP tool
  * had drifted from the CLI — hardcoded limit, duplicated the tiered-search
@@ -9,7 +9,7 @@
  */
 
 import type Database from "better-sqlite3";
-import type { Config } from "../config.js";
+import { type Config, configuredVaults } from "../config.js";
 import { vectorTableDimension } from "../db/schema.js";
 import { Storage } from "../db/storage.js";
 import type { EmbeddingProvider } from "../embed/types.js";
@@ -17,7 +17,7 @@ import type { QueryExpander, QueryVariant } from "../llm/expand.js";
 import { blendScore, type Reranker, words } from "../llm/rerank.js";
 import { hasMatchMarkers } from "./bm25.js";
 import { SearchValidationError } from "./errors.js";
-import type { Filters } from "./filters.js";
+import { Filters } from "./filters.js";
 import { type RankedResult, search as runSearch } from "./hybrid.js";
 import { type HydratedResult, hydrate } from "./hydrate.js";
 
@@ -32,6 +32,44 @@ export interface SearchExtras {
 }
 
 /**
+ * Resolve which vaults a search covers (#53, #54):
+ * - named vaults must be configured ones — an unknown name throws instead of
+ *   silently matching nothing; a name is exact (case-sensitive), so the error
+ *   lists the configured names to copy from;
+ * - `allVaults` searches everything, and can't be combined with names;
+ * - otherwise only vaults with `include_by_default` (all of them unless the
+ *   config excludes some) are searched.
+ */
+export function resolveVaultScope(cfg: Config, filters: Filters): Filters {
+  const vaults = configuredVaults(cfg);
+  const names = vaults.map((v) => v.name);
+  const requested = filters.vaults?.map((v) => v.trim());
+  if (requested !== undefined && requested.length > 0) {
+    if (requested.some((v) => !v)) {
+      throw new SearchValidationError("vault filter is empty or whitespace-only");
+    }
+    if (filters.allVaults) {
+      throw new SearchValidationError("name vaults or ask for all vaults, not both");
+    }
+    for (const name of requested) {
+      if (!names.includes(name)) {
+        throw new SearchValidationError(
+          `unknown vault ${JSON.stringify(name)} (configured: ${names.join(", ")})`,
+        );
+      }
+    }
+    return filters;
+  }
+  if (filters.allVaults || vaults.every((v) => v.includeByDefault)) {
+    return new Filters({ ...filters, vaults: undefined });
+  }
+  return new Filters({
+    ...filters,
+    vaults: vaults.filter((v) => v.includeByDefault).map((v) => v.name),
+  });
+}
+
+/**
  * Resolve `limit` (`null` -> `cfg.defaultLimit`), reject a resolved limit below
  * 1, guard against an untrustworthy index, then run the tiered search.
  *
@@ -41,6 +79,8 @@ export interface SearchExtras {
  *   blocked, bm25 included.
  * - the resolved limit is < 1 — `--limit 0`/negative is rejected rather than
  *   silently becoming "unbounded" (SQLite `LIMIT -1`) or "10".
+ * - a named vault isn't configured, or names are combined with `allVaults`
+ *   (`resolveVaultScope`, which also applies the default vault scope).
  * - for vector-using tiers, `chunks_vec` was built at a different embedding
  *   dimension than `cfg` now expects (Python finding 5 — a friendly error
  *   instead of sqlite-vec's raw dimension error). bm25 never touches
@@ -78,6 +118,7 @@ export async function executeSearch(
       );
     }
   }
+  const scoped = resolveVaultScope(cfg, filters);
   const warn = extras.onWarning ?? (() => {});
   let variants: QueryVariant[] = [];
   if (extras.expander && tier === "hybrid") {
@@ -89,7 +130,7 @@ export async function executeSearch(
   }
   const reranker = extras.reranker ?? null;
   const fetchN = reranker ? Math.max(resolvedLimit, cfg.rerankCandidates) : resolvedLimit;
-  let ranked = await runSearch(conn, cfg, provider, query, filters, fetchN, tier, variants);
+  let ranked = await runSearch(conn, cfg, provider, query, scoped, fetchN, tier, variants);
   if (reranker && ranked.length > 0) {
     try {
       ranked = await rerank(conn, reranker, query, ranked);

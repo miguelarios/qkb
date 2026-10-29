@@ -104,9 +104,9 @@ their most common values.
 A declared property's description is written for **AI agents** using qkb
 over MCP, not for the search models. It appears in two places:
 
-- the `qkb` search tool's description, which the agent reads before it
+- the MCP `search` tool's description, which the agent reads before it
   searches;
-- `qkb_status`, next to the property's most common values (`field_values`).
+- the MCP `status` tool, next to the property's most common values (`field_values`).
 
 From these an agent learns that it can narrow a search with, for example,
 `fields: {"company": "Acme"}`, and which values exist. Turning a request
@@ -176,7 +176,7 @@ that doesn't exist yet starts resolving once that note is indexed.
 
 ## How results are ranked
 
-`qkb query` (and the MCP `qkb` tool) run hybrid search:
+`qkb query` (and the MCP `search` tool) run hybrid search:
 
 ```
 query ──► keyword search (BM25) ─┐
@@ -232,10 +232,16 @@ Filters narrow the candidates before ranking. They are combined with AND.
 | tags | `--tags work,ops` (all must match) | `tags` |
 | date range | `--date-from 2026-01-01 --date-to 2026-03-31` | `date_from`, `date_to` |
 | vault | `--vault Personal` (repeatable) | `vaults` |
+| every vault | `--all-vaults` | `all_vaults: true` |
 | any stored property | `--field company=Acme` (repeatable) | `fields: {"company": "Acme"}` |
 
 `--field` works on every stored property, declared or not. It matches
 case-insensitively, and a list property matches if any item matches.
+
+Vault names are exact (case-sensitive). Naming a vault that isn't configured
+is an error that lists the configured names. With no vault named, a search
+covers every vault except those with `include_by_default = false`; those are
+searched only when named, or with `--all-vaults` / `all_vaults: true`.
 
 ## When a config change takes effect
 
@@ -290,5 +296,5 @@ attendees: [Alice Smith, Bob Jones]
 
 Searching `tls renewal` finds it through the alias (weight 5). Its result
 lists the other notes from the `2026-03-15-infra-sync` meeting as siblings.
-An agent reading `qkb_status` sees that `project` exists and has the value
+An agent reading the MCP `status` tool sees that `project` exists and has the value
 `homelab-traefik`, and can filter on it.

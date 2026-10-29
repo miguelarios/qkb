@@ -72,23 +72,23 @@ describe("MCP over Streamable HTTP", () => {
   it("initializes, lists tools, and answers a search", async () => {
     const client = await connectClient(http.url);
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(["qkb", "qkb_get", "qkb_status"]);
+    expect(tools.map((t) => t.name).sort()).toEqual(["get", "search", "status"]);
 
-    const out = await call(client, "qkb", { query: "traefik" });
+    const out = await call(client, "search", { query: "traefik" });
     expect(out.result[0].document_id).toBe(ID1);
     expect(out.result[0].vault).toBe("Notes");
 
-    const status = await call(client, "qkb_status");
+    const status = await call(client, "status");
     expect(status.documents).toBe(1);
-    expect(status.vaults).toEqual([{ name: "Notes", documents: 1 }]);
+    expect(status.vaults).toEqual([{ name: "Notes", documents: 1, include_by_default: true }]);
     await client.close();
   });
 
   it("serves several independent clients from one process", async () => {
     const [a, b] = await Promise.all([connectClient(http.url), connectClient(http.url)]);
     const [ra, rb] = await Promise.all([
-      call(a, "qkb", { query: "traefik" }),
-      call(b, "qkb_get", { document_id: ID1.slice(0, 8) }),
+      call(a, "search", { query: "traefik" }),
+      call(b, "get", { document_id: ID1.slice(0, 8) }),
     ]);
     expect(ra.result[0].document_id).toBe(ID1);
     expect(rb.document_id).toBe(ID1);

@@ -63,13 +63,16 @@ export interface Config {
 export interface Vault {
   name: string;
   path: string;
+  /** Searched when a search names no vault. `include_by_default = false`
+   * keeps a vault indexed but out of unscoped searches (#54). */
+  includeByDefault: boolean;
 }
 
 /** Every vault qkb indexes: the `[[vaults]]` list, or the single
  * `[vault]` / `vaultPath` entry when no list is configured. */
 export function configuredVaults(cfg: Config): Vault[] {
   if (cfg.vaults.length > 0) return cfg.vaults;
-  return [{ name: cfg.vaultName, path: cfg.vaultPath }];
+  return [{ name: cfg.vaultName, path: cfg.vaultPath, includeByDefault: true }];
 }
 
 /** Look up a configured vault by name (for reading a document's file back). */
@@ -339,7 +342,15 @@ export function loadConfig(
         }
         const path = v.path;
         const name = typeof v.name === "string" && v.name.trim() ? v.name.trim() : basename(path);
-        return { name, path };
+        // Strict: a typo here would silently drop a vault from every
+        // unscoped search, the kind of quiet empty result #53 removes.
+        if (v.include_by_default !== undefined && typeof v.include_by_default !== "boolean") {
+          throw new Error(
+            `config: [[vaults]] entry ${i + 1}: include_by_default must be true or false`,
+          );
+        }
+        const includeByDefault = v.include_by_default !== false;
+        return { name, path, includeByDefault };
       });
     }
   }
@@ -359,11 +370,16 @@ export function loadConfig(
   }
 
   // Expand ~ in paths
-  cfg.vaults = cfg.vaults.map((v) => ({ name: v.name, path: expandPath(v.path) }));
+  cfg.vaults = cfg.vaults.map((v) => ({ ...v, path: expandPath(v.path) }));
   const names = new Set<string>();
   for (const v of cfg.vaults) {
     if (names.has(v.name)) throw new Error(`config: duplicate vault name "${v.name}"`);
     names.add(v.name);
+  }
+  if (cfg.vaults.length > 0 && !cfg.vaults.some((v) => v.includeByDefault)) {
+    throw new Error(
+      "config: every [[vaults]] entry has include_by_default = false — at least one vault must be searched by default",
+    );
   }
   if (cfg.vaults.length > 0) {
     // Keep the single-vault fields pointing at the first vault, for callers

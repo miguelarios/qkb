@@ -198,17 +198,17 @@ describe("declared frontmatter fields", () => {
     await Promise.all([server.connect(st), client.connect(ct)]);
 
     const { tools } = await client.listTools();
-    const qkb = tools.find((t) => t.name === "qkb");
-    expect(qkb?.description).toContain("project (Project this note belongs to)");
+    const searchTool = tools.find((t) => t.name === "search");
+    expect(searchTool?.description).toContain("project (Project this note belongs to)");
 
     const res = await client.callTool({
-      name: "qkb",
+      name: "search",
       arguments: { query: "weekly sync", fields: { project: "Apollo" } },
     });
     const out = JSON.parse((res.content as { text: string }[])[0]?.text ?? "{}");
     expect(out.result.map((r: { document_id: string }) => r.document_id)).toEqual([ID1]);
 
-    const statusRes = await client.callTool({ name: "qkb_status", arguments: {} });
+    const statusRes = await client.callTool({ name: "status", arguments: {} });
     const status = JSON.parse((statusRes.content as { text: string }[])[0]?.text ?? "{}");
     expect(status.fields).toEqual(cfg.fields);
     await client.close();

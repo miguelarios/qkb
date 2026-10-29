@@ -454,6 +454,48 @@ describe("qkb CLI (subprocess)", () => {
     expect(legacy.output).toContain(ID1);
   });
 
+  it("search --vault rejects unknown names; --all-vaults reaches include_by_default = false vaults", () => {
+    const wiki = join(tmpDir, "wiki");
+    mkdirSync(wiki, { recursive: true });
+    writeNote("a.md", ID1, { body: "Renewing traefik certificates." });
+    writeFileSync(
+      join(wiki, "b.md"),
+      `---\nid: ${ID2}\ncreated: 2026-01-01\n---\n\nTraefik routing rules.\n`,
+    );
+    const cfgPath = join(tmpDir, "config.toml");
+    writeFileSync(
+      cfgPath,
+      `[[vaults]]\nname = "Personal"\npath = "${vault}"\n\n` +
+        `[[vaults]]\nname = "Wiki"\npath = "${wiki}"\ninclude_by_default = false\n`,
+    );
+    const { QKB_VAULT_PATH: _, ...rest } = env;
+    const vaultsEnv = { ...rest, QKB_CONFIG: cfgPath };
+    expect(run(["ingest"], vaultsEnv).exitCode).toBe(0);
+
+    const ids = (args: string[]) =>
+      run(["search", "traefik", "--files", ...args], vaultsEnv)
+        .output.trim()
+        .split("\n")
+        .map((l) => l.split(",")[0])
+        .sort();
+    expect(ids([])).toEqual([ID1]);
+    expect(ids(["--vault", "Wiki"])).toEqual([ID2]);
+    expect(ids(["--all-vaults"])).toEqual([ID1, ID2]);
+
+    const typo = run(["search", "traefik", "--vault", "wiki"], vaultsEnv);
+    expect(typo.exitCode).not.toBe(0);
+    expect(typo.output).toContain('unknown vault "wiki" (configured: Personal, Wiki)');
+
+    expect(run(["status"], vaultsEnv).output).toMatch(/Wiki: .*searched only when named/);
+    const statusJson = JSON.parse(run(["status", "--json"], vaultsEnv).output) as {
+      vaults: { name: string; include_by_default: boolean }[];
+    };
+    expect(statusJson.vaults.map((v) => [v.name, v.include_by_default])).toEqual([
+      ["Personal", true],
+      ["Wiki", false],
+    ]);
+  });
+
   it("get, fields, and status", () => {
     writeFileSync(
       env.QKB_CONFIG as string,
@@ -760,7 +802,7 @@ describe("qkb CLI (subprocess)", () => {
   // (spawnSync) can't drive this: `qkb mcp` is long-lived and never exits on
   // its own, so this uses the SDK's own `StdioClientTransport` (spawns the
   // command, speaks the wire protocol) instead.
-  it("qkb mcp starts a real stdio server exposing qkb/qkb_get/qkb_status (Task 16)", async () => {
+  it("qkb mcp starts a real stdio server exposing search/get/status (Task 16)", async () => {
     const childEnv: Record<string, string> = {};
     for (const [k, v] of Object.entries({ ...process.env, ...env })) {
       if (v !== undefined) childEnv[k] = v;
@@ -775,11 +817,11 @@ describe("qkb CLI (subprocess)", () => {
       await client.connect(transport);
       const { tools } = await client.listTools();
       const names = new Set(tools.map((t) => t.name));
-      expect(names.has("qkb")).toBe(true);
-      expect(names.has("qkb_get")).toBe(true);
-      expect(names.has("qkb_status")).toBe(true);
+      expect(names.has("search")).toBe(true);
+      expect(names.has("get")).toBe(true);
+      expect(names.has("status")).toBe(true);
 
-      const result = await client.callTool({ name: "qkb_status", arguments: {} });
+      const result = await client.callTool({ name: "status", arguments: {} });
       const content = result.content as { type: string; text: string }[];
       const payload = JSON.parse(content[0]?.text ?? "null") as { documents: number };
       expect(payload.documents).toBe(0);
@@ -806,7 +848,7 @@ describe("qkb CLI (subprocess)", () => {
       expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
       const client = new Client({ name: "qkb-cli-http-client", version: "0.1.0" });
       await client.connect(new StreamableHTTPClientTransport(new URL(url)));
-      const result = await client.callTool({ name: "qkb_status", arguments: {} });
+      const result = await client.callTool({ name: "status", arguments: {} });
       const content = result.content as { type: string; text: string }[];
       expect(JSON.parse(content[0]?.text ?? "null").documents).toBe(0);
       await client.close();

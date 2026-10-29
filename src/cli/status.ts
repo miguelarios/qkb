@@ -14,7 +14,13 @@ interface StatusPayload {
   config_exists: boolean;
   vault_path: string;
   vault_exists: boolean;
-  vaults: { name: string; path: string; exists: boolean; documents: number }[];
+  vaults: {
+    name: string;
+    path: string;
+    exists: boolean;
+    documents: number;
+    include_by_default: boolean;
+  }[];
   fields: Record<string, string>;
   db_path: string;
   db_size_bytes: number;
@@ -43,7 +49,8 @@ function humanStatus(cfgObj: Config, p: StatusPayload, dbExists: boolean): strin
   if (p.vaults.length > 1) {
     out.push("Vaults:");
     for (const v of p.vaults) {
-      out.push(`  ${v.name}: ${v.path}  [${mark(v.exists)}]  (${v.documents} documents)`);
+      const scope = v.include_by_default ? "" : "  — searched only when named or with --all-vaults";
+      out.push(`  ${v.name}: ${v.path}  [${mark(v.exists)}]  (${v.documents} documents)${scope}`);
     }
   } else {
     out.push(`Vault:    ${p.vault_path}  (${cfgObj.vaultName})  [${mark(p.vault_exists)}]`);
@@ -148,6 +155,7 @@ async function runStatus(opts: { json?: boolean }): Promise<void> {
       path: v.path,
       exists: existsSync(v.path),
       documents: counts.get(v.name) ?? 0,
+      include_by_default: v.includeByDefault,
     })),
     fields: cfgObj.fields,
     db_path: cfgObj.dbPath,

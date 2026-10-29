@@ -2,13 +2,14 @@
  * or Streamable HTTP (`./http.ts`). Ported from
  * `legacy/python/src/qkb/server/mcp.py`.
  *
- * Three tools, mirroring Python's FastMCP server exactly (names, arg names,
- * result shapes):
- *  - `qkb`: hybrid BM25 + vector search (the `query`/`search`/`vsearch`
+ * Three tools, named as bare verbs because clients already namespace them by
+ * server (`mcp__qkb__search` in Claude Code, #52). Arg names and result
+ * shapes mirror Python's FastMCP server:
+ *  - `search`: hybrid BM25 + vector search (the `query`/`search`/`vsearch`
  *    tiers are collapsed into one MCP tool, same as Python), with optional
  *    `rerank` and `expand` stages (defaults from `[rerank]`/`[expansion]`).
- *  - `qkb_get`: retrieve a document by id/prefix.
- *  - `qkb_status`: index health (counts, vaults, declared fields).
+ *  - `get`: retrieve a document by id/prefix.
+ *  - `status`: index health (counts, vaults, declared fields).
  *
  * The embedding provider and SQLite connection are built ONCE here and
  * shared by every tool call (mirrors Python's finding-9 fix: no fresh
@@ -132,7 +133,7 @@ export async function createContext(cfg?: Config): Promise<QkbContext> {
   };
 }
 
-/** The `qkb` tool's description: what it searches, plus the vault names and
+/** The `search` tool's description: what it searches, plus the vault names and
  * declared fields (with their descriptions) so an agent knows what it can
  * filter on without a separate status call. */
 function searchToolDescription(cfg: Config): string {
@@ -145,7 +146,13 @@ function searchToolDescription(cfg: Config): string {
     "searches model-written rewrites of the query (helps vague or short queries).";
   const vaults = configuredVaults(cfg);
   if (vaults.length > 1) {
+    const excluded = vaults.filter((v) => !v.includeByDefault).map((v) => v.name);
     d += ` Vaults (filter with \`vaults\`): ${vaults.map((v) => v.name).join(", ")}.`;
+    if (excluded.length > 0) {
+      d +=
+        ` Not searched unless named in \`vaults\` (or \`all_vaults: true\`): ` +
+        `${excluded.join(", ")}.`;
+    }
   }
   const fields = Object.entries(cfg.fields);
   if (fields.length > 0) {
@@ -165,7 +172,7 @@ function searchToolDescription(cfg: Config): string {
 }
 
 /**
- * Register the `qkb`/`qkb_get`/`qkb_status` tools on a new McpServer over
+ * Register the `search`/`get`/`status` tools on a new McpServer over
  * `ctx`. Does NOT own `ctx`: closing this server leaves the connection and
  * provider open (the HTTP transport makes one server per request).
  */
@@ -174,7 +181,7 @@ export function createMcpServer(ctx: QkbContext): McpServer {
   const server = new McpServer({ name: "qkb", version: readVersion() });
 
   server.registerTool(
-    "qkb",
+    "search",
     {
       description: searchToolDescription(cfgObj),
       inputSchema: {
@@ -186,6 +193,7 @@ export function createMcpServer(ctx: QkbContext): McpServer {
         date_from: z.string().optional(),
         date_to: z.string().optional(),
         vaults: z.array(z.string()).optional(),
+        all_vaults: z.boolean().optional(),
         fields: z.record(z.string(), z.string()).optional(),
         limit: z.number().int().optional(),
         rerank: z.boolean().optional(),
@@ -208,6 +216,7 @@ export function createMcpServer(ctx: QkbContext): McpServer {
               dateFrom: args.date_from,
               dateTo: args.date_to,
               vaults: args.vaults,
+              allVaults: args.all_vaults,
               fields: args.fields,
             }),
             args.limit ?? null,
@@ -248,7 +257,7 @@ export function createMcpServer(ctx: QkbContext): McpServer {
   );
 
   server.registerTool(
-    "qkb_get",
+    "get",
     {
       description:
         "Retrieve a document by id (full or prefix): metadata, every frontmatter " +
@@ -293,10 +302,11 @@ export function createMcpServer(ctx: QkbContext): McpServer {
   );
 
   server.registerTool(
-    "qkb_status",
+    "status",
     {
       description:
-        "Index health: document/chunk counts, vaults, declared frontmatter " +
+        "Index health: document/chunk counts, vaults (and whether unscoped " +
+        "searches include each), declared frontmatter " +
         "fields with their descriptions and most common values, last ingestion time.",
     },
     async () => {
@@ -317,6 +327,7 @@ export function createMcpServer(ctx: QkbContext): McpServer {
           vaults: configuredVaults(cfgObj).map((v) => ({
             name: v.name,
             documents: counts.get(v.name) ?? 0,
+            include_by_default: v.includeByDefault,
           })),
           fields: cfgObj.fields,
           // What each declared field holds, for building `fields` filters.

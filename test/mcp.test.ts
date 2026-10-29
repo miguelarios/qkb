@@ -110,7 +110,7 @@ describe("server/mcp build_server tools", () => {
     await client.close();
   });
 
-  it("ports test_mcp_tools: tool list, qkb, qkb_get, qkb_status", async () => {
+  it("ports test_mcp_tools: tool list, search, get, status", async () => {
     const cfg = makeCfg(tmpPath);
     await ingestOne(cfg, "a.md", ID1, "Renewing traefik certificates.");
 
@@ -118,28 +118,26 @@ describe("server/mcp build_server tools", () => {
     const client = await connectClient(server);
 
     const { tools } = await client.listTools();
-    const names = new Set(tools.map((t) => t.name));
-    expect(names.has("qkb")).toBe(true);
-    expect(names.has("qkb_get")).toBe(true);
-    expect(names.has("qkb_status")).toBe(true);
+    // Bare verbs: clients namespace them by server (mcp__qkb__search), #52.
+    expect(tools.map((t) => t.name).sort()).toEqual(["get", "search", "status"]);
 
-    const searchOut = await call(client, "qkb", { query: "traefik" });
+    const searchOut = await call(client, "search", { query: "traefik" });
     expect(searchOut.result[0].document_id).toBe(ID1);
 
-    const getOut = await call(client, "qkb_get", { document_id: ID1.slice(0, 8) });
+    const getOut = await call(client, "get", { document_id: ID1.slice(0, 8) });
     expect(getOut.document_id).toBe(ID1);
 
-    const statusOut = await call(client, "qkb_status");
+    const statusOut = await call(client, "status");
     expect(statusOut.documents).toBe(1);
   });
 
-  it("qkb accepts rerank and expand (fake models)", async () => {
+  it("search accepts rerank and expand (fake models)", async () => {
     const cfg = makeCfg(tmpPath);
     cfg.rerankProvider = "fake";
     cfg.expansionProvider = "fake";
     await ingestOne(cfg, "a.md", ID1, "Renewing traefik certificates.");
     const client = await connectClient(await buildServer(cfg));
-    const out = await call(client, "qkb", { query: "traefik", rerank: true, expand: true });
+    const out = await call(client, "search", { query: "traefik", rerank: true, expand: true });
     expect(out.result[0].document_id).toBe(ID1);
   });
 
@@ -154,7 +152,7 @@ describe("server/mcp build_server tools", () => {
 
     const server = await buildServer(cfg);
     const client = await connectClient(server);
-    const out = await call(client, "qkb", { query: "traefik" });
+    const out = await call(client, "search", { query: "traefik" });
     expect(out.result.length).toBe(cfg.defaultLimit);
     expect(cfg.defaultLimit).toBe(1);
   });
@@ -175,7 +173,7 @@ describe("server/mcp build_server tools", () => {
 
     const server = await buildServer(cfg);
     const client = await connectClient(server);
-    const out = await call(client, "qkb", { query: "traefik", source: "proj-a" });
+    const out = await call(client, "search", { query: "traefik", source: "proj-a" });
     expect(out.result.map((r: { document_id: string }) => r.document_id)).toEqual([ID1]);
   });
 
@@ -185,7 +183,7 @@ describe("server/mcp build_server tools", () => {
 
     const server = await buildServer(cfg);
     const client = await connectClient(server);
-    const out = await call(client, "qkb", { query: "traefik", limit: 0 });
+    const out = await call(client, "search", { query: "traefik", limit: 0 });
     expect(out.error).toBeDefined();
     expect(out.result).toBeUndefined();
   });
@@ -196,12 +194,12 @@ describe("server/mcp build_server tools", () => {
 
     const server = await buildServer(cfg);
     const client = await connectClient(server);
-    const out = await call(client, "qkb", { query: "traefik", context: "   " });
+    const out = await call(client, "search", { query: "traefik", context: "   " });
     expect(out).toEqual({ error: "context filter is empty or whitespace-only" });
     expect(out.result).toBeUndefined();
   });
 
-  it("ports test_qkb_get_missing_raw_file_returns_structured_error", async () => {
+  it("ports test_get_missing_raw_file_returns_structured_error", async () => {
     const cfg = makeCfg(tmpPath);
     const notePath = writeNote(cfg.vaultPath, "a.md", ID1, {
       body: "Renewing traefik certificates.",
@@ -213,7 +211,7 @@ describe("server/mcp build_server tools", () => {
 
     const server = await buildServer(cfg);
     const client = await connectClient(server);
-    const out = await call(client, "qkb_get", { document_id: ID1.slice(0, 8), include_raw: true });
+    const out = await call(client, "get", { document_id: ID1.slice(0, 8), include_raw: true });
     expect(out.error).toBeDefined();
     expect(String(out.error).toLowerCase()).toContain("qkb ingest");
   });
@@ -225,8 +223,8 @@ describe("server/mcp build_server tools", () => {
     const server = await buildServer(cfg);
     expect(vi.mocked(embedProvider.getProvider).mock.calls.length).toBe(1);
     const client = await connectClient(server);
-    await call(client, "qkb", { query: "traefik" });
-    await call(client, "qkb", { query: "traefik" });
+    await call(client, "search", { query: "traefik" });
+    await call(client, "search", { query: "traefik" });
     expect(vi.mocked(embedProvider.getProvider).mock.calls.length).toBe(1);
   });
 
@@ -280,9 +278,51 @@ describe("server/mcp build_server tools", () => {
     const server = await buildServer(cfg);
     expect(vi.mocked(schema.connect).mock.calls.length).toBe(1);
     const client = await connectClient(server);
-    await call(client, "qkb", { query: "traefik" });
-    await call(client, "qkb_get", { document_id: ID1.slice(0, 8) });
-    await call(client, "qkb_status");
+    await call(client, "search", { query: "traefik" });
+    await call(client, "get", { document_id: ID1.slice(0, 8) });
+    await call(client, "status");
     expect(vi.mocked(schema.connect).mock.calls.length).toBe(1);
+  });
+
+  it("search scopes vaults: unknown names error, excluded vaults need naming or all_vaults", async () => {
+    const cfg = makeCfg(tmpPath);
+    const wiki = join(tmpPath, "wiki");
+    mkdirSync(wiki, { recursive: true });
+    cfg.vaults = [
+      { name: "Personal", path: cfg.vaultPath, includeByDefault: true },
+      { name: "Wiki", path: wiki, includeByDefault: false },
+    ];
+    writeNote(cfg.vaultPath, "a.md", ID1, { body: "Renewing traefik certificates." });
+    writeNote(wiki, "b.md", ID2, { body: "Traefik routing rules." });
+    const conn = schema.connect(cfg.dbPath, cfg.embeddingDim);
+    await ingestVault(conn, cfg, { provider: new FakeProvider(cfg.embeddingDim) });
+    conn.close();
+
+    const client = await connectClient(await buildServer(cfg));
+    const { tools } = await client.listTools();
+    expect(tools.find((t) => t.name === "search")?.description).toContain(
+      "Not searched unless named in `vaults` (or `all_vaults: true`): Wiki.",
+    );
+
+    const ids = (out: { result: { document_id: string }[] }) =>
+      out.result.map((r) => r.document_id).sort();
+    expect(ids(await call(client, "search", { query: "traefik" }))).toEqual([ID1]);
+    expect(ids(await call(client, "search", { query: "traefik", vaults: ["Wiki"] }))).toEqual([
+      ID2,
+    ]);
+    expect(ids(await call(client, "search", { query: "traefik", all_vaults: true }))).toEqual([
+      ID1,
+      ID2,
+    ]);
+    expect(await call(client, "search", { query: "traefik", vaults: ["wiki"] })).toEqual({
+      error: 'unknown vault "wiki" (configured: Personal, Wiki)',
+    });
+
+    const status = await call(client, "status");
+    expect(status.vaults).toEqual([
+      { name: "Personal", documents: 1, include_by_default: true },
+      { name: "Wiki", documents: 1, include_by_default: false },
+    ]);
+    await client.close();
   });
 });

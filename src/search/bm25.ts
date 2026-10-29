@@ -37,7 +37,7 @@ const WORD_RE = /[\p{L}\p{N}_]+/gu;
 // Control chars can't collide with real markdown content, so `hasMatchMarkers`
 // below is collision-proof. These never leave the process as-is: every
 // public boundary that serializes `matched_text` (CLI `--json`, the MCP
-// `qkb` tool's result, and the human evidence renderer's display string —
+// `search` tool's result, and the human evidence renderer's display string —
 // see src/cli/shared.ts and src/server/mcp.ts) must call `toPublicMarkers`
 // first to translate back to `[`/`]`, keeping `--json`/`--files`/MCP bytes
 // byte-identical to before this change (Python parity). `--files` never
