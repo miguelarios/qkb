@@ -3,6 +3,12 @@
 Release PRs (`chore(release): X.Y.Z`) add a section here; the release
 workflow uses it as the GitHub Release notes.
 
+## 0.7.1 (2026-10-27)
+
+### Bug fixes
+
+- The MCP server reports the installed qkb version to clients instead of `0.1.0` (#55)
+
 ## 0.7.0 (2026-10-17)
 
 ### Features
