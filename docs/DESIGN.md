@@ -102,8 +102,8 @@ qkb started in Python (`qkb-search` on PyPI, last copy under `legacy/python/` at
 | `better-sqlite3` | Synchronous SQLite driver (FTS5 included) |
 | `sqlite-vec` | Vector similarity search extension for SQLite |
 | `node-llama-cpp` | In-process GGUF inference: the default `llama` embedding provider, plus optional reranking and query expansion |
-| `gray-matter` + `js-yaml` | Parse YAML frontmatter from markdown |
-| `smol-toml` | Parse `config.toml` |
+| `gray-matter` + `js-yaml` | Parse YAML frontmatter from markdown; `js-yaml` also parses `config.yaml` |
+| `smol-toml` | Parse a legacy `config.toml` (deprecated fallback) |
 | `commander` | CLI framework |
 | `cli-progress` | Progress bars for `ingest` / `embed` |
 | `@modelcontextprotocol/sdk` | MCP server (stdio and Streamable HTTP transports) |
@@ -143,17 +143,17 @@ An empty value does not trigger indexing: notes with `context:` or `source:` pre
 
 Every frontmatter key above is a **default, not a requirement**. The mapping is user-configurable via the config file, so any vault can adopt qkb without changing its existing conventions (e.g., a vault using `category` instead of `context`, or `uid` instead of `id`, just remaps):
 
-```toml
-# ~/.config/qkb/config.toml
-[frontmatter]
-id      = "id"
-type    = "type"
-title   = "title"
-context = "context"
-source  = "source"
-date    = "date"
-created = ["created", "date created"]   # list = aliases, first present wins
-tags    = "tags"
+```yaml
+# ~/.config/qkb/config.yaml
+frontmatter:
+  id:      id
+  type:    type
+  title:   title
+  context: context
+  source:  source
+  date:    date
+  created: [created, date created]   # list = aliases, first present wins
+  tags:    tags
 ```
 
 Internally the pipeline only ever speaks the canonical names (left-hand side); the mapping is applied once at parse time.
@@ -423,7 +423,7 @@ interface EmbeddingProvider {
 }
 ```
 
-| Provider (`[embedding].provider`) | Class | Notes |
+| Provider (`embedding.provider`) | Class | Notes |
 |---|---|---|
 | `llama` (default) | `LlamaProvider` | In-process GGUF via node-llama-cpp, Metal-accelerated on Apple Silicon. No resident service; the GGUF (default `embeddinggemma-300M-Q8_0` from `ggml-org`, the model QMD uses) is downloaded to `~/.cache/qkb/models/` on first use. Model load is deferred to the first embed call. |
 | `ollama` | `OllamaProvider` | Ollama HTTP API (`/api/embed`); for a shared or GPU host. |
@@ -457,7 +457,7 @@ Inspired by QMD's `search` / `vsearch` / `query` split, but with an additional t
 
 **Tier 3 — Hybrid with RRF** (`query`): Runs both searches in parallel and merges at the *document* level: BM25 already returns documents; the vector chunk list is deduplicated to documents (best chunk per document, preserving rank order) before fusion. RRF then merges the two document-level ranked lists. This is the default for most queries. Matching passages from the vector path are attached to results when available; BM25-only hits use FTS5 snippets.
 
-**Tier 4 — Hybrid + LLM stages** (`query --rerank` and/or `--expand`): Adds query expansion (LLM generates alternative phrasings) and/or position-aware re-ranking; the two are independent. Best quality, significant latency. Optional and off by default: `--rerank` / `--expand` per query, or `[rerank]` / `[expansion] enabled = true`. Both run in-process through node-llama-cpp with QMD's GGUFs (Qwen3-Reranker-0.6B; QMD's fine-tuned 1.7B expansion model), downloaded on first use. Either stage failing logs a warning and returns plain hybrid results (ADR-020).
+**Tier 4 — Hybrid + LLM stages** (`query --rerank` and/or `--expand`): Adds query expansion (LLM generates alternative phrasings) and/or position-aware re-ranking; the two are independent. Best quality, significant latency. Optional and off by default: `--rerank` / `--expand` per query, or `rerank.enabled: true` / `expansion.enabled: true`. Both run in-process through node-llama-cpp with QMD's GGUFs (Qwen3-Reranker-0.6B; QMD's fine-tuned 1.7B expansion model), downloaded on first use. Either stage failing logs a warning and returns plain hybrid results (ADR-020).
 
 ### 8.2 Reciprocal Rank Fusion (RRF)
 
@@ -668,8 +668,8 @@ tools:
         all_vaults: bool (optional; include vaults with include_by_default = false)
         fields: map[string, string] (optional, AND)
         limit: int (optional, default 10)
-        rerank: bool (optional, default from [rerank])
-        expand: bool (optional, default from [expansion])
+        rerank: bool (optional, default from rerank.enabled)
+        expand: bool (optional, default from expansion.enabled)
         context / source: string (optional, deprecated shorthands for fields)
 
   - get:
@@ -686,13 +686,13 @@ tools:
 ```bash
 qkb mcp                                 # stdio (subprocess per client)
 qkb mcp --http                          # Streamable HTTP at http://127.0.0.1:8181/mcp
-qkb mcp --http --port 9000 --watch      # custom port, re-index every [watch].interval
+qkb mcp --http --port 9000 --watch      # custom port, re-index every watch.interval
 qkb mcp --http --host 0.0.0.0           # all interfaces (containers, LAN)
 ```
 
 ### 9.3 HTTP Transport
 
-`qkb mcp --http` (`src/server/http.ts`) is the only HTTP surface; there is no separate REST API. It is stateless: every `POST /mcp` gets a fresh MCP server and transport over one shared context (connection, provider, lock), with plain JSON responses rather than SSE. `GET /health` serves container probes. It binds to loopback by default (`[mcp] host`/`port`, `QKB_MCP_HOST`/`QKB_MCP_PORT`). Requests carrying a browser `Origin` are refused unless it is loopback or listed in `[mcp] allowed_origins` / `QKB_ALLOWED_ORIGINS` (DNS-rebinding guard). There is no authentication; on a shared network put it behind a firewall or an authenticating reverse proxy.
+`qkb mcp --http` (`src/server/http.ts`) is the only HTTP surface; there is no separate REST API. It is stateless: every `POST /mcp` gets a fresh MCP server and transport over one shared context (connection, provider, lock), with plain JSON responses rather than SSE. `GET /health` serves container probes. It binds to loopback by default (`mcp.host`/`mcp.port`, `QKB_MCP_HOST`/`QKB_MCP_PORT`). Requests carrying a browser `Origin` are refused unless it is loopback or listed in `mcp.allowed_origins` / `QKB_ALLOWED_ORIGINS` (DNS-rebinding guard). There is no authentication; on a shared network put it behind a firewall or an authenticating reverse proxy.
 
 ```
 POST /mcp       # MCP JSON-RPC (Streamable HTTP, stateless)
@@ -727,7 +727,7 @@ qkb/
 │   └── golden-queries.ts       # PRD acceptance benchmark (+ .example.yaml schema)
 ├── src/
 │   ├── cli.ts                  # entry point: assembles the commander program
-│   ├── config.ts               # layered config: defaults, TOML, env, flags
+│   ├── config.ts               # layered config: defaults, YAML file, env, flags
 │   ├── types.ts                # shared types: ParsedNote, results, etc.
 │   │
 │   ├── cli/                    # one module per command group
@@ -788,93 +788,90 @@ Fixtures and tests use synthetic notes only (no real personal data).
 
 ## 11. Configuration
 
-Layered resolution, later wins: built-in defaults → config file (`~/.config/qkb/config.toml`, overridable via `QKB_CONFIG`) → environment variables (`QKB_*`, for a subset of keys; the README lists them) → CLI flags. Everything below is a default; the README's configuration reference is the full list.
+Layered resolution, later wins: built-in defaults → config file (`~/.config/qkb/config.yaml`, overridable via `QKB_CONFIG`) → environment variables (`QKB_*`, for a subset of keys; the README lists them) → CLI flags. Everything below is a default; the README's configuration reference is the full list. The file is YAML (ADR-023); if the config `.yaml` path doesn't exist but a `.toml` file of the same name sits beside it, that file is read with a deprecation warning, so an existing `config.toml` keeps working until TOML support is removed.
 
-```toml
-# ~/.config/qkb/config.toml — all values shown are the defaults
+```yaml
+# ~/.config/qkb/config.yaml — all values shown are the defaults
 
-[vault]                               # shorthand for a one-entry [[vaults]] list (ADR-015)
-path = "~/Notes"
-name = "Notes"                        # for Obsidian URI construction
+vault:                                # shorthand for a one-entry vaults list (ADR-015)
+  path: ~/Notes
+  name: Notes                         # for Obsidian URI construction
 
-# Several vaults, one index: replace [vault] with
-# [[vaults]]
-# name = "Notes"
-# path = "~/Notes"
-# [[vaults]]
-# name = "Wiki"
-# path = "~/Wiki"
-# include_by_default = false          # optional (default true): searched only when named or with --all-vaults
+# Several vaults, one index: replace vault with
+# vaults:
+#   - name: Notes
+#     path: ~/Notes
+#   - name: Wiki
+#     path: ~/Wiki
+#     include_by_default: false       # optional (default true): searched only when named or with --all-vaults
 
-[database]
-path = "~/.local/share/qkb/qkb.db"
+database:
+  path: ~/.local/share/qkb/qkb.db
 
-[embedding]
-provider = "llama"                    # llama | ollama | openai | fake
-model = "embeddinggemma-300M-Q8_0"    # for ollama: e.g. "embeddinggemma"
-dimension = 768
-ollama_host = "http://localhost:11434"
-local_gguf_repo = "ggml-org/embeddinggemma-300M-GGUF"
-local_gguf_file = "embeddinggemma-300M-Q8_0.gguf"
-model_cache_dir = "~/.cache/qkb/models"
-openai_base_url = ""                  # API key from env only (QKB_OPENAI_API_KEY), never in the file
-# doc_template / query_template: optional "{t}" prompt templates
+embedding:
+  provider: llama                     # llama | ollama | openai | fake
+  model: embeddinggemma-300M-Q8_0     # for ollama: e.g. embeddinggemma
+  dimension: 768
+  ollama_host: http://localhost:11434
+  local_gguf_repo: ggml-org/embeddinggemma-300M-GGUF
+  local_gguf_file: embeddinggemma-300M-Q8_0.gguf
+  model_cache_dir: ~/.cache/qkb/models
+  openai_base_url: ""                 # empty = unset; API key from env only (QKB_OPENAI_API_KEY), never in the file
+  # doc_template / query_template: optional "{t}" prompt templates
 
-[chunking]
-target_tokens = 500
-overlap_percent = 15                  # 15% of target = 75 tokens
+chunking:
+  target_tokens: 500
+  overlap_percent: 15                 # 15% of target = 75 tokens
 
-[search]
-default_limit = 10
-rrf_k = 60
-vec_candidates = 30
-fts_candidates = 30
+search:
+  default_limit: 10
+  rrf_k: 60
+  vec_candidates: 30
+  fts_candidates: 30
+  fts_weights:                        # per FTS column, 0 = ignore (ADR-018, ADR-021)
+    title: 5.0
+    aliases: 5.0
+    headings: 3.0
+    tags: 3.0
+    sibling_fields: 3.0
+    fields: 2.0
+    body: 1.0
+    type: 0.5
 
-[search.fts_weights]                  # per FTS column, 0 = ignore (ADR-018, ADR-021)
-title = 5.0
-aliases = 5.0
-headings = 3.0
-tags = 3.0
-sibling_fields = 3.0
-fields = 2.0
-body = 1.0
-type = 0.5
+frontmatter:                          # user-remappable (see §4); list = aliases, first present wins
+  id:       [id]
+  type:     [type]
+  title:    [title]                   # falls back to the file name
+  aliases:  [aliases, alias]
+  date:     [date]
+  created:  [created, date created]
+  modified: [modified, updated, date modified]
+  tags:     [tags, tag]
+  fields:                             # declared extra properties (ADR-016/021); none by default
+    # project: Project this note belongs to
+    # source: { description: Recording a note came from, siblings: true }
 
-[frontmatter]                         # user-remappable (see §4); list = aliases, first present wins
-id       = ["id"]
-type     = ["type"]
-title    = ["title"]                  # falls back to the file name
-aliases  = ["aliases", "alias"]
-date     = ["date"]
-created  = ["created", "date created"]
-modified = ["modified", "updated", "date modified"]
-tags     = ["tags", "tag"]
+mcp:                                  # HTTP transport only (`qkb mcp --http`)
+  host: 127.0.0.1
+  port: 8181
+  allowed_origins: []                 # browser origins besides loopback; ["*"] disables the check
 
-[frontmatter.fields]                  # declared extra properties (ADR-016/021); none by default
-# project = "Project this note belongs to"
-# source  = { description = "Recording a note came from", siblings = true }
+watch:
+  interval: 300                       # seconds between re-index runs (`--watch`, `qkb watch`)
 
-[mcp]                                 # HTTP transport only (`qkb mcp --http`)
-host = "127.0.0.1"
-port = 8181
-allowed_origins = []                  # browser origins besides loopback; ["*"] disables the check
+rerank:                               # tier 4, optional (ADR-020)
+  enabled: false
+  provider: llama                     # llama | fake
+  gguf_repo: ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF
+  gguf_file: qwen3-reranker-0.6b-q8_0.gguf
+  candidates: 30
 
-[watch]
-interval = 300                        # seconds between re-index runs (`--watch`, `qkb watch`)
-
-[rerank]                              # tier 4, optional (ADR-020)
-enabled = false
-provider = "llama"                    # llama | fake
-gguf_repo = "ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF"
-gguf_file = "qwen3-reranker-0.6b-q8_0.gguf"
-candidates = 30
-
-[expansion]                           # tier 4, optional (ADR-020)
-enabled = false
-provider = "llama"                    # llama | fake
-gguf_repo = "tobil/qmd-query-expansion-1.7B-gguf"
-gguf_file = "qmd-query-expansion-1.7B-q4_k_m.gguf"
-max_variants = 4
+expansion:                            # tier 4, optional (ADR-020)
+  enabled: false
+  provider: llama                     # llama | fake
+  gguf_repo: tobil/qmd-query-expansion-1.7B-gguf
+  gguf_file: qmd-query-expansion-1.7B-q4_k_m.gguf
+  max_variants: 4
 ```
 
 ---
@@ -928,7 +925,7 @@ qkb mcp  # stdio for Claude Code / Claude Desktop
 
 ### Docker (home server / NAS)
 
-The `Dockerfile` image runs `qkb mcp --http --watch`: Streamable HTTP MCP on port 8181 plus a timed re-index, with a `/health` healthcheck. It drops node-llama-cpp's CUDA builds and is meant to embed through Ollama (`provider = "llama"` still works on the CPU). `docker-compose.example.yml` is the reference setup:
+The `Dockerfile` image runs `qkb mcp --http --watch`: Streamable HTTP MCP on port 8181 plus a timed re-index, with a `/health` healthcheck. It drops node-llama-cpp's CUDA builds and is meant to embed through Ollama (`provider: llama` still works on the CPU). `docker-compose.example.yml` is the reference setup:
 
 ```yaml
 services:
@@ -940,7 +937,7 @@ services:
     volumes:
       - /path/to/obsidian-vault:/vault:ro
       - qkb-data:/data               # index + model cache
-      # - ./qkb-config.toml:/config/config.toml:ro   # [[vaults]], [frontmatter.fields]
+      # - ./qkb-config.yaml:/config/config.yaml:ro   # vaults, frontmatter.fields
     environment:
       - QKB_VAULT_PATH=/vault
       - QKB_EMBEDDING_PROVIDER=ollama
@@ -948,7 +945,7 @@ services:
       - QKB_OLLAMA_HOST=http://gpu-host.example.com:11434
 ```
 
-No cron job is needed: the server re-indexes every `[watch].interval` seconds (default 300). A one-off `docker exec qkb node /app/dist/cli.js ingest` also works while it serves (the database runs in WAL mode).
+No cron job is needed: the server re-indexes every `watch.interval` seconds (default 300). A one-off `docker exec qkb node /app/dist/cli.js ingest` also works while it serves (the database runs in WAL mode).
 
 ---
 
@@ -958,7 +955,7 @@ No cron job is needed: the server re-indexes every `[watch].interval` seconds (d
 
 Both subsystems with tiers 1-3, CLI, MCP stdio server, packaging, and CI/CD. Built first in Python (`qkb-search` 0.1–0.3 on PyPI), then rewritten in TypeScript and published to npm as `@miguelarios/qkb` 0.4.
 
-- Layered configuration (TOML file + env + flags) with user-remappable frontmatter keys
+- Layered configuration (YAML file + env + flags) with user-remappable frontmatter keys
 - Frontmatter parser (lenient dates, alias keys, blank-value handling)
 - Smart chunker (break-point scoring with transcript awareness)
 - Embedding provider abstraction (`llama` default, `ollama`, `openai`, `fake`; embeddinggemma default)
@@ -971,8 +968,8 @@ Both subsystems with tiers 1-3, CLI, MCP stdio server, packaging, and CI/CD. Bui
 
 - MCP over Streamable HTTP (`qkb mcp --http`) alongside stdio, with `/health` (0.5); no separate REST API
 - Watch mode (`qkb mcp --watch`, `qkb watch`) and WAL-mode SQLite for a long-running server (0.5)
-- Multiple vaults in one index (`[[vaults]]`, `--vault`, ADR-015) (0.5)
-- Declared extra frontmatter properties (`[frontmatter.fields]`, `--field`, ADR-016) (0.5)
+- Multiple vaults in one index (`vaults`, `--vault`, ADR-015) (0.5)
+- Declared extra frontmatter properties (`frontmatter.fields`, `--field`, ADR-016) (0.5)
 - Container image (`Dockerfile`) and compose example (0.5); Homebrew formula; release on merge to npm
 - Every note with an `id` indexed; `context`/`source` become ordinary properties (ADR-017) (0.6)
 - Title, aliases and headings as ranking signals (ADR-018); related notes from wikilinks, backlinks and declared sibling fields (ADR-019/021) (0.6)
@@ -1026,8 +1023,8 @@ Extraction by file type:
 | **Filtering** | By collection | By context, source, type, tags, date range |
 | **Embedding** | embeddinggemma-300M (GGUF, in-process) | embeddinggemma-300M in-process by default; Ollama or OpenAI-compatible |
 | **Search tiers** | 3 (search, vsearch, query) | 4 (search, vsearch, query, query --rerank) |
-| **Re-ranking** | Always on for `query` | Optional: `--rerank` or `[rerank] enabled` (Qwen3-Reranker-0.6B) |
-| **Query expansion** | Fine-tuned 1.7B model | Optional: `--expand` or `[expansion] enabled` (same QMD model) |
+| **Re-ranking** | Always on for `query` | Optional: `--rerank` or `rerank.enabled` (Qwen3-Reranker-0.6B) |
+| **Query expansion** | Fine-tuned 1.7B model | Optional: `--expand` or `expansion.enabled` (same QMD model) |
 | **Document retrieval** | By path or 6-char docid | By frontmatter UUID → file path + Obsidian URI + raw text |
 | **MCP server** | Yes (stdio + HTTP) | Yes (stdio + Streamable HTTP) |
 | **Distribution** | npm | npm (`@miguelarios/qkb`), Homebrew formula, Docker image; release on merge |
