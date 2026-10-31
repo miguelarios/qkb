@@ -3,6 +3,17 @@
 Release PRs (`chore(release): X.Y.Z`) add a section here; the release
 workflow uses it as the GitHub Release notes.
 
+## 0.8.0 (2026-10-31)
+
+### Breaking changes
+
+- The MCP tools are renamed to bare verbs: `qkb` → `search`, `qkb_get` → `get`, `qkb_status` → `status`. In Claude Code they appear as `mcp__qkb__search`, `mcp__qkb__get` and `mcp__qkb__status`; update permission allowlists and prompts that name `mcp__qkb__qkb*`. Arguments and results are unchanged (#52)
+- A vault name in `--vault` / MCP `vaults` must match a configured vault exactly. An unknown or wrong-case name is now an error listing the configured vaults, instead of an empty result (#53)
+
+### Features
+
+- `include_by_default = false` on a `[[vaults]]` entry keeps that vault indexed but out of searches that don't name it. Name it, or pass `--all-vaults` (MCP `all_vaults: true`), to search it; the MCP `search` description and `status` show which vaults are left out (#54)
+
 ## 0.7.1 (2026-10-27)
 
 ### Bug fixes
