@@ -16,6 +16,8 @@ coverage/
 # Local config / secrets
 .env
 *.local.toml
+*.local.yaml
+*.local.yml
 
 # OS
 .DS_Store

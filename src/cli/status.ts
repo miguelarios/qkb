@@ -4,7 +4,7 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Command } from "commander";
-import { type Config, configuredVaults, DEFAULT_CONFIG_PATH } from "../config.js";
+import { type Config, configuredVaults, resolveConfigPath } from "../config.js";
 import { Storage } from "../db/storage.js";
 import { getProvider } from "../embed/provider.js";
 import { action, cfg, humanSize, mark, openDb } from "./shared.js";
@@ -121,7 +121,7 @@ function humanStatus(cfgObj: Config, p: StatusPayload, dbExists: boolean): strin
 
 async function runStatus(opts: { json?: boolean }): Promise<void> {
   const cfgObj = cfg();
-  const configPath = process.env.QKB_CONFIG || DEFAULT_CONFIG_PATH;
+  const configPath = resolveConfigPath();
   const dbExists = existsSync(cfgObj.dbPath);
   const storage = dbExists ? new Storage(openDb(cfgObj), cfgObj.vaultName) : null;
   const st = storage ? storage.stats() : null;

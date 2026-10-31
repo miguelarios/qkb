@@ -32,8 +32,9 @@ COPY --from=build /app/dist ./dist
 
 # Index + model cache live on /data (mount a volume); the vault is mounted
 # read-only (qkb never writes to it). A config file, if any, goes at
-# /config/config.toml — use it for [[vaults]] or [frontmatter.fields].
-ENV QKB_CONFIG=/config/config.toml \
+# /config/config.yaml — use it for `vaults` or `frontmatter.fields`. (A
+# legacy /config/config.toml is still read, with a deprecation warning.)
+ENV QKB_CONFIG=/config/config.yaml \
     QKB_DB_PATH=/data/qkb.db \
     QKB_MODEL_CACHE_DIR=/data/models \
     QKB_MCP_HOST=0.0.0.0 \

@@ -1,4 +1,4 @@
-/** `fields` command: the declared frontmatter fields (`[frontmatter.fields]`),
+/** `fields` command: the declared frontmatter fields (`frontmatter.fields`),
  * their descriptions, and how they are used across the index (#35). Replaces
  * `contexts` / `context describe`: `context` is now an ordinary field, and a
  * field's description lives in the config. */
@@ -15,7 +15,7 @@ async function runFields(opts: { json?: boolean }): Promise<void> {
   }
   if (rows.length === 0) {
     console.log("No fields declared. Add them to your config, e.g.:");
-    console.log('  [frontmatter.fields]\n  project = "Project this note belongs to"');
+    console.log("  frontmatter:\n    fields:\n      project: Project this note belongs to");
     return;
   }
   for (const r of rows) {
@@ -54,7 +54,7 @@ export function registerFieldsCommands(program: Command): void {
       action(async () => {
         failUsage(
           "`qkb context describe` was removed: declare the field with a description in your " +
-            'config instead, e.g. [frontmatter.fields] context = "Area of my life a note belongs to"',
+            'config instead, e.g. frontmatter.fields: { context: "Area of my life a note belongs to" }',
         );
       }),
     );

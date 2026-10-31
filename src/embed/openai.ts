@@ -5,8 +5,8 @@
  * fastembed/gguf/ollama). Mirrors embed/ollama.ts's structure, dimension
  * check, and error style per the task brief. Supports OpenAI itself and
  * compatible local servers (LM Studio, llamafile, vLLM) via `baseUrl`. The
- * API key comes from `QKB_OPENAI_API_KEY` (never written to the TOML
- * config — see src/config.ts) and is sent as `Authorization: Bearer`.
+ * API key comes from `QKB_OPENAI_API_KEY` (never written to the config
+ * file — see src/config.ts) and is sent as `Authorization: Bearer`.
  */
 import { applyTemplate, defaultFormats, validatedTemplate } from "./templates.js";
 import type { EmbeddingProvider } from "./types.js";
@@ -97,7 +97,7 @@ export class OpenAIProvider implements EmbeddingProvider {
       for (const v of vectors) {
         if (v.length !== this._dim) {
           throw new Error(
-            `Model '${this._model}' returned dimension ${v.length}, config says ${this._dim}. Fix [embedding].dimension.`,
+            `Model '${this._model}' returned dimension ${v.length}, config says ${this._dim}. Fix embedding.dimension in the config.`,
           );
         }
       }

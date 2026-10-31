@@ -440,3 +440,20 @@ No field is a sibling field by default. Which fields are sibling fields is part 
 - `[[vaults]]` entries take `include_by_default` (default `true`). With no vault named, a search covers only included vaults. Naming a vault always searches it, and `all_vaults: true` / `--all-vaults` searches every vault; combining it with names is an error. At least one vault must stay included. The `search` description and `status` list which vaults are left out.
 
 **Alternatives rejected**: a consistent `qkb_` prefix (`qkb_search`), which stays unique in clients that don't namespace tools but still stutters in the main client; keeping the old names as deprecated aliases (every tool listed twice, costing agents context); case-insensitive vault matching (silently accepting a near-miss hides which vault was meant; the error message lists the exact names instead); a global `default_vaults` list (kept apart from each vault's definition, and has to follow renames).
+
+---
+
+## ADR-023: Config File Is YAML
+
+**Date**: 2026-10-31
+**Status**: Decided (supersedes the TOML choice carried over from the Python version)
+
+**Question**: The config file was TOML (`~/.config/qkb/config.toml`). No ADR chose it: the Python version used it because `tomllib` ships with Python 3.11+, and the TypeScript rewrite kept it so existing config files kept working. Should it stay TOML?
+
+**Decision**: The config file is YAML, `~/.config/qkb/config.yaml` (`QKB_CONFIG` still overrides the path). Sections and keys are unchanged, so migrating is a syntax change only.
+- It is parsed with js-yaml's core schema (YAML 1.2): `yes`/`no` stay strings, date-like values stay strings, only `true`/`false` are booleans. An empty value (`name:`) means unset. A file that isn't a mapping, or doesn't parse, is an error, not a silent fallback to defaults.
+- Legacy fallback: when the configured `.yaml`/`.yml` path doesn't exist and a `.toml` file of the same name sits beside it, that file is read, with a deprecation warning on stderr (once per file). This covers both `~/.config/qkb/config.toml` and a container's mounted `/config/config.toml`. `QKB_CONFIG` naming a `.toml` file also still works, with the warning. If both exist, the YAML file wins. TOML support (and the `smol-toml` dependency) will be removed in a later release.
+
+**Rationale**: notes are YAML already (frontmatter), so a user configuring qkb writes one syntax, and `js-yaml` is already a dependency. Nested settings (`frontmatter.fields` with per-field tables, a `vaults` list) read more naturally as YAML than as TOML's `[[vaults]]` / inline tables. The core schema avoids YAML's best-known traps (`no` becoming `false`, bare dates becoming objects); the strict boolean checks on `include_by_default` and `siblings` turn the rest into errors.
+
+**Alternatives rejected**: keeping TOML (two syntaxes for one tool, and the original reason, a parser in Python's standard library, no longer applies); switching with no fallback (every existing install would silently lose its config and run on defaults); detecting the format from content rather than extension (ambiguous for small files and harder to explain).

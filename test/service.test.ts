@@ -52,7 +52,7 @@ describe("search/service executeSearch", () => {
     conn = connect(":memory:", DIM);
     provider = new FakeProvider(DIM);
     // deterministic defaults; mirror the `cfg` fixture (default_limit = 2).
-    cfg = loadConfig("/nonexistent/qkb-test-config.toml", {});
+    cfg = loadConfig("/nonexistent/qkb-test-config.yaml", {});
     cfg.defaultLimit = 2;
   });
 

@@ -10,9 +10,9 @@ services:
     volumes:
       - ./vault:/vault:ro # the synced vault (read-only)
       - qkb-data:/data # index + model cache
-      # - ./qkb-config.toml:/config/config.toml:ro  # [[vaults]], [frontmatter.fields], ...
+      # - ./qkb-config.yaml:/config/config.yaml:ro  # vaults, frontmatter.fields, ...
     environment:
-      QKB_VAULT_PATH: /vault # drop this when the config file lists [[vaults]]
+      QKB_VAULT_PATH: /vault # drop this when the config file lists vaults
       QKB_VAULT_NAME: Notes # must match the Obsidian vault name for obsidian:// links
       QKB_EMBEDDING_PROVIDER: ollama
       QKB_EMBEDDING_MODEL: embeddinggemma

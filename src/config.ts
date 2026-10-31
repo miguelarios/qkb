@@ -1,7 +1,9 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
-import { parse } from "smol-toml";
+import { basename, extname, join } from "node:path";
+// Default import: js-yaml v3 is CJS — see the note in src/ingest/parser.ts.
+import yaml from "js-yaml";
+import { parse as parseToml } from "smol-toml";
 
 export interface Config {
   vaultPath: string;
@@ -27,15 +29,15 @@ export interface Config {
   frontmatter: Record<string, string[]>;
   openaiBaseUrl: string | null;
   openaiApiKey: string | null;
-  /** Extra vaults from `[[vaults]]`. Empty means "the single vault in
+  /** Extra vaults from the `vaults:` list. Empty means "the single vault in
    * `vaultPath`/`vaultName`" — read vaults through `configuredVaults()`, never
    * this field directly. */
   vaults: Vault[];
-  /** Declared extra frontmatter properties (`[frontmatter.fields]`): key ->
+  /** Declared extra frontmatter properties (`frontmatter.fields`): key ->
    * short description for agents. Declared keys are searchable, embedded, and
    * returned in results; undeclared extra keys are only stored. */
   fields: Record<string, string>;
-  /** Declared fields with `siblings = true`: notes sharing a value are
+  /** Declared fields with `siblings: true`: notes sharing a value are
    * related to each other, and the values rank like tags. */
   siblingFields: string[];
   mcpHost: string;
@@ -63,13 +65,13 @@ export interface Config {
 export interface Vault {
   name: string;
   path: string;
-  /** Searched when a search names no vault. `include_by_default = false`
+  /** Searched when a search names no vault. `include_by_default: false`
    * keeps a vault indexed but out of unscoped searches (#54). */
   includeByDefault: boolean;
 }
 
-/** Every vault qkb indexes: the `[[vaults]]` list, or the single
- * `[vault]` / `vaultPath` entry when no list is configured. */
+/** Every vault qkb indexes: the `vaults:` list, or the single
+ * `vault:` / `vaultPath` entry when no list is configured. */
 export function configuredVaults(cfg: Config): Vault[] {
   if (cfg.vaults.length > 0) return cfg.vaults;
   return [{ name: cfg.vaultName, path: cfg.vaultPath, includeByDefault: true }];
@@ -82,7 +84,7 @@ export function vaultPathFor(cfg: Config, vaultName: string): string | undefined
 
 /** Built-in properties qkb understands without configuration, each with its
  * accepted aliases. Only `id` is required (#33); everything else is
- * optional. Any other property can be declared in `[frontmatter.fields]`. */
+ * optional. Any other property can be declared in `frontmatter.fields`. */
 export const DEFAULT_FRONTMATTER: Record<string, string[]> = {
   id: ["id"],
   type: ["type"],
@@ -94,12 +96,61 @@ export const DEFAULT_FRONTMATTER: Record<string, string[]> = {
   tags: ["tags", "tag"],
 };
 
-export const DEFAULT_CONFIG_PATH = join(homedir(), ".config", "qkb", "config.toml");
+export const DEFAULT_CONFIG_PATH = join(homedir(), ".config", "qkb", "config.yaml");
 
-// (toml_section, toml_key, Config property, caster)
-type TomlEntry = [string, string, keyof Config, (val: unknown) => unknown];
+/** The config file `loadConfig` reads: `QKB_CONFIG` if set, else
+ * `configPath`. When that is a `.yaml`/`.yml` path that doesn't exist, a
+ * legacy `.toml` file of the same name beside it is used instead (ADR-023),
+ * so an existing `~/.config/qkb/config.toml` — or a container's mounted
+ * `/config/config.toml` — keeps working. */
+export function resolveConfigPath(
+  configPath: string = DEFAULT_CONFIG_PATH,
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const path = env.QKB_CONFIG || configPath;
+  if (/\.ya?ml$/i.test(path) && !existsSync(path)) {
+    const legacy = path.replace(/\.ya?ml$/i, ".toml");
+    if (existsSync(legacy)) return legacy;
+  }
+  return path;
+}
 
-const TOML_MAP: TomlEntry[] = [
+const warnedTomlPaths = new Set<string>();
+
+/** Parse a config file: YAML, or TOML for a legacy `.toml` file. Both yield
+ * the same nested shape, so one loader handles either. */
+function parseConfigFile(path: string, content: string): Record<string, unknown> {
+  if (extname(path).toLowerCase() === ".toml") {
+    if (!warnedTomlPaths.has(path)) {
+      warnedTomlPaths.add(path);
+      // stderr: stdout carries --json output and the MCP stdio protocol.
+      console.error(
+        `qkb: ${path} is TOML, which is deprecated — move it to YAML ` +
+          `(${path.replace(/\.toml$/i, ".yaml")}; same sections and keys). TOML support will be removed in a future release.`,
+      );
+    }
+    return parseToml(content) as Record<string, unknown>;
+  }
+  // CORE_SCHEMA: plain YAML 1.2 types only — no timestamp objects, and
+  // `yes`/`no`/`on`/`off` stay strings instead of becoming booleans.
+  const data = yaml.load(content, { schema: yaml.CORE_SCHEMA, filename: path });
+  if (data === null || data === undefined) return {}; // empty file
+  if (typeof data !== "object" || Array.isArray(data)) {
+    throw new Error(
+      `config: ${path} must be a YAML mapping (e.g. \`vault:\` with \`path:\` under it)`,
+    );
+  }
+  return data as Record<string, unknown>;
+}
+
+function isMapping(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+// (section, key, Config property, caster)
+type FileEntry = [string, string, keyof Config, (val: unknown) => unknown];
+
+const FILE_MAP: FileEntry[] = [
   ["vault", "path", "vaultPath", (v) => String(v)],
   ["vault", "name", "vaultName", (v) => String(v)],
   ["database", "path", "dbPath", (v) => String(v)],
@@ -136,20 +187,20 @@ const TOML_MAP: TomlEntry[] = [
   ["expansion", "max_variants", "expansionMaxVariants", (v) => Number(v)],
 ];
 
-/** A `[frontmatter.fields]` entry: `key = "description"`, or a table
- * `key = { description = "...", siblings = true }`. */
+/** A `frontmatter.fields` entry: `key: description`, or a mapping
+ * `key: { description: ..., siblings: true }`. */
 function parseFieldSpec(key: string, spec: unknown): { description: string; siblings: boolean } {
   if (spec !== null && typeof spec === "object" && !Array.isArray(spec)) {
     const t = spec as Record<string, unknown>;
     for (const k of Object.keys(t)) {
       if (k !== "description" && k !== "siblings") {
         throw new Error(
-          `config: [frontmatter.fields.${key}] has unknown key "${k}" (expected description, siblings)`,
+          `config: frontmatter.fields.${key} has unknown key "${k}" (expected description, siblings)`,
         );
       }
     }
     if (t.siblings !== undefined && typeof t.siblings !== "boolean") {
-      throw new Error(`config: [frontmatter.fields.${key}] siblings must be true or false`);
+      throw new Error(`config: frontmatter.fields.${key}.siblings must be true or false`);
     }
     return { description: String(t.description ?? ""), siblings: t.siblings === true };
   }
@@ -176,8 +227,8 @@ export const DEFAULT_FTS_WEIGHTS: Record<string, number> = {
 function parseFtsWeights(v: unknown): Record<string, number> {
   if (Array.isArray(v) || typeof v !== "object" || v === null) {
     throw new Error(
-      "config: [search] fts_weights is now a table, e.g.\n" +
-        "  [search.fts_weights]\n  title = 5.0\n  body = 1.0\n" +
+      "config: search.fts_weights is now a table (mapping), e.g.\n" +
+        "  search:\n    fts_weights:\n      title: 5.0\n      body: 1.0\n" +
         `(columns: ${Object.keys(DEFAULT_FTS_WEIGHTS).join(", ")})`,
     );
   }
@@ -286,10 +337,9 @@ export function loadConfig(
     expansionMaxVariants: 4,
   };
 
-  // Check if we should use a different config path from env
-  const actualConfigPath = env.QKB_CONFIG || configPath;
+  const actualConfigPath = resolveConfigPath(configPath, env);
 
-  // Load from TOML file if it exists. A missing/unreadable file means
+  // Load the config file if it exists. A missing/unreadable file means
   // defaults; a file that exists but doesn't parse is a user error and must
   // say so instead of silently falling back to defaults.
   let content: string | null = null;
@@ -299,22 +349,21 @@ export function loadConfig(
     // File doesn't exist or can't be read, use defaults
   }
   if (content !== null) {
-    const data = parse(content) as Record<string, unknown>;
+    const data = parseConfigFile(actualConfigPath, content);
 
-    for (const [section, key, attr, caster] of TOML_MAP) {
-      // Skip openai_api_key from TOML (env only)
-      if (key === "openai_api_key") continue;
-
-      const sectionData = data[section] as Record<string, unknown> | undefined;
-      if (sectionData && key in sectionData) {
+    // openai_api_key is deliberately absent from FILE_MAP: env only.
+    for (const [section, key, attr, caster] of FILE_MAP) {
+      const sectionData = data[section];
+      // A YAML key left empty (`name:`) is null: treat it as unset.
+      if (isMapping(sectionData) && key in sectionData && sectionData[key] != null) {
         const value = caster(sectionData[key]);
         cfg[attr] = value as never;
       }
     }
 
     // Handle frontmatter aliases
-    const frontmatterData = data.frontmatter as Record<string, unknown> | undefined;
-    if (frontmatterData) {
+    const frontmatterData = data.frontmatter;
+    if (isMapping(frontmatterData)) {
       for (const [canonical, aliases] of Object.entries(frontmatterData)) {
         if (canonical in cfg.frontmatter) {
           if (typeof aliases === "string") {
@@ -325,8 +374,8 @@ export function loadConfig(
         }
       }
       const fieldsData = frontmatterData.fields;
-      if (fieldsData && typeof fieldsData === "object" && !Array.isArray(fieldsData)) {
-        for (const [key, spec] of Object.entries(fieldsData as Record<string, unknown>)) {
+      if (isMapping(fieldsData)) {
+        for (const [key, spec] of Object.entries(fieldsData)) {
           const f = parseFieldSpec(key, spec);
           cfg.fields[key] = f.description;
           if (f.siblings) cfg.siblingFields.push(key);
@@ -334,11 +383,11 @@ export function loadConfig(
       }
     }
 
-    // [[vaults]] — several vaults in one index
+    // vaults: — several vaults in one index
     if (Array.isArray(data.vaults)) {
       cfg.vaults = (data.vaults as Record<string, unknown>[]).map((v, i) => {
         if (!v || typeof v.path !== "string" || !v.path.trim()) {
-          throw new Error(`config: [[vaults]] entry ${i + 1} needs a \`path\``);
+          throw new Error(`config: vaults entry ${i + 1} needs a \`path\``);
         }
         const path = v.path;
         const name = typeof v.name === "string" && v.name.trim() ? v.name.trim() : basename(path);
@@ -346,7 +395,7 @@ export function loadConfig(
         // unscoped search, the kind of quiet empty result #53 removes.
         if (v.include_by_default !== undefined && typeof v.include_by_default !== "boolean") {
           throw new Error(
-            `config: [[vaults]] entry ${i + 1}: include_by_default must be true or false`,
+            `config: vaults entry ${i + 1}: include_by_default must be true or false`,
           );
         }
         const includeByDefault = v.include_by_default !== false;
@@ -364,7 +413,7 @@ export function loadConfig(
   }
 
   // QKB_VAULT_PATH names ONE vault explicitly — it replaces a configured
-  // [[vaults]] list rather than silently being ignored by it.
+  // `vaults` list rather than silently being ignored by it.
   if ("QKB_VAULT_PATH" in env) {
     cfg.vaults = [];
   }
@@ -378,7 +427,7 @@ export function loadConfig(
   }
   if (cfg.vaults.length > 0 && !cfg.vaults.some((v) => v.includeByDefault)) {
     throw new Error(
-      "config: every [[vaults]] entry has include_by_default = false — at least one vault must be searched by default",
+      "config: every vaults entry has include_by_default: false — at least one vault must be searched by default",
     );
   }
   if (cfg.vaults.length > 0) {
@@ -391,7 +440,7 @@ export function loadConfig(
     for (const aliases of Object.values(cfg.frontmatter)) {
       if (aliases.includes(key)) {
         throw new Error(
-          `config: [frontmatter.fields] "${key}" is already a core frontmatter key or alias`,
+          `config: frontmatter.fields "${key}" is already a core frontmatter key or alias`,
         );
       }
     }

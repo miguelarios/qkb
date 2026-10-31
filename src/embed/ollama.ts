@@ -13,7 +13,7 @@ const BATCH = 32;
 
 export interface OllamaProviderOptions {
   /** Explicit `{t}`-placeholder prompt templates (e.g. from
-   * `[embedding] doc_template`/`query_template` config). When either is
+   * `embedding.doc_template`/`query_template` config). When either is
    * unset, the per-model `defaultFormats(model)` heuristic is used for
    * that slot — so a custom model tag (that the heuristic doesn't
    * recognize) can still get correct task-prefixed prompts via config. */
@@ -85,7 +85,7 @@ export class OllamaProvider implements EmbeddingProvider {
       for (const v of data.embeddings) {
         if (v.length !== this._dim) {
           throw new Error(
-            `Model '${this._model}' returned dimension ${v.length}, config says ${this._dim}. Fix [embedding].dimension.`,
+            `Model '${this._model}' returned dimension ${v.length}, config says ${this._dim}. Fix embedding.dimension in the config.`,
           );
         }
       }

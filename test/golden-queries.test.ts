@@ -97,7 +97,7 @@ describe("runGoldenQueries / scorePassed / formatReport", () => {
   beforeEach(async () => {
     conn = connect(":memory:", DIM);
     provider = new FakeProvider(DIM);
-    cfg = loadConfig("/nonexistent/qkb-test-config.toml", {});
+    cfg = loadConfig("/nonexistent/qkb-test-config.yaml", {});
     cfg.embeddingDim = DIM; // match the in-memory chunks_vec table's dimension
 
     await ingestOne(

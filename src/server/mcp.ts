@@ -7,7 +7,7 @@
  * shapes mirror Python's FastMCP server:
  *  - `search`: hybrid BM25 + vector search (the `query`/`search`/`vsearch`
  *    tiers are collapsed into one MCP tool, same as Python), with optional
- *    `rerank` and `expand` stages (defaults from `[rerank]`/`[expansion]`).
+ *    `rerank` and `expand` stages (defaults from `rerank`/`expansion`).
  *  - `get`: retrieve a document by id/prefix.
  *  - `status`: index health (counts, vaults, declared fields).
  *

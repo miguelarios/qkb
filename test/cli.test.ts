@@ -101,7 +101,7 @@ describe("qkb CLI (subprocess)", () => {
       QKB_DB_PATH: join(tmpDir, "qkb.db"),
       QKB_EMBEDDING_PROVIDER: "fake",
       QKB_EMBEDDING_DIM: "8",
-      QKB_CONFIG: join(tmpDir, "missing.toml"),
+      QKB_CONFIG: join(tmpDir, "missing.yaml"),
     };
   });
 
@@ -462,11 +462,11 @@ describe("qkb CLI (subprocess)", () => {
       join(wiki, "b.md"),
       `---\nid: ${ID2}\ncreated: 2026-01-01\n---\n\nTraefik routing rules.\n`,
     );
-    const cfgPath = join(tmpDir, "config.toml");
+    const cfgPath = join(tmpDir, "config.yaml");
     writeFileSync(
       cfgPath,
-      `[[vaults]]\nname = "Personal"\npath = "${vault}"\n\n` +
-        `[[vaults]]\nname = "Wiki"\npath = "${wiki}"\ninclude_by_default = false\n`,
+      `vaults:\n  - name: Personal\n    path: "${vault}"\n` +
+        `  - name: Wiki\n    path: "${wiki}"\n    include_by_default: false\n`,
     );
     const { QKB_VAULT_PATH: _, ...rest } = env;
     const vaultsEnv = { ...rest, QKB_CONFIG: cfgPath };
@@ -499,7 +499,7 @@ describe("qkb CLI (subprocess)", () => {
   it("get, fields, and status", () => {
     writeFileSync(
       env.QKB_CONFIG as string,
-      '[frontmatter.fields]\ncontext = "Area of life a note belongs to"\n',
+      "frontmatter:\n  fields:\n    context: Area of life a note belongs to\n",
     );
     writeNote("a.md", ID1);
     run(["ingest"]);
@@ -544,7 +544,7 @@ describe("qkb CLI (subprocess)", () => {
     expect(contexts.output).toContain("`qkb contexts` is now `qkb fields`");
     const describe = run(["context", "describe", "homelab", "Home server notes"]);
     expect(describe.exitCode).toBe(2);
-    expect(describe.output).toContain("[frontmatter.fields]");
+    expect(describe.output).toContain("frontmatter.fields");
   });
 
   it("get rejects the removed --json flag (exit code 2, like Click's UsageError); status still accepts it", () => {
@@ -614,9 +614,9 @@ describe("qkb CLI (subprocess)", () => {
     expect(negative.output.toLowerCase()).not.toContain("traceback");
   });
 
-  it("applies config's [search] default_limit when --limit is omitted", () => {
-    writeFileSync(join(tmpDir, "config.toml"), "[search]\ndefault_limit = 1\n");
-    const envWithConfig = { ...env, QKB_CONFIG: join(tmpDir, "config.toml") };
+  it("applies config's search.default_limit when --limit is omitted", () => {
+    writeFileSync(join(tmpDir, "config.yaml"), "search:\n  default_limit: 1\n");
+    const envWithConfig = { ...env, QKB_CONFIG: join(tmpDir, "config.yaml") };
     writeNote("a.md", ID1, { body: "Renewing traefik certificates." });
     writeNote("b.md", ID2, { body: "Renewing traefik certificates too." });
     run(["ingest"], envWithConfig);
@@ -710,7 +710,7 @@ describe("qkb CLI (subprocess)", () => {
     const envWithLlama: Record<string, string> = {
       QKB_VAULT_PATH: vault,
       QKB_DB_PATH: join(tmpDir, "qkb.db"),
-      QKB_CONFIG: join(tmpDir, "missing.toml"),
+      QKB_CONFIG: join(tmpDir, "missing.yaml"),
       QKB_EMBEDDING_PROVIDER: "llama",
     };
     // Empty vault -> `ingest` produces zero chunks -> nothing pending.

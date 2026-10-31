@@ -17,7 +17,7 @@ export interface ParsedNote {
   /** Targets of the body's `[[wikilinks]]` (#36). */
   links?: string[];
   extraMetadata: Record<string, string>;
-  /** Declared extra properties (`[frontmatter.fields]`) present on this
+  /** Declared extra properties (`frontmatter.fields`) present on this
    * note, in declaration order — a subset of `extraMetadata`. Searchable,
    * embedded, and returned in results. */
   fields?: Record<string, string>;

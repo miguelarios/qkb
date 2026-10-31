@@ -15,7 +15,7 @@ import { getProvider } from "../../src/embed/provider.js";
 // ONNX/optional-extra split with a single always-installed `llama` default
 // provider (docs/plans/2026-07-20-typescript-rewrite.md §7).
 function baseConfig(overrides: Record<string, string> = {}, dir?: string): Config {
-  return loadConfig(join(dir ?? tmpdir(), "nonexistent.toml"), {
+  return loadConfig(join(dir ?? tmpdir(), "nonexistent.yaml"), {
     QKB_EMBEDDING_PROVIDER: "fake",
     QKB_EMBEDDING_DIM: "8",
     ...overrides,

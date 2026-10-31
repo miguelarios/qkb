@@ -107,8 +107,8 @@ describe("ingest/pipeline (structural)", () => {
     // walk must ignore.
     mkdirSync(join(vault, ".obsidian"), { recursive: true });
     writeFileSync(join(vault, ".obsidian", "ignore-me.md"), "no frontmatter");
-    // deterministic defaults (never read the machine's real config.toml)
-    cfg = loadConfig("/nonexistent/qkb-test-config.toml", {});
+    // deterministic defaults (never read the machine's real config file)
+    cfg = loadConfig("/nonexistent/qkb-test-config.yaml", {});
     cfg.vaultPath = vault;
   });
 
@@ -476,7 +476,7 @@ describe("ingest/pipeline (provider path + embedPending)", () => {
     vault = mkdtempSync(join(tmpdir(), "qkb-vault-"));
     mkdirSync(join(vault, ".obsidian"), { recursive: true });
     writeFileSync(join(vault, ".obsidian", "ignore-me.md"), "no frontmatter");
-    cfg = loadConfig("/nonexistent/qkb-test-config.toml", {});
+    cfg = loadConfig("/nonexistent/qkb-test-config.yaml", {});
     cfg.vaultPath = vault;
     provider = new FakeProvider(DIM);
   });
@@ -742,7 +742,7 @@ describe("ingest/pipeline (provider path + embedPending)", () => {
     try {
       const fileVault = mkdtempSync(join(tmpdir(), "qkb-vault2-"));
       try {
-        const fileCfg = loadConfig("/nonexistent/qkb-test-config.toml", {});
+        const fileCfg = loadConfig("/nonexistent/qkb-test-config.yaml", {});
         fileCfg.vaultPath = fileVault;
 
         for (let i = 0; i < 10; i++) {
@@ -772,7 +772,7 @@ describe("ingest/pipeline (provider path + embedPending)", () => {
     // not just same-process/same-connection state.
     const resumedConn = connect(dbPath, DIM);
     try {
-      const resumedCfg = loadConfig("/nonexistent/qkb-test-config.toml", {});
+      const resumedCfg = loadConfig("/nonexistent/qkb-test-config.yaml", {});
       const storage = new Storage(resumedConn);
       const remaining = storage.pendingChunks().length;
       expect(remaining).toBeGreaterThan(0);
@@ -809,7 +809,7 @@ describe("ingest/pipeline (cooperative abort — options.signal)", () => {
   beforeEach(() => {
     conn = connect(":memory:", DIM);
     vault = mkdtempSync(join(tmpdir(), "qkb-vault-"));
-    cfg = loadConfig("/nonexistent/qkb-test-config.toml", {});
+    cfg = loadConfig("/nonexistent/qkb-test-config.yaml", {});
     cfg.vaultPath = vault;
   });
 

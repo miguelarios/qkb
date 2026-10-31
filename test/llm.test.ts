@@ -54,7 +54,7 @@ describe("search with optional model stages", () => {
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "qkb-llm-"));
-    cfg = loadConfig("/nonexistent/qkb-test-config.toml", {});
+    cfg = loadConfig("/nonexistent/qkb-test-config.yaml", {});
     cfg.vaultPath = join(tmp, "vault");
     mkdirSync(cfg.vaultPath);
     cfg.dbPath = join(tmp, "qkb.db");

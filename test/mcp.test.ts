@@ -53,7 +53,7 @@ function writeNote(vault: string, name: string, noteId: string, opts: WriteOpts 
 function makeCfg(tmpPath: string): Config {
   const vault = join(tmpPath, "vault");
   mkdirSync(vault, { recursive: true });
-  const cfg = loadConfig("/nonexistent/qkb-test-config.toml", {});
+  const cfg = loadConfig("/nonexistent/qkb-test-config.yaml", {});
   cfg.vaultPath = vault;
   cfg.dbPath = join(tmpPath, "qkb.db");
   cfg.embeddingProvider = "fake";
