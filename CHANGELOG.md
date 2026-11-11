@@ -3,6 +3,16 @@
 Release PRs (`chore(release): X.Y.Z`) add a section here; the release
 workflow uses it as the GitHub Release notes.
 
+## 0.9.0 (2026-11-11)
+
+### Features
+
+- The config file is now YAML: `~/.config/qkb/config.yaml` (or `config.yml`), the same syntax as note frontmatter. Sections and keys are unchanged, so converting is a syntax change only; see the README's configuration reference. String values that YAML would read as a number must be quoted (`name: "2024"`), and mistakes that used to load defaults silently, such as a misindented key or an empty list item, are now errors naming the setting (#63)
+
+### Deprecations
+
+- `config.toml` is deprecated. When no YAML config exists, a `config.toml` beside it (including a container's `/config/config.toml` mount) is still read, with a warning on stderr. TOML support will be removed in a future release (#63)
+
 ## 0.8.0 (2026-10-31)
 
 ### Breaking changes
