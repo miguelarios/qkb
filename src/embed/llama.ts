@@ -196,7 +196,7 @@ export class LlamaProvider implements EmbeddingProvider {
     // is a trivial VRAM cost for a 300M-parameter model, so there's no
     // real downside to pinning it.
     //
-    // Minor/follow-up: this is uncapped — if [embedding].local_gguf_repo/
+    // Minor/follow-up: this is uncapped — if embedding.local_gguf_repo/
     // local_gguf_file is ever pointed at a GGUF with a much larger trained
     // context (e.g. a multi-thousand-token LLM-scale context window
     // instead of embeddinggemma's 2048), requesting that full size as a
@@ -255,7 +255,7 @@ export class LlamaProvider implements EmbeddingProvider {
       const v = Array.from(embedding.vector);
       if (v.length !== this._dim) {
         throw new Error(
-          `Model '${this._model}' returned dimension ${v.length}, config says ${this._dim}. Fix [embedding].dimension.`,
+          `Model '${this._model}' returned dimension ${v.length}, config says ${this._dim}. Fix embedding.dimension in the config.`,
         );
       }
       vectors.push(v);

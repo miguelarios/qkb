@@ -17,7 +17,7 @@ describe("title, aliases and headings as ranking signals", () => {
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "qkb-rank-"));
-    cfg = loadConfig("/nonexistent/qkb-test-config.toml", {});
+    cfg = loadConfig("/nonexistent/qkb-test-config.yaml", {});
     cfg.vaultPath = join(tmp, "vault");
     mkdirSync(cfg.vaultPath);
     cfg.dbPath = join(tmp, "qkb.db");
@@ -81,7 +81,7 @@ describe("wikilinks end to end (#36)", () => {
   it("links written in notes show up as related in both directions", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "qkb-links-"));
     try {
-      const cfg = loadConfig("/nonexistent/qkb-test-config.toml", {});
+      const cfg = loadConfig("/nonexistent/qkb-test-config.yaml", {});
       cfg.vaultPath = join(tmp, "vault");
       mkdirSync(join(cfg.vaultPath, "Projects"), { recursive: true });
       cfg.dbPath = join(tmp, "qkb.db");
@@ -118,18 +118,19 @@ describe("sibling fields end to end", () => {
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "qkb-sib-"));
     mkdirSync(join(tmp, "vault"));
-    cfgPath = join(tmp, "config.toml");
+    cfgPath = join(tmp, "config.yaml");
   });
 
   afterEach(() => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  function load(fieldsToml: string): Config {
+  /** `fieldsYaml`: entries under `frontmatter.fields`, indented 4 spaces. */
+  function load(fieldsYaml: string): Config {
     writeFileSync(
       cfgPath,
-      `[vault]\npath = "${join(tmp, "vault")}"\n[database]\npath = "${join(tmp, "qkb.db")}"\n` +
-        `[embedding]\nprovider = "fake"\ndimension = 8\n[frontmatter.fields]\n${fieldsToml}`,
+      `vault:\n  path: "${join(tmp, "vault")}"\ndatabase:\n  path: "${join(tmp, "qkb.db")}"\n` +
+        `embedding:\n  provider: fake\n  dimension: 8\nfrontmatter:\n  fields:\n${fieldsYaml}`,
     );
     return loadConfig(cfgPath, {});
   }
@@ -140,17 +141,17 @@ describe("sibling fields end to end", () => {
 
   it("parses the table form and rejects unknown keys", () => {
     const cfg = load(
-      'source = { description = "Where a clip came from", siblings = true }\nproject = "Project"\n',
+      "    source: { description: Where a clip came from, siblings: true }\n    project: Project\n",
     );
     expect(cfg.fields).toEqual({ source: "Where a clip came from", project: "Project" });
     expect(cfg.siblingFields).toEqual(["source"]);
-    expect(() => load("source = { sibling = true }\n")).toThrow(/unknown key "sibling"/);
-    expect(() => load('source = { siblings = "yes" }\n')).toThrow(/true or false/);
+    expect(() => load("    source: { sibling: true }\n")).toThrow(/unknown key "sibling"/);
+    expect(() => load("    source: { siblings: yes }\n")).toThrow(/true or false/);
   });
 
   it("notes sharing a sibling value are related, and the value ranks above an ordinary field", async () => {
     const cfg = load(
-      'author = { description = "Who wrote it", siblings = true }\nproject = "Project"\n',
+      "    author: { description: Who wrote it, siblings: true }\n    project: Project\n",
     );
     note("by-alice", "author: Alice Smith\n");
     note("also-alice", "author: [Alice Smith, Bob Jones]\n");

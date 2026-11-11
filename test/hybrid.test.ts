@@ -47,10 +47,10 @@ async function ingestOne(
   new Storage(conn).upsert(note, contentHash(note.body), chunks, embeddings);
 }
 
-/** deterministic defaults (never read the machine's real config.toml). Mirrors
+/** deterministic defaults (never read the machine's real config file). Mirrors
  * test_hybrid.py's `make_cfg` (fake provider, 8-d). */
 function makeCfg() {
-  const c = loadConfig("/nonexistent/qkb-test-config.toml", {});
+  const c = loadConfig("/nonexistent/qkb-test-config.yaml", {});
   c.embeddingProvider = "fake";
   c.embeddingDim = DIM;
   return c;

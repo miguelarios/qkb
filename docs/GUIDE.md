@@ -64,10 +64,10 @@ qkb also reads the note body itself:
 
 Your vault uses other names? Map them in the config:
 
-```toml
-[frontmatter]
-id = ["uuid", "id"]
-created = ["created", "date created", "created_at"]
+```yaml
+frontmatter:
+  id: [uuid, id]
+  created: [created, date created, created_at]
 ```
 
 ## Extra properties
@@ -76,10 +76,11 @@ Every other frontmatter property is **stored**: `qkb get` returns it under
 `metadata`, and you can filter on it with `--field`. But a stored property
 doesn't affect search until you **declare** it:
 
-```toml
-[frontmatter.fields]
-project = "Project this note belongs to"
-company = "Employer or client the note is about"
+```yaml
+frontmatter:
+  fields:
+    project: Project this note belongs to
+    company: Employer or client the note is about
 ```
 
 A declared property is:
@@ -125,13 +126,14 @@ taken from it share a `source` too. So do all papers by one `author`, or all
 entries in one `series`. qkb calls these **sibling fields**: notes that share
 a value are siblings.
 
-Mark a declared property as a sibling field with the table form:
+Mark a declared property as a sibling field with the mapping form:
 
-```toml
-[frontmatter.fields]
-source = { description = "Where a note came from: a web page, meeting or book", siblings = true }
-author = { description = "Who wrote the original", siblings = true }
-project = "Project this note belongs to"   # ordinary declared field
+```yaml
+frontmatter:
+  fields:
+    source: { description: "Where a note came from: a web page, meeting or book", siblings: true }
+    author: { description: Who wrote the original, siblings: true }
+    project: Project this note belongs to   # ordinary declared field
 ```
 
 A sibling field does everything a declared field does, and additionally:
@@ -197,7 +199,7 @@ weights:
 
 Short fields weigh more than long ones: a word in a three-word title says
 more than the same word in a long body. Tune the weights in
-`[search.fts_weights]`; `0` makes a field unsearchable.
+`search.fts_weights`; `0` makes a field unsearchable.
 
 **Semantic search** compares the query's embedding with each chunk's
 embedding (chunk text plus the note's declared-field lines), so a note can
@@ -220,7 +222,7 @@ counting double. This helps short or vaguely worded queries.
 
 Both optional stages run on your machine. They download their models on
 first use and fall back to plain search if the model fails. Turn them on for
-every search with `[rerank] enabled = true` / `[expansion] enabled = true`.
+every search with `rerank.enabled: true` / `expansion.enabled: true`.
 
 ## Filtering
 
@@ -240,7 +242,7 @@ case-insensitively, and a list property matches if any item matches.
 
 Vault names are exact (case-sensitive). Naming a vault that isn't configured
 is an error that lists the configured names. With no vault named, a search
-covers every vault except those with `include_by_default = false`; those are
+covers every vault except those with `include_by_default: false`; those are
 searched only when named, or with `--all-vaults` / `all_vaults: true`.
 
 ## When a config change takes effect
@@ -248,10 +250,10 @@ searched only when named, or with `--all-vaults` / `all_vaults: true`.
 | Change | Takes effect |
 |---|---|
 | declare a field, or edit a declared value in a note | next `ingest`; the affected notes re-embed on the next `embed` |
-| mark a field `siblings = true` | related notes: immediately. Ranking weight: next `ingest` |
+| mark a field `siblings: true` | related notes: immediately. Ranking weight: next `ingest` |
 | a description | immediately (next MCP server start for agents) |
-| `[search.fts_weights]` | immediately |
-| `[rerank]`, `[expansion]` | immediately |
+| `search.fts_weights` | immediately |
+| `rerank`, `expansion` settings | immediately |
 | embedding model or provider | `qkb embed --full` |
 | upgrading from qkb 0.5 or earlier | the index is reset automatically; run `qkb ingest && qkb embed` |
 | upgrading from 0.6.0 (result `line` numbers) | next `ingest` fills them in; nothing re-embeds |
@@ -263,20 +265,21 @@ happen on their own.
 
 A vault with web clips, meeting notes and project notes (synthetic values):
 
-```toml
-[vault]
-path = "~/Documents/Notes"
-name = "Notes"
+```yaml
+vault:
+  path: ~/Documents/Notes
+  name: Notes
 
-[frontmatter.fields]
-source   = { description = "Where a note came from: a web page URL, a meeting, a book", siblings = true }
-series   = { description = "Recurring meeting or publication a note belongs to", siblings = true }
-project  = "Project this note is part of, e.g. homelab-traefik"
-company  = "Employer or client the note is about"
-attendees = "People present in a meeting"
+frontmatter:
+  fields:
+    source: { description: "Where a note came from: a web page URL, a meeting, a book", siblings: true }
+    series: { description: Recurring meeting or publication a note belongs to, siblings: true }
+    project: Project this note is part of, e.g. homelab-traefik
+    company: Employer or client the note is about
+    attendees: People present in a meeting
 
-[rerank]
-enabled = true
+rerank:
+  enabled: true
 ```
 
 A note from that vault:

@@ -38,7 +38,7 @@ describe("multiple vaults", () => {
     wiki = join(tmp, "wiki");
     mkdirSync(personal);
     mkdirSync(wiki);
-    cfg = loadConfig("/nonexistent/qkb-test-config.toml", {});
+    cfg = loadConfig("/nonexistent/qkb-test-config.yaml", {});
     cfg.vaults = [
       { name: "Personal", path: personal, includeByDefault: true },
       { name: "Wiki", path: wiki, includeByDefault: true },
@@ -256,22 +256,22 @@ describe("[[vaults]] config", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  function load(toml: string, env: Record<string, string> = {}) {
-    const p = join(tmp, "config.toml");
-    writeFileSync(p, toml);
+  function load(yamlText: string, env: Record<string, string> = {}) {
+    const p = join(tmp, "config.yaml");
+    writeFileSync(p, yamlText);
     return loadConfig(p, env);
   }
 
-  it("a single [vault] still means one vault", () => {
-    const cfg = load('[vault]\npath = "/data/notes"\nname = "Notes"\n');
+  it("a single vault: still means one vault", () => {
+    const cfg = load("vault:\n  path: /data/notes\n  name: Notes\n");
     expect(configuredVaults(cfg)).toEqual([
       { name: "Notes", path: "/data/notes", includeByDefault: true },
     ]);
   });
 
-  it("[[vaults]] lists several; name defaults to the directory name", () => {
+  it("vaults: lists several; name defaults to the directory name", () => {
     const cfg = load(
-      '[[vaults]]\nname = "Personal"\npath = "/data/personal"\n\n[[vaults]]\npath = "/data/agent-wiki"\n',
+      "vaults:\n  - name: Personal\n    path: /data/personal\n  - path: /data/agent-wiki\n",
     );
     expect(configuredVaults(cfg)).toEqual([
       { name: "Personal", path: "/data/personal", includeByDefault: true },
@@ -281,33 +281,31 @@ describe("[[vaults]] config", () => {
   });
 
   it("rejects duplicate vault names and entries without a path", () => {
-    expect(() => load('[[vaults]]\npath = "/a/x"\n[[vaults]]\npath = "/b/x"\n')).toThrow(
-      /duplicate vault name/,
-    );
-    expect(() => load('[[vaults]]\nname = "x"\n')).toThrow(/needs a `path`/);
+    expect(() => load("vaults:\n  - path: /a/x\n  - path: /b/x\n")).toThrow(/duplicate vault name/);
+    expect(() => load("vaults:\n  - name: x\n")).toThrow(/needs a `path`/);
   });
 
-  it("QKB_VAULT_PATH replaces a configured [[vaults]] list", () => {
-    const cfg = load('[[vaults]]\npath = "/data/personal"\n', { QKB_VAULT_PATH: "/data/other" });
+  it("QKB_VAULT_PATH replaces a configured vaults list", () => {
+    const cfg = load("vaults:\n  - path: /data/personal\n", { QKB_VAULT_PATH: "/data/other" });
     expect(configuredVaults(cfg)).toEqual([
       { name: "Notes", path: "/data/other", includeByDefault: true },
     ]);
   });
 
-  it("include_by_default = false is read per vault; at least one vault must stay included", () => {
+  it("include_by_default: false is read per vault; at least one vault must stay included", () => {
     const cfg = load(
-      '[[vaults]]\nname = "Personal"\npath = "/data/personal"\n\n' +
-        '[[vaults]]\nname = "Wiki"\npath = "/data/wiki"\ninclude_by_default = false\n',
+      "vaults:\n  - name: Personal\n    path: /data/personal\n" +
+        "  - name: Wiki\n    path: /data/wiki\n    include_by_default: false\n",
     );
     expect(configuredVaults(cfg).map((v) => [v.name, v.includeByDefault])).toEqual([
       ["Personal", true],
       ["Wiki", false],
     ]);
-    expect(() => load('[[vaults]]\npath = "/data/wiki"\ninclude_by_default = false\n')).toThrow(
+    expect(() => load("vaults:\n  - path: /data/wiki\n    include_by_default: false\n")).toThrow(
       /at least one vault must be searched by default/,
     );
     // A typo or non-boolean is an error, not a silently excluded vault.
-    expect(() => load('[[vaults]]\npath = "/data/wiki"\ninclude_by_default = "ture"\n')).toThrow(
+    expect(() => load("vaults:\n  - path: /data/wiki\n    include_by_default: ture\n")).toThrow(
       /include_by_default must be true or false/,
     );
   });

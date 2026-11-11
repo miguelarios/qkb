@@ -61,7 +61,7 @@ export interface HydratedResult {
   related: RelatedNote[];
   /** Name of the vault the note was indexed from. */
   vault: string;
-  /** Declared extra properties present on the note (`[frontmatter.fields]`). */
+  /** Declared extra properties present on the note (`frontmatter.fields`). */
   fields: Record<string, string>;
 }
 

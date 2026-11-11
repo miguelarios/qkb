@@ -1,5 +1,5 @@
 /**
- * Optional query expansion (#38). Off by default; `[expansion] enabled =
+ * Optional query expansion (#38). Off by default; `expansion.enabled:
  * true` or `qkb query --expand` turns it on.
  *
  * A small local model rewrites the query into a few variants: `lex` ones

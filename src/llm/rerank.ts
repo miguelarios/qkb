@@ -1,10 +1,10 @@
 /**
- * Optional cross-encoder reranking (#37). Off by default; `[rerank] enabled
- * = true` or `qkb query --rerank` turns it on.
+ * Optional cross-encoder reranking (#37). Off by default; `rerank.enabled:
+ * true` or `qkb query --rerank` turns it on.
  *
  * A reranker reads the query and a candidate's text together and scores how
  * well the text answers the query — slower than BM25/vector retrieval, so it
- * only re-scores the top `[rerank] candidates` hybrid hits. The default model
+ * only re-scores the top `rerank.candidates` hybrid hits. The default model
  * is the same local GGUF QMD uses (Qwen3-Reranker-0.6B), run in-process by
  * node-llama-cpp; nothing leaves the machine.
  */

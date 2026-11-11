@@ -26,12 +26,12 @@ message naming both Node versions and the `npm rebuild` command that fixes
 it. If npm warns that install scripts for `better-sqlite3` were skipped
 (npm's `allow-scripts` policy), the same fallback applies.
 
-**2. Point qkb at your vault** — create `~/.config/qkb/config.toml`:
+**2. Point qkb at your vault** — create `~/.config/qkb/config.yaml`:
 
-```toml
-[vault]
-path = "~/Documents/MyVault"   # your Obsidian vault (read-only to qkb)
-name = "MyVault"               # used to build obsidian:// links
+```yaml
+vault:
+  path: ~/Documents/MyVault   # your Obsidian vault (read-only to qkb)
+  name: MyVault               # used to build obsidian:// links
 ```
 
 **3. Give notes an `id`.** Every note whose frontmatter has an `id` is
@@ -77,7 +77,7 @@ The Python original (`qkb-search`, still on PyPI — see [Migrating from the Pyt
 
 ## Embedding providers
 
-Four interchangeable providers, set via `[embedding].provider` in `config.toml`:
+Four interchangeable providers, set via `embedding.provider` in `config.yaml`:
 
 | provider | how it runs | when to use |
 |---|---|---|
@@ -89,139 +89,146 @@ Four interchangeable providers, set via `[embedding].provider` in `config.toml`:
 Switching provider or model changes the vectors, so run `qkb embed --full`
 afterward to re-embed everything.
 
-```toml
-# ~/.config/qkb/config.toml — llama (default)
-[embedding]
-provider = "llama"
-model = "embeddinggemma-300M-Q8_0"
-dimension = 768
-# local_gguf_repo / local_gguf_file / model_cache_dir also configurable — see below
+```yaml
+# ~/.config/qkb/config.yaml — llama (default)
+embedding:
+  provider: llama
+  model: embeddinggemma-300M-Q8_0
+  dimension: 768
+  # local_gguf_repo / local_gguf_file / model_cache_dir also configurable — see below
 ```
 
-```toml
-# ~/.config/qkb/config.toml — ollama
-[embedding]
-provider = "ollama"
-model = "embeddinggemma"
-dimension = 768
-ollama_host = "http://localhost:11434"
+```yaml
+# ~/.config/qkb/config.yaml — ollama
+embedding:
+  provider: ollama
+  model: embeddinggemma
+  dimension: 768
+  ollama_host: http://localhost:11434
 ```
 
-```toml
-# ~/.config/qkb/config.toml — openai-compatible
-[embedding]
-provider = "openai"
-model = "text-embedding-3-small"
-dimension = 1536
-openai_base_url = "https://api.openai.com"  # or a local/compatible endpoint
+```yaml
+# ~/.config/qkb/config.yaml — openai-compatible
+embedding:
+  provider: openai
+  model: text-embedding-3-small
+  dimension: 1536
+  openai_base_url: https://api.openai.com  # or a local/compatible endpoint
 ```
 
 The OpenAI API key is read from the `QKB_OPENAI_API_KEY` environment
-variable only — it's never stored in `config.toml`.
+variable only — it's never stored in `config.yaml`.
 
 ## Configuration reference
 
-`~/.config/qkb/config.toml` (all keys optional; shown with their defaults).
-`QKB_CONFIG=/path/to/alt-config.toml` points at a different config file
+`~/.config/qkb/config.yaml` (or `config.yml`; all keys optional; shown with their defaults).
+`QKB_CONFIG=/path/to/alt-config.yaml` points at a different config file
 entirely.
 
-```toml
-[vault]
-path = "~/Notes"
-name = "Notes"
+Earlier releases used TOML (`config.toml`). If the config `.yaml` path doesn't
+exist but a `.toml` file of the same name sits beside it, that file is read
+with a deprecation warning on stderr. The sections and keys are unchanged, so
+migrating is a straight syntax conversion; TOML support will be removed in a
+future release.
 
-[database]
-path = "~/.local/share/qkb/qkb.db"
+Quote string values that YAML would read as a number: `name: "2024"`, not
+`name: 2024` (an unquoted `0755` or `1:30` would even change value). qkb
+refuses an unquoted one with an error saying so, and treats an empty value
+(`name:`) as unset.
 
-[embedding]
-provider = "llama"                                     # llama | ollama | openai | fake
-model = "embeddinggemma-300M-Q8_0"
-dimension = 768
-ollama_host = "http://localhost:11434"
-local_gguf_repo = "ggml-org/embeddinggemma-300M-GGUF"
-local_gguf_file = "embeddinggemma-300M-Q8_0.gguf"
-model_cache_dir = "~/.cache/qkb/models"
-openai_base_url = ""                                   # optional override
-# doc_template / query_template: optional explicit "{t}"-placeholder prompt
-# templates, overriding the per-model default asymmetric prefixing.
+```yaml
+vault:
+  path: ~/Notes
+  name: Notes
 
-[chunking]
-target_tokens = 500
-overlap_percent = 15
+database:
+  path: ~/.local/share/qkb/qkb.db
 
-[search]
-default_limit = 10
-rrf_k = 60
-vec_candidates = 30
-fts_candidates = 30
+embedding:
+  provider: llama                                      # llama | ollama | openai | fake
+  model: embeddinggemma-300M-Q8_0
+  dimension: 768
+  ollama_host: http://localhost:11434
+  local_gguf_repo: ggml-org/embeddinggemma-300M-GGUF
+  local_gguf_file: embeddinggemma-300M-Q8_0.gguf
+  model_cache_dir: ~/.cache/qkb/models
+  openai_base_url: ""                                  # optional override (empty = unset)
+  # doc_template / query_template: optional explicit "{t}"-placeholder prompt
+  # templates, overriding the per-model default asymmetric prefixing.
 
-[search.fts_weights]      # keyword-ranking weight per field (0 = ignore)
-title = 5.0
-aliases = 5.0
-headings = 3.0
-tags = 3.0
-sibling_fields = 3.0      # declared fields with siblings = true
-fields = 2.0              # other declared [frontmatter.fields]
-body = 1.0
-type = 0.5
+chunking:
+  target_tokens: 500
+  overlap_percent: 15
 
-[frontmatter]
-# Which property names feed each core field (first present wins). Defaults:
-# id       = ["id"]
-# type     = ["type"]
-# title    = ["title"]            # falls back to the file name
-# aliases  = ["aliases", "alias"]
-# date     = ["date"]
-# created  = ["created", "date created"]
-# modified = ["modified", "updated", "date modified"]
-# tags     = ["tags", "tag"]
+search:
+  default_limit: 10
+  rrf_k: 60
+  vec_candidates: 30
+  fts_candidates: 30
+  fts_weights:              # keyword-ranking weight per field (0 = ignore)
+    title: 5.0
+    aliases: 5.0
+    headings: 3.0
+    tags: 3.0
+    sibling_fields: 3.0     # declared fields with siblings: true
+    fields: 2.0             # other declared frontmatter.fields
+    body: 1.0
+    type: 0.5
 
-[frontmatter.fields]
-# Optional: extra properties to search, embed, return and describe to agents
-# (see "Extra frontmatter properties" below), e.g.:
-# project = "Project this note belongs to"
+frontmatter:
+  # Which property names feed each core field (first present wins). Defaults:
+  # id:       [id]
+  # type:     [type]
+  # title:    [title]             # falls back to the file name
+  # aliases:  [aliases, alias]
+  # date:     [date]
+  # created:  [created, date created]
+  # modified: [modified, updated, date modified]
+  # tags:     [tags, tag]
+  fields:
+    # Optional: extra properties to search, embed, return and describe to agents
+    # (see "Extra frontmatter properties" below), e.g.:
+    # project: Project this note belongs to
 
-[mcp]
-host = "127.0.0.1"        # HTTP transport only (`qkb mcp --http`)
-port = 8181
-allowed_origins = []      # browser origins allowed besides loopback; ["*"] disables the check
+mcp:
+  host: 127.0.0.1           # HTTP transport only (`qkb mcp --http`)
+  port: 8181
+  allowed_origins: []       # browser origins allowed besides loopback; ["*"] disables the check
 
-[watch]
-interval = 300            # seconds between re-index runs in watch mode
+watch:
+  interval: 300             # seconds between re-index runs in watch mode
 
-[rerank]                  # see "Reranking and query expansion"
-enabled = false
-provider = "llama"        # llama | fake
-gguf_repo = "ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF"
-gguf_file = "qwen3-reranker-0.6b-q8_0.gguf"
-candidates = 30           # top hybrid hits the reranker re-scores
+rerank:                     # see "Reranking and query expansion"
+  enabled: false
+  provider: llama           # llama | fake
+  gguf_repo: ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF
+  gguf_file: qwen3-reranker-0.6b-q8_0.gguf
+  candidates: 30            # top hybrid hits the reranker re-scores
 
-[expansion]
-enabled = false
-provider = "llama"        # llama | fake
-gguf_repo = "tobil/qmd-query-expansion-1.7B-gguf"
-gguf_file = "qmd-query-expansion-1.7B-q4_k_m.gguf"
-max_variants = 4
+expansion:
+  enabled: false
+  provider: llama           # llama | fake
+  gguf_repo: tobil/qmd-query-expansion-1.7B-gguf
+  gguf_file: qmd-query-expansion-1.7B-q4_k_m.gguf
+  max_variants: 4
 ```
 
-Several vaults: replace `[vault]` with a list (see "Multiple vaults" below):
+Several vaults: replace `vault` with a `vaults` list (see "Multiple vaults" below):
 
-```toml
-[[vaults]]
-name = "Personal"
-path = "~/Documents/Personal"
-
-[[vaults]]
-name = "AgentWiki"
-path = "~/agent-wiki"
-include_by_default = false   # optional: searched only when named or with --all-vaults (default true)
+```yaml
+vaults:
+  - name: Personal
+    path: ~/Documents/Personal
+  - name: AgentWiki
+    path: ~/agent-wiki
+    include_by_default: false   # optional: searched only when named or with --all-vaults (default true)
 ```
 
 ### Environment-variable overrides
 
-Only the keys below have a `QKB_*` environment-variable override — `[chunking]`, `[search]`, and `[frontmatter]` keys do **not** (config-file-only). An env var always wins over `config.toml`.
+Only the keys below have a `QKB_*` environment-variable override — `chunking`, `search`, and `frontmatter` keys do **not** (config-file-only). An env var always wins over `config.yaml`.
 
-| `config.toml` key | env var |
+| `config.yaml` key | env var |
 |---|---|
 | `vault.path` | `QKB_VAULT_PATH` |
 | `vault.name` | `QKB_VAULT_NAME` |
@@ -236,7 +243,7 @@ Only the keys below have a `QKB_*` environment-variable override — `[chunking]
 | `embedding.local_gguf_file` | `QKB_LOCAL_GGUF_FILE` |
 | `embedding.model_cache_dir` | `QKB_MODEL_CACHE_DIR` |
 | `embedding.openai_base_url` | `QKB_OPENAI_BASE_URL` |
-| *(no `config.toml` key — env only)* | `QKB_OPENAI_API_KEY` |
+| *(no `config.yaml` key — env only)* | `QKB_OPENAI_API_KEY` |
 | `mcp.host` | `QKB_MCP_HOST` |
 | `mcp.port` | `QKB_MCP_PORT` |
 | `mcp.allowed_origins` | `QKB_ALLOWED_ORIGINS` (comma-separated) |
@@ -247,10 +254,10 @@ Only the keys below have a `QKB_*` environment-variable override — `[chunking]
 | `expansion.provider` | `QKB_EXPANSION_PROVIDER` |
 
 `QKB_VAULT_PATH` names exactly one vault: when set, it replaces a
-configured `[[vaults]]` list.
+configured `vaults` list.
 
 Plus `QKB_CONFIG`, which isn't a per-key override — it points qkb at a
-different `config.toml` path entirely.
+different `config.yaml` path entirely.
 
 `QKB_NATIVE_CACHE_DIR` and `QKB_NATIVE_DOWNLOAD` (env only) control where
 qkb keeps a SQLite addon fetched for a Node other than the install-time one,
@@ -262,7 +269,7 @@ qkb exposes three tools to LLM agents. Clients prefix them with the server's
 name, so in Claude Code (`claude mcp add qkb …`) they appear as
 `mcp__qkb__search`, `mcp__qkb__get` and `mcp__qkb__status`.
 
-- **`search`** — hybrid BM25 + vector search with the same filters as the CLI (`type`, `tags`, date range, `vaults`, `all_vaults`, `fields`, `limit`), plus optional `rerank` and `expand` (defaults from `[rerank]`/`[expansion]`). Its description lists your vaults and declared fields, so an agent knows what it can filter on. Each result lists its related notes. Each result also carries `line`, the 1-based line of `file_path` where the match is (the keyword hit, or the first line of the matched passage), so an agent can open `file_path:line` directly; the human CLI output prints the same `path:line` above each `obsidian://` link.
+- **`search`** — hybrid BM25 + vector search with the same filters as the CLI (`type`, `tags`, date range, `vaults`, `all_vaults`, `fields`, `limit`), plus optional `rerank` and `expand` (defaults from `rerank.enabled`/`expansion.enabled`). Its description lists your vaults and declared fields, so an agent knows what it can filter on. Each result lists its related notes. Each result also carries `line`, the 1-based line of `file_path` where the match is (the keyword hit, or the first line of the matched passage), so an agent can open `file_path:line` directly; the human CLI output prints the same `path:line` above each `obsidian://` link.
 - **`get`** — retrieve a single document by id (or unambiguous id prefix), including every stored frontmatter property and all related notes (`include_related: false` to skip them).
 - **`status`** — index health: document/chunk/vector counts, per-vault counts (and whether each is searched by default), declared fields and their most common values (`field_values`), so an agent can build `fields` filters.
 
@@ -311,7 +318,7 @@ are then de-indexed.
 
 ## Multiple vaults
 
-List several `[[vaults]]` (see the configuration reference) and qkb indexes
+List several `vaults` (see the configuration reference) and qkb indexes
 them into one database. Every result carries its `vault`, `obsidian://`
 links use each note's own vault name, and searches can be limited:
 
@@ -326,7 +333,7 @@ A vault name must match a configured vault exactly (names are
 case-sensitive). An unknown name is an error that lists the configured
 names, rather than an empty result.
 
-**Leaving a vault out by default.** Set `include_by_default = false` on a
+**Leaving a vault out by default.** Set `include_by_default: false` on a
 vault to keep it indexed but out of searches that don't name it. It is still
 searched when named (`--vault AgentWiki`, MCP `vaults`), or together with
 every other vault with `--all-vaults` (MCP `all_vaults: true`). The MCP
@@ -341,7 +348,7 @@ vault. A note moved from one vault to another is followed (not re-embedded).
 
 Keyword search weighs where a word appears, not just whether it does: a
 match in the title or an alias counts most, then headings and tags, then
-declared fields, then body text (`[search.fts_weights]` tunes each). A note
+declared fields, then body text (`search.fts_weights` tunes each). A note
 titled, aliased or headed with your query words beats one that merely
 mentions them. Headings inside fenced code blocks are ignored.
 
@@ -365,14 +372,14 @@ default, run in-process through `node-llama-cpp` (the models download once
 to `model_cache_dir`), and fall back to plain search with a warning if the
 model fails.
 
-- **Reranking** (`qkb query --rerank`, MCP `rerank: true`, or `[rerank]
-  enabled = true`): a cross-encoder (Qwen3-Reranker-0.6B, ~640 MB) reads the
+- **Reranking** (`qkb query --rerank`, MCP `rerank: true`, or `rerank.enabled:
+  true`): a cross-encoder (Qwen3-Reranker-0.6B, ~640 MB) reads the
   query with each of the top `candidates` hits (title, declared fields and
   the best-matching passage) and scores the fit. The score is blended with
   the retrieval rank, trusting retrieval more at the top: a confident
   reranker can lift a deep hit, but can't bury an exact title match.
 - **Query expansion** (`qkb query --expand`, MCP `expand: true`, or
-  `[expansion] enabled = true`): a small fine-tuned model (~1.1 GB) rewrites
+  `expansion.enabled: true`): a small fine-tuned model (~1.1 GB) rewrites
   the query into a few keyword and paraphrase variants. Each variant's
   results are fused in, with the original query weighted double. Helps
   short or vaguely worded queries; adds a second or two per search.
@@ -387,11 +394,12 @@ The core properties (`id`, `type`, `title`, `aliases`, `date`, `created`,
 returned by `qkb get`), but by default it doesn't affect search. Declare the
 ones that matter:
 
-```toml
-[frontmatter.fields]
-project   = "Project this note belongs to"
-attendees = "People present in a meeting"
-source    = "Where a web clip or transcript came from"
+```yaml
+frontmatter:
+  fields:
+    project: Project this note belongs to
+    attendees: People present in a meeting
+    source: Where a web clip or transcript came from
 ```
 
 Declared properties are:
@@ -404,11 +412,12 @@ Declared properties are:
 
 **Sibling fields.** A property whose shared values group notes (a `source`
 shared by clips of one page or a meeting's transcript and notes, an
-`author`, a `series`) can be marked `siblings = true`:
+`author`, a `series`) can be marked `siblings: true`:
 
-```toml
-[frontmatter.fields]
-source = { description = "Where a note came from", siblings = true }
+```yaml
+frontmatter:
+  fields:
+    source: { description: Where a note came from, siblings: true }
 ```
 
 Notes sharing a value then list each other as related (`relation:
@@ -441,8 +450,9 @@ qkb ingest && qkb embed
 The `Dockerfile` builds an image that serves HTTP MCP on port 8181 and
 re-indexes on a timer (`qkb mcp --http --watch`). Mount the vault read-only
 at `/vault` and a volume at `/data` (index and model cache). A config file,
-if you need `[[vaults]]` or `[frontmatter.fields]`, goes at
-`/config/config.toml`.
+if you need `vaults` or `frontmatter.fields`, goes at
+`/config/config.yaml` (an older mount at `/config/config.toml` is still read,
+with a deprecation warning).
 
 ```bash
 docker build -t qkb .
@@ -456,7 +466,7 @@ docker run -d -p 8181:8181 \
 
 `docker-compose.example.yml` shows the same setup next to a vault that
 another container keeps in sync. The image embeds through Ollama by default.
-It leaves out node-llama-cpp's CUDA builds, so `provider = "llama"` inside
+It leaves out node-llama-cpp's CUDA builds, so `provider: llama` inside
 the container runs on the CPU.
 
 ## Homebrew
@@ -484,7 +494,7 @@ Inspired by [QMD](https://github.com/tobi/qmd)'s search architecture and its GPU
 
 ## Migrating from the Python version
 
-The original Python implementation (`qkb-search`, PyPI, `v0.3.0`) is **superseded by this npm package** and no longer lives in this repo (its last copy is under `legacy/python/` at tag `v0.4.3`). It remains installable from PyPI, but no further Python releases are planned. Both share the same `~/.config/qkb/config.toml`, `~/.local/share/qkb/qkb.db`, and `~/.cache/qkb/models` paths, but switching between them (or between embedding providers) changes the vectors, so run `qkb embed --full` after switching.
+The original Python implementation (`qkb-search`, PyPI, `v0.3.0`) is **superseded by this npm package** and no longer lives in this repo (its last copy is under `legacy/python/` at tag `v0.4.3`). It remains installable from PyPI, but no further Python releases are planned. The Python version reads `~/.config/qkb/config.toml`; this package still reads that file as a deprecated fallback but now prefers `~/.config/qkb/config.yaml`. Both share the same `~/.local/share/qkb/qkb.db` and `~/.cache/qkb/models` paths, but switching between them (or between embedding providers) changes the vectors, so run `qkb embed --full` after switching.
 
 ## Development
 

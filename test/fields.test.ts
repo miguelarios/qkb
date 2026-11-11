@@ -18,7 +18,7 @@ import { executeSearch } from "../src/search/service.js";
 import { buildServer } from "../src/server/mcp.js";
 import { embeddingText, renderFields } from "../src/types.js";
 
-// Declared extra properties (#24): `[frontmatter.fields]` keys are searched,
+// Declared extra properties (#24): `frontmatter.fields` keys are searched,
 // embedded, returned, filterable, and described to agents.
 
 const ID1 = "f47ac10b-58cc-4372-a567-0e02b2c3d401";
@@ -45,7 +45,7 @@ describe("declared frontmatter fields", () => {
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "qkb-fields-"));
-    cfg = loadConfig("/nonexistent/qkb-test-config.toml", {});
+    cfg = loadConfig("/nonexistent/qkb-test-config.yaml", {});
     cfg.vaultPath = join(tmp, "vault");
     mkdirSync(cfg.vaultPath);
     cfg.dbPath = join(tmp, "qkb.db");
@@ -219,7 +219,7 @@ describe("declared frontmatter fields", () => {
   });
 });
 
-describe("[frontmatter.fields] config", () => {
+describe("frontmatter.fields config", () => {
   let tmp: string;
 
   beforeEach(() => {
@@ -231,14 +231,14 @@ describe("[frontmatter.fields] config", () => {
   });
 
   it("loads declared fields with descriptions", () => {
-    const p = join(tmp, "c.toml");
-    writeFileSync(p, '[frontmatter.fields]\nproject = "Project"\nattendees = "People"\n');
+    const p = join(tmp, "c.yaml");
+    writeFileSync(p, "frontmatter:\n  fields:\n    project: Project\n    attendees: People\n");
     expect(loadConfig(p, {}).fields).toEqual({ project: "Project", attendees: "People" });
   });
 
   it("rejects declaring a core key or alias as an extra field", () => {
-    const p = join(tmp, "c.toml");
-    writeFileSync(p, '[frontmatter.fields]\n"date created" = "dup"\n');
+    const p = join(tmp, "c.yaml");
+    writeFileSync(p, "frontmatter:\n  fields:\n    date created: dup\n");
     expect(() => loadConfig(p, {})).toThrow(/already a core frontmatter key/);
   });
 });

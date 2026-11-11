@@ -20,7 +20,7 @@ const ID1 = "f47ac10b-58cc-4372-a567-0e02b2c3d401";
 function makeCfg(tmpPath: string): Config {
   const vault = join(tmpPath, "vault");
   mkdirSync(vault, { recursive: true });
-  const cfg = loadConfig("/nonexistent/qkb-test-config.toml", {});
+  const cfg = loadConfig("/nonexistent/qkb-test-config.yaml", {});
   cfg.vaultPath = vault;
   cfg.dbPath = join(tmpPath, "qkb.db");
   cfg.embeddingProvider = "fake";

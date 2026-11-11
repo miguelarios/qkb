@@ -41,7 +41,7 @@ async function doSearch(
       : await getProvider(cfgObj, {
           onDownloadProgress: (received, total) => downloadRenderer?.update(received, total),
         });
-  // --rerank/--expand (or --no-*) override the config's [rerank]/[expansion]
+  // --rerank/--expand (or --no-*) override the config's rerank/expansion
   // `enabled`; both stages load their model on first use.
   const onProgress = (received: number, total: number | null) =>
     downloadRenderer?.update(received, total);
@@ -113,10 +113,10 @@ export function registerSearchCommands(program: Command): void {
       .command("query")
       .description("Tier 3: hybrid BM25 + vector with RRF fusion")
       .argument("<query>")
-      .option("--rerank", "re-score the top hits with a local reranker model ([rerank])")
-      .option("--no-rerank", "skip reranking even if [rerank] enabled = true")
-      .option("--expand", "also search model-written variants of the query ([expansion])")
-      .option("--no-expand", "skip query expansion even if [expansion] enabled = true"),
+      .option("--rerank", "re-score the top hits with a local reranker model (config: rerank)")
+      .option("--no-rerank", "skip reranking even if rerank.enabled is true")
+      .option("--expand", "also search model-written variants of the query (config: expansion)")
+      .option("--no-expand", "skip query expansion even if expansion.enabled is true"),
   ).action(
     action(async (query: string, opts: SearchOpts & { rerank?: boolean; expand?: boolean }) => {
       await doSearch("hybrid", query, opts, { rerank: opts.rerank, expand: opts.expand });
