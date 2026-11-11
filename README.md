@@ -121,7 +121,7 @@ variable only — it's never stored in `config.yaml`.
 
 ## Configuration reference
 
-`~/.config/qkb/config.yaml` (all keys optional; shown with their defaults).
+`~/.config/qkb/config.yaml` (or `config.yml`; all keys optional; shown with their defaults).
 `QKB_CONFIG=/path/to/alt-config.yaml` points at a different config file
 entirely.
 
@@ -130,6 +130,11 @@ exist but a `.toml` file of the same name sits beside it, that file is read
 with a deprecation warning on stderr. The sections and keys are unchanged, so
 migrating is a straight syntax conversion; TOML support will be removed in a
 future release.
+
+Quote string values that YAML would read as a number: `name: "2024"`, not
+`name: 2024` (an unquoted `0755` or `1:30` would even change value). qkb
+refuses an unquoted one with an error saying so, and treats an empty value
+(`name:`) as unset.
 
 ```yaml
 vault:

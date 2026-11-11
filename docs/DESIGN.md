@@ -141,7 +141,7 @@ An empty value does not trigger indexing: notes with `context:` or `source:` pre
 
 ### Configurable field mapping
 
-Every frontmatter key above is a **default, not a requirement**. The mapping is user-configurable via the config file, so any vault can adopt qkb without changing its existing conventions (e.g., a vault using `category` instead of `context`, or `uid` instead of `id`, just remaps):
+Every frontmatter key above is a **default, not a requirement**. The mapping is user-configurable via the config file, so any vault can adopt qkb without changing its existing conventions (e.g., a vault using `uid` instead of `id`, or `name` instead of `title`, just remaps):
 
 ```yaml
 # ~/.config/qkb/config.yaml
@@ -149,8 +149,6 @@ frontmatter:
   id:      id
   type:    type
   title:   title
-  context: context
-  source:  source
   date:    date
   created: [created, date created]   # list = aliases, first present wins
   tags:    tags

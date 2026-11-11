@@ -152,6 +152,84 @@ embedding:
       );
     });
 
+    it("rejects a null list item instead of storing the string 'null' (#63 review)", () => {
+      const p = file(
+        "config.yaml",
+        "mcp:\n  allowed_origins:\n    -\n    - http://a.example.com\n",
+      );
+      expect(() => loadConfig(p, {})).toThrow(/allowed_origins\[0\] is empty/);
+      writeFileSync(p, "frontmatter:\n  id: [uuid, ~]\n");
+      expect(() => loadConfig(p, {})).toThrow(/frontmatter\.id\[1\] is empty/);
+    });
+
+    it("an empty fts_weights or alias entry keeps the default instead of becoming 0 / 'null'", () => {
+      const cfg = loadConfig(
+        file(
+          "config.yaml",
+          "search:\n  fts_weights:\n    title: ~\n    body:\nfrontmatter:\n  id:\n",
+        ),
+        {},
+      );
+      expect(cfg.ftsWeights.title).toBe(5.0);
+      expect(cfg.ftsWeights.body).toBe(1.0);
+      expect(cfg.frontmatter.id).toEqual(["id"]);
+    });
+
+    it("refuses a string setting that YAML read as a number, instead of mangling it", () => {
+      // Unquoted, js-yaml reads 0755 as octal 493 and 1:30 as base-60 90.
+      for (const raw of ["0755", "2024.10", "1:30", "0x1F", "2024"]) {
+        const p = file("config.yaml", `vault:\n  name: ${raw}\n`);
+        expect(() => loadConfig(p, {})).toThrow(/vault\.name must be a string.*quotes/);
+        writeFileSync(p, `vault:\n  name: "${raw}"\n`);
+        expect(loadConfig(p, {}).vaultName).toBe(raw);
+      }
+      const p = file("v.yaml", "vaults:\n  - name: 2024\n    path: /data/x\n");
+      expect(() => loadConfig(p, {})).toThrow(/vaults entry 1: name must be a string/);
+    });
+
+    it("refuses a number setting that isn't a finite number", () => {
+      expect(() => loadConfig(file("a.yaml", "embedding:\n  dimension: 768px\n"), {})).toThrow(
+        /embedding\.dimension must be a number/,
+      );
+      expect(() => loadConfig(file("b.yaml", "mcp:\n  port: .inf\n"), {})).toThrow(
+        /mcp\.port must be a number/,
+      );
+    });
+
+    it("an indentation mistake is an error, not a silent load of defaults", () => {
+      expect(() => loadConfig(file("a.yaml", "vault:\npath: /a\n"), {})).toThrow(
+        /unknown top-level key "path".*indentation/,
+      );
+      expect(() => loadConfig(file("b.yaml", "vault: /my/vault\n"), {})).toThrow(
+        /vault must be a mapping/,
+      );
+      expect(() => loadConfig(file("c.yaml", "vaults:\n  path: /a\n"), {})).toThrow(
+        /vaults must be a list/,
+      );
+    });
+
+    it("rejects YAML merge keys, which the core schema would keep as a literal key", () => {
+      const p = file(
+        "config.yaml",
+        "vaults:\n  - &b\n    path: /a\n    include_by_default: false\n  - <<: *b\n    path: /b\n",
+      );
+      expect(() => loadConfig(p, {})).toThrow(/merge key/);
+    });
+
+    it("a TOML file under a non-.toml name gets a hint, not just a YAML syntax error", () => {
+      const p = file("qkbrc", '[vault]\npath = "/srv/notes"\n');
+      expect(() => loadConfig(p, {})).toThrow(/looks like TOML/);
+    });
+
+    it("finds config.yml when config.yaml is missing, and the other way round", () => {
+      file("config.yml", "vault:\n  name: FromYml\n");
+      expect(loadConfig(join(testDir, "config.yaml"), {}).vaultName).toBe("FromYml");
+      const other = join(testDir, "other");
+      mkdirSync(other);
+      writeFileSync(join(other, "config.yaml"), "vault:\n  name: FromYaml\n");
+      expect(loadConfig(join(other, "config.yml"), {}).vaultName).toBe("FromYaml");
+    });
+
     it("reports a syntax error with the file name instead of falling back to defaults", () => {
       const p = file("bad.yaml", "vault:\n  name: [unclosed\n");
       expect(() => loadConfig(p, {})).toThrow(/bad\.yaml/);
