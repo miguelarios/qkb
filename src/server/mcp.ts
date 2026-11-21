@@ -24,9 +24,8 @@
  * same "one call's DB work completes before the next starts" guarantee
  * Python gets for free from staying synchronous.
  */
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { type CallToolResult, McpServer } from "@modelcontextprotocol/server";
+import { StdioServerTransport, serveStdio } from "@modelcontextprotocol/server/stdio";
 import type Database from "better-sqlite3";
 import { z } from "zod";
 import { type Config, configuredVaults, loadConfig, vaultPathFor } from "../config.js";
@@ -184,7 +183,7 @@ export function createMcpServer(ctx: QkbContext): McpServer {
     "search",
     {
       description: searchToolDescription(cfgObj),
-      inputSchema: {
+      inputSchema: z.object({
         query: z.string(),
         context: z.string().optional(),
         source: z.string().optional(),
@@ -198,7 +197,7 @@ export function createMcpServer(ctx: QkbContext): McpServer {
         limit: z.number().int().optional(),
         rerank: z.boolean().optional(),
         expand: z.boolean().optional(),
-      },
+      }),
     },
     async (args) => {
       return withLock(async () => {
@@ -263,11 +262,11 @@ export function createMcpServer(ctx: QkbContext): McpServer {
         "Retrieve a document by id (full or prefix): metadata, every frontmatter " +
         "property, file path, obsidian:// URI, related notes, and optionally the raw " +
         "markdown body.",
-      inputSchema: {
+      inputSchema: z.object({
         document_id: z.string(),
         include_raw: z.boolean().optional(),
         include_related: z.boolean().optional(),
-      },
+      }),
     },
     async (args) => {
       return withLock(() => {
@@ -394,20 +393,28 @@ export function startServerWatch(ctx: QkbContext, intervalSec: number): Watcher 
   };
 }
 
-/** Real entry point: build the server and serve it over stdio until the
- * transport closes. Ported from `mcp.py`'s `run_server`. */
+/** Real entry point: serve over stdio until the client closes the pipe.
+ * `serveStdio` picks the protocol era from the client's opening message
+ * (2026-07-28, or the 2025 `initialize` handshake) and builds a server from
+ * the factory for it; every instance shares the one context. */
 export async function runServer(opts: ServeOptions = {}): Promise<void> {
   const ctx = await createContext();
-  const server = createMcpServer(ctx);
   const watcher = opts.watch ? startServerWatch(ctx, opts.interval ?? ctx.cfg.watchInterval) : null;
-  server.server.onclose = () => {
-    void (async () => {
+  let closed = false;
+  // serveStdio owns the transport's `onclose`, so teardown hangs off close().
+  class Transport extends StdioServerTransport {
+    override async close(): Promise<void> {
+      await super.close();
+      if (closed) return;
+      closed = true;
       await watcher?.stop();
       ctx.close();
-    })();
-  };
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+    }
+  }
+  serveStdio(() => createMcpServer(ctx), {
+    transport: new Transport(),
+    onerror: (e) => console.error(`qkb: MCP error: ${e.message}`),
+  });
 }
 
 export interface HttpServeOptions extends ServeOptions {

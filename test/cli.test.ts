@@ -11,9 +11,8 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import Database from "better-sqlite3";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -802,33 +801,43 @@ describe("qkb CLI (subprocess)", () => {
   // (spawnSync) can't drive this: `qkb mcp` is long-lived and never exits on
   // its own, so this uses the SDK's own `StdioClientTransport` (spawns the
   // command, speaks the wire protocol) instead.
-  it("qkb mcp starts a real stdio server exposing search/get/status (Task 16)", async () => {
-    const childEnv: Record<string, string> = {};
-    for (const [k, v] of Object.entries({ ...process.env, ...env })) {
-      if (v !== undefined) childEnv[k] = v;
-    }
-    const transport = new StdioClientTransport({
-      command: process.execPath,
-      args: [distCli, "mcp"],
-      env: childEnv,
-    });
-    const client = new Client({ name: "qkb-cli-test-client", version: "0.1.0" });
-    try {
-      await client.connect(transport);
-      const { tools } = await client.listTools();
-      const names = new Set(tools.map((t) => t.name));
-      expect(names.has("search")).toBe(true);
-      expect(names.has("get")).toBe(true);
-      expect(names.has("status")).toBe(true);
+  // Run once per protocol era: the 2025 `initialize` handshake, and
+  // 2026-07-28 (per-request envelope, no handshake).
+  it.each([
+    ["legacy", undefined],
+    ["modern", { versionNegotiation: { mode: { pin: "2026-07-28" } } }],
+  ] as const)(
+    "qkb mcp starts a real stdio server exposing search/get/status (Task 16, %s era)",
+    async (era, clientOptions) => {
+      const childEnv: Record<string, string> = {};
+      for (const [k, v] of Object.entries({ ...process.env, ...env })) {
+        if (v !== undefined) childEnv[k] = v;
+      }
+      const transport = new StdioClientTransport({
+        command: process.execPath,
+        args: [distCli, "mcp"],
+        env: childEnv,
+      });
+      const client = new Client({ name: "qkb-cli-test-client", version: "0.1.0" }, clientOptions);
+      try {
+        await client.connect(transport);
+        expect(client.getProtocolEra()).toBe(era);
+        const { tools } = await client.listTools();
+        const names = new Set(tools.map((t) => t.name));
+        expect(names.has("search")).toBe(true);
+        expect(names.has("get")).toBe(true);
+        expect(names.has("status")).toBe(true);
 
-      const result = await client.callTool({ name: "status", arguments: {} });
-      const content = result.content as { type: string; text: string }[];
-      const payload = JSON.parse(content[0]?.text ?? "null") as { documents: number };
-      expect(payload.documents).toBe(0);
-    } finally {
-      await client.close();
-    }
-  }, 15_000);
+        const result = await client.callTool({ name: "status", arguments: {} });
+        const content = result.content as { type: string; text: string }[];
+        const payload = JSON.parse(content[0]?.text ?? "null") as { documents: number };
+        expect(payload.documents).toBe(0);
+      } finally {
+        await client.close();
+      }
+    },
+    15_000,
+  );
 
   it("qkb mcp --http serves Streamable HTTP and shuts down cleanly on SIGTERM (#21)", async () => {
     const child = spawn(process.execPath, [distCli, "mcp", "--http", "--port", "0"], {
