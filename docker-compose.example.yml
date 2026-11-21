@@ -24,7 +24,8 @@ services:
       # the vault name; use the Obsidian vault name so obsidian:// links work.
       - /path/to/Notes:/vaults/Notes:ro
       # - /path/to/Work:/vaults/Work:ro
-      # With the obsidian-sync service below, mount the synced folder instead:
+      # With the obsidian-sync service below, delete the lines above and mount
+      # the synced folder:
       # - ./vaults:/vaults:ro
     # Linux only, when config.yaml points `embedding.ollama_host` at Ollama on
     # this machine (http://host.docker.internal:11434). Docker Desktop
@@ -63,7 +64,8 @@ services:
   #   docker compose run --rm obsidian-sync ob login
   #   docker compose run --rm obsidian-sync ob sync-setup --vault "Notes" --path /vaults/Notes
   #   docker compose --profile sync up -d
-  # qkb picks up synced changes on its next re-index (watch.interval).
+  # Do these before the first start of qkb, so its starter config lists the
+  # vault. qkb picks up synced changes on its next re-index (watch.interval).
   obsidian-sync:
     profiles: [sync]
     image: ghcr.io/miguelarios/qkb:latest
@@ -74,7 +76,9 @@ services:
     environment:
       PUID: "1000" # same user as qkb
       PGID: "1000"
-      # OBSIDIAN_HEADLESS_VERSION: "0.0.14" # pin the client (default: latest at first start)
+      # The client version. The default installs the latest once and keeps it;
+      # set an exact version to pin it, or change it to upgrade.
+      # OBSIDIAN_HEADLESS_VERSION: "0.0.14"
     volumes:
       - obsidian-sync-data:/data # the client, its login and sync state
       - ./vaults:/vaults

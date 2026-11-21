@@ -9,7 +9,9 @@
 #    /config/config.yaml listing the mounted vaults.
 #
 # `obsidian-sync` as the first argument runs the optional Obsidian Sync
-# sidecar instead of qkb (docker/obsidian-sync.mjs), as the same user.
+# sidecar instead of qkb (docker/obsidian-sync.mjs), as the same user, and
+# `ob ...` runs the sync client itself (`docker compose run --rm
+# obsidian-sync ob login` replaces the service's command with `ob login`).
 set -eu
 
 PUID="${PUID:-1000}"
@@ -28,7 +30,7 @@ if [ "$(id -u)" = 0 ] && [ "$PUID" != 0 ]; then
       fi
     fi
   done
-  if [ "${1:-}" = obsidian-sync ]; then
+  if [ "${1:-}" = obsidian-sync ] || [ "${1:-}" = ob ]; then
     # The sync client writes the vaults. Only the mount points change owner,
     # never the notes inside them.
     for dir in /vaults /vaults/*/; do
@@ -38,10 +40,15 @@ if [ "$(id -u)" = 0 ] && [ "$PUID" != 0 ]; then
   exec setpriv --reuid "$PUID" --regid "$PGID" --clear-groups "$0" "$@"
 fi
 
-if [ "${1:-}" = obsidian-sync ]; then
-  shift
-  exec node /app/docker/obsidian-sync.mjs "$@"
-fi
+case "${1:-}" in
+  obsidian-sync)
+    shift
+    exec node /app/docker/obsidian-sync.mjs "$@"
+    ;;
+  ob)
+    exec node /app/docker/obsidian-sync.mjs "$@"
+    ;;
+esac
 
 if [ "${1:-}" = mcp ] && [ -z "${QKB_VAULT_PATH:-}" ] && [ "${QKB_SEED_CONFIG:-1}" != 0 ]; then
   # Every folder mounted under /vaults is a vault named after it; otherwise

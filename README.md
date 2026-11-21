@@ -542,26 +542,34 @@ docker compose run --rm obsidian-sync ob sync-setup --vault "Notes" --path /vaul
 docker compose --profile sync up -d   # and mount ./vaults:/vaults:ro in the qkb service
 ```
 
-Repeat `sync-setup` for each vault; the service runs `ob sync --continuous`
-for every vault that is set up, and restarts if one of them stops. Any other
-client command works the same way, e.g.
-`docker compose run --rm obsidian-sync ob sync-config --path /vaults/Notes --mode pull-only`.
+Do this before the first `docker compose up` of qkb, so its starter config
+lists the vault; for a vault added later, also add it to `config.yaml` and
+restart qkb. Repeat `sync-setup` for each vault: the service runs
+`ob sync --continuous` for every vault that is set up and starts a newly set
+up one within half a minute. Any other client command works the same way,
+e.g. `docker compose run --rm obsidian-sync ob sync-config --path /vaults/Notes --mode pull-only`;
+a changed setting applies after `docker compose restart obsidian-sync`.
 
 - The client is Obsidian's proprietary software and is not part of the qkb
   image: the service downloads it from npm into its own volume on first
-  start. `OBSIDIAN_HEADLESS_VERSION` pins a version.
+  start and keeps that version. Set `OBSIDIAN_HEADLESS_VERSION` to an exact
+  version to pin it, or change it to upgrade.
 - The login and sync state are in the `obsidian-sync-data` volume. Removing
   the volume means logging in and setting up again.
+- If a sync stops, the service restarts it. If it stops within a minute of
+  starting (subscription ended, vault removed, logged out), the service logs
+  the reason and waits five minutes before trying again.
 - Back up the vault before the first sync, as Obsidian advises.
 - **Creation dates.** On Linux the client cannot set a file's creation time,
-  so a note synced down gets "created now" on this machine; its modified time
-  is kept. A note first created here uploads with its real creation time.
-  But if something here edits a note that was synced down, the client uploads
-  that later local creation time, and other devices may take it over. If
-  nothing in the container's vault folder needs to write, use
-  `--mode pull-only`; if agents add notes there, have them create new notes
-  rather than edit synced ones. qkb itself is unaffected: it dates a note
-  from its frontmatter, then its modified time, never the creation time.
+  so a note synced down shows "created now" on this machine's disk; its
+  modified time is kept. Nothing else changes: a note edited here keeps its
+  original creation date on the server and on your other devices, because
+  the client uploads the earlier date the server already has, and a note
+  first created here uploads with its real creation time. The exception is a
+  synced note renamed or moved on this machine, which may go up as a new
+  note dated when it was synced down. qkb is unaffected either way: it dates
+  a note from its frontmatter, then its modified time, never the creation
+  time.
 
 ## Homebrew
 
