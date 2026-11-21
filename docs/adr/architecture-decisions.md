@@ -459,3 +459,42 @@ No field is a sibling field by default. Which fields are sibling fields is part 
 **Rationale**: notes are YAML already (frontmatter), so a user configuring qkb writes one syntax, and `js-yaml` is already a dependency. Nested settings (`frontmatter.fields` with per-field tables, a `vaults` list) read more naturally as YAML than as TOML's `[[vaults]]` / inline tables. The core schema avoids YAML's best-known traps (`no` becoming `false`, bare dates becoming objects); the type checks on every setting, and the strict boolean checks on `include_by_default` and `siblings`, turn the rest into errors.
 
 **Alternatives rejected**: keeping TOML (two syntaxes for one tool, and the original reason, a parser in Python's standard library, no longer applies); switching with no fallback (every existing install would silently lose its config and run on defaults); detecting the format from content rather than extension (ambiguous for small files and harder to explain).
+
+---
+
+## ADR-024: MCP Server Moves to SDK v2 and Protocol Revision 2026-07-28
+
+**Date**: 2026-11-21
+**Status**: Decided
+
+**Question**: qkb used `@modelcontextprotocol/sdk` 1.x, whose newest protocol revision is 2025-11-25. Revision 2026-07-28 removes the `initialize` handshake and protocol sessions (each request carries the protocol version, client info and capabilities), and the TypeScript SDK was split into v2 packages to serve it. Should qkb move, and what happens to clients on older revisions?
+
+**Decision**:
+- Depend on `@modelcontextprotocol/server` and `@modelcontextprotocol/node` (v2); `@modelcontextprotocol/client` is a dev dependency for tests.
+- HTTP is served by `createMcpHandler` over a factory that builds a fresh `McpServer` per request on the shared context. It answers 2026-07-28 requests, and through the SDK's stateless fallback also 2025-era ones, with the same tools. `GET`/`DELETE /mcp` stay 405. qkb's own Origin check and `/health` sit in front of it, unchanged.
+- stdio is served by `serveStdio` over the same factory; the client's opening message selects the revision for the connection.
+- Tool names, arguments and results are unchanged.
+
+**Rationale**: the HTTP server was already stateless (#21: no session table, one model load), which is exactly the model 2026-07-28 standardises, so the move changes the wiring and not the behaviour. Serving 2025-era clients costs nothing extra (one factory, one endpoint) and keeps clients that have not moved yet working.
+
+**Alternatives rejected**: staying on SDK 1.x (no 2026-07-28 support); `legacy: 'reject'` (2026-07-28 only), which would lock out any client still doing the `initialize` handshake for no gain; a sessionful HTTP transport with `Mcp-Session-Id` (the revision removes sessions, and qkb has no per-client state to keep).
+
+---
+
+## ADR-025: The Container Image Is Published, Seeds Its Config, and Embeds In-Process by Default
+
+**Date**: 2026-11-21
+**Status**: Decided (amends the container setup from #25)
+
+**Question**: The image had to be built from a checkout and was configured through environment variables, with Ollama as the expected embedder. The goal is a compose stack that pulls an image, is configured through the same `config.yaml` as a local install, and works on macOS and Linux. Where do the config and the models live?
+
+**Decision**:
+- The image is published to `ghcr.io/miguelarios/qkb` for `linux/amd64` and `linux/arm64` on every release (`:X.Y.Z`, `:X.Y`, `:latest`).
+- Configuration is `/config/config.yaml`. On first start without one, the entrypoint runs the new `qkb init` command, which writes a commented starter file listing each folder mounted under `/vaults` as a vault named after it. An existing file is never replaced. Environment variables still override the file.
+- The container starts as root, gives `/config` and `/data` to `PUID:PGID` (default 1000:1000), and drops to that user. `user:` in compose skips this.
+- The default provider stays `llama`: in-process GGUF on the CPU, model cached on the `/data` volume. A GPU is reached through Ollama: on the host, as an optional compose service, or remote.
+
+**Rationale**: an in-process CPU default means `docker compose up` works with no second service on either OS; embeddinggemma is small enough for that. Containers on macOS run in a Linux VM without the Apple GPU, so no image could offer Metal; Ollama on the host is the way to use it, and it is also the simplest GPU path on Linux. A bind-mounted `./config` created by Docker belongs to root on Linux, which is why the entrypoint fixes ownership instead of the image running as a fixed non-root user. Discovering vaults from `/vaults` puts the one thing the user must decide, which folders, in the compose file's volume list, where host paths have to be written anyway.
+
+**Alternatives rejected**: environment variables as the main configuration (cannot express `vaults` or `frontmatter.fields`, and differ from a local install); shipping the CUDA builds or a separate CUDA image (about 530 MB plus the CUDA runtime, for something Ollama already covers); a fixed `USER node` (first start fails to write the config on Linux bind mounts); requiring a config before first start (nothing to edit, and the first run just fails).
+

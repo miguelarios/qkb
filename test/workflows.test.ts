@@ -26,7 +26,13 @@ describe("workflow YAML is well-formed", () => {
 
   it("found the expected workflow files", () => {
     expect(files.sort()).toEqual(
-      ["ci.yml", "claude-code-review.yml", "gitleaks.yml", "release.yml"].sort(),
+      [
+        "ci.yml",
+        "claude-code-review.yml",
+        "docker-publish.yml",
+        "gitleaks.yml",
+        "release.yml",
+      ].sort(),
     );
   });
 

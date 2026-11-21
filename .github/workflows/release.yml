@@ -31,6 +31,9 @@ jobs:
     permissions:
       id-token: write # npm trusted publishing (OIDC) + provenance attestation
       contents: write # push the tag, create the GitHub Release
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -170,3 +173,15 @@ jobs:
             gh release create "$TAG" ./*.tgz --title "$TAG" --notes-file "$NOTES"
           fi
           echo "::notice::Released $TAG"
+
+  # The container image for the same version, built from the tag the job
+  # above just pushed: ghcr.io/miguelarios/qkb:X.Y.Z, :X.Y and :latest.
+  image:
+    needs: release
+    if: needs.release.outputs.release == 'true'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-publish.yml
+    with:
+      version: ${{ needs.release.outputs.version }}
