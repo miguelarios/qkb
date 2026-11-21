@@ -7,6 +7,9 @@
 #    in compose / `docker run --user`, this step is skipped.
 # 2. Starting the server with no config file: write a starter
 #    /config/config.yaml listing the mounted vaults.
+#
+# `obsidian-sync` as the first argument runs the optional Obsidian Sync
+# sidecar instead of qkb (docker/obsidian-sync.mjs), as the same user.
 set -eu
 
 PUID="${PUID:-1000}"
@@ -25,7 +28,19 @@ if [ "$(id -u)" = 0 ] && [ "$PUID" != 0 ]; then
       fi
     fi
   done
+  if [ "${1:-}" = obsidian-sync ]; then
+    # The sync client writes the vaults. Only the mount points change owner,
+    # never the notes inside them.
+    for dir in /vaults /vaults/*/; do
+      [ -d "$dir" ] && chown "$PUID:$PGID" "$dir" 2>/dev/null || true
+    done
+  fi
   exec setpriv --reuid "$PUID" --regid "$PGID" --clear-groups "$0" "$@"
+fi
+
+if [ "${1:-}" = obsidian-sync ]; then
+  shift
+  exec node /app/docker/obsidian-sync.mjs "$@"
 fi
 
 if [ "${1:-}" = mcp ] && [ -z "${QKB_VAULT_PATH:-}" ] && [ "${QKB_SEED_CONFIG:-1}" != 0 ]; then

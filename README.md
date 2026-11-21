@@ -525,6 +525,44 @@ is which hardware the model can use.
 To build the image yourself: `docker build -t qkb .` and replace `image:`
 with `build: .`.
 
+### Obsidian Sync in the stack (optional)
+
+The compose file has an `obsidian-sync` service (profile `sync`) that keeps
+`./vaults` in sync with [Obsidian Sync](https://obsidian.md/sync) through
+Obsidian's headless client, [`obsidian-headless`](https://obsidian.md/help/sync/headless)
+(open beta; needs an Obsidian Sync subscription). qkb mounts the same folder
+read-only and indexes whatever arrives on its next re-index pass
+(`watch.interval`, default 300 seconds), the same as for any other change.
+
+```bash
+mkdir -p vaults/Notes                 # the folder name is the vault name in qkb
+docker compose run --rm obsidian-sync ob login
+docker compose run --rm obsidian-sync ob sync-list-remote
+docker compose run --rm obsidian-sync ob sync-setup --vault "Notes" --path /vaults/Notes
+docker compose --profile sync up -d   # and mount ./vaults:/vaults:ro in the qkb service
+```
+
+Repeat `sync-setup` for each vault; the service runs `ob sync --continuous`
+for every vault that is set up, and restarts if one of them stops. Any other
+client command works the same way, e.g.
+`docker compose run --rm obsidian-sync ob sync-config --path /vaults/Notes --mode pull-only`.
+
+- The client is Obsidian's proprietary software and is not part of the qkb
+  image: the service downloads it from npm into its own volume on first
+  start. `OBSIDIAN_HEADLESS_VERSION` pins a version.
+- The login and sync state are in the `obsidian-sync-data` volume. Removing
+  the volume means logging in and setting up again.
+- Back up the vault before the first sync, as Obsidian advises.
+- **Creation dates.** On Linux the client cannot set a file's creation time,
+  so a note synced down gets "created now" on this machine; its modified time
+  is kept. A note first created here uploads with its real creation time.
+  But if something here edits a note that was synced down, the client uploads
+  that later local creation time, and other devices may take it over. If
+  nothing in the container's vault folder needs to write, use
+  `--mode pull-only`; if agents add notes there, have them create new notes
+  rather than edit synced ones. qkb itself is unaffected: it dates a note
+  from its frontmatter, then its modified time, never the creation time.
+
 ## Homebrew
 
 A single-file formula lives at `Formula/qkb.rb` in this repo (`depends_on "node"`, installs the published npm package). Until a dedicated `homebrew-qkb` tap exists, install it directly from the repo:
