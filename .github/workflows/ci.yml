@@ -61,3 +61,5 @@ jobs:
           docker logs qkb
           curl -fsS http://127.0.0.1:8181/health | grep -q '"documents":1'
           grep -q 'path: /vaults/Notes' config/config.yaml
+      - name: The Obsidian Sync sidecar installs its client and runs it
+        run: docker run --rm qkb:ci ob --version # as `docker compose run --rm obsidian-sync ob ...` does

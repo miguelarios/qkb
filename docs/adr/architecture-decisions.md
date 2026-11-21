@@ -498,3 +498,23 @@ No field is a sibling field by default. Which fields are sibling fields is part 
 
 **Alternatives rejected**: environment variables as the main configuration (cannot express `vaults` or `frontmatter.fields`, and differ from a local install); shipping the CUDA builds or a separate CUDA image (about 530 MB plus the CUDA runtime, for something Ollama already covers); a fixed `USER node` (first start fails to write the config on Linux bind mounts); requiring a config before first start (nothing to edit, and the first run just fails).
 
+---
+
+## ADR-026: Obsidian Sync Is an Optional Sidecar That Downloads Obsidian's Client
+
+**Date**: 2026-11-21
+**Status**: Decided
+
+**Question**: A containerised qkb needs the vault on the same host. Obsidian now ships a headless Sync client (`obsidian-headless`, the `ob` command). Should the qkb stack offer it, and how?
+
+**Decision**:
+- The compose example has an `obsidian-sync` service under the `sync` profile. It runs the qkb image with the command `obsidian-sync`, which goes through the same entrypoint (PUID/PGID) and then `docker/obsidian-sync.mjs`.
+- That script installs `obsidian-headless` from npm into the service's own `/data` volume on first start (`OBSIDIAN_HEADLESS_VERSION` pins it), runs `ob sync --continuous` for every vault set up with `ob sync-setup` (checking for new ones every 30 seconds), and exits non-zero when one of them stops so the restart policy starts over, after a five-minute pause if it stopped within a minute. The entrypoint also accepts `ob <args>`, so `docker compose run --rm obsidian-sync ob login` runs the client for login and setup.
+- qkb is not told about syncs. It mounts the synced folder read-only and its existing watch loop indexes what changed.
+
+**Rationale**: the client's npm package is marked `UNLICENSED`, so it is not redistributed inside the qkb image; downloading it at first start keeps it Obsidian's to distribute. Reusing the qkb image avoids a second image to publish and gives the sidecar the same user handling, so files it writes are readable by qkb. The watch loop already handles changes from any source (hash-based, cheap when nothing changed), so a sync-triggered re-index would add coupling for at most one interval of latency.
+
+**Known limit**: on Linux the client cannot set file creation times, so a synced-down note has a local creation time of "now". The client compensates on upload: for a path the server already knows, it sends the server's earlier creation time, so editing a synced note here does not change its date elsewhere. A synced note renamed or moved here is a new path and may upload with the local time. qkb does not read creation times.
+
+**Alternatives rejected**: baking the client into the image (redistributing proprietary software); a separate published sync image (same problem, plus a second image); having the sync process trigger `qkb ingest` (couples two services over a socket or shared database for little gain); a third-party sync container (extra trust in something handling the vault and the account).
+

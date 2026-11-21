@@ -33,6 +33,7 @@ RUN npm ci --omit=dev \
  && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY docker/entrypoint.sh /usr/local/bin/qkb
+COPY docker/obsidian-sync.mjs ./docker/obsidian-sync.mjs
 
 # /config holds config.yaml (seeded on first start), /data the index and
 # model cache (mount a volume), /vaults/<Name> the vaults, read-only (qkb

@@ -24,6 +24,9 @@ services:
       # the vault name; use the Obsidian vault name so obsidian:// links work.
       - /path/to/Notes:/vaults/Notes:ro
       # - /path/to/Work:/vaults/Work:ro
+      # With the obsidian-sync service below, delete the lines above and mount
+      # the synced folder:
+      # - ./vaults:/vaults:ro
     # Linux only, when config.yaml points `embedding.ollama_host` at Ollama on
     # this machine (http://host.docker.internal:11434). Docker Desktop
     # (macOS, Windows) resolves that name without this.
@@ -53,6 +56,34 @@ services:
               count: all
               capabilities: [gpu]
 
+  # Optional: keep the vaults in sync with Obsidian Sync, using Obsidian's
+  # headless client (needs an Obsidian Sync subscription; the client is
+  # downloaded from npm on first start). Vaults live in ./vaults, which the
+  # qkb service mounts read-only (see its volumes). One-time setup:
+  #   mkdir -p vaults/Notes
+  #   docker compose run --rm obsidian-sync ob login
+  #   docker compose run --rm obsidian-sync ob sync-setup --vault "Notes" --path /vaults/Notes
+  #   docker compose --profile sync up -d
+  # Do these before the first start of qkb, so its starter config lists the
+  # vault. qkb picks up synced changes on its next re-index (watch.interval).
+  obsidian-sync:
+    profiles: [sync]
+    image: ghcr.io/miguelarios/qkb:latest
+    restart: unless-stopped
+    command: [obsidian-sync]
+    healthcheck:
+      disable: true # the image's healthcheck probes the MCP port
+    environment:
+      PUID: "1000" # same user as qkb
+      PGID: "1000"
+      # The client version. The default installs the latest once and keeps it;
+      # set an exact version to pin it, or change it to upgrade.
+      # OBSIDIAN_HEADLESS_VERSION: "0.0.14"
+    volumes:
+      - obsidian-sync-data:/data # the client, its login and sync state
+      - ./vaults:/vaults
+
 volumes:
   qkb-data:
   ollama-data:
+  obsidian-sync-data:

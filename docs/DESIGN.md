@@ -707,6 +707,7 @@ qkb/
 ├── tsconfig.json / tsconfig.build.json / biome.json / vitest.config.ts
 ├── Dockerfile                  # HTTP MCP service image (`qkb mcp --http --watch`)
 ├── docker/entrypoint.sh        # image entrypoint: PUID/PGID, starter config
+├── docker/obsidian-sync.mjs    # optional Obsidian Sync sidecar (`obsidian-sync` command)
 ├── docker-compose.example.yml
 ├── Formula/qkb.rb              # Homebrew formula wrapping the npm tarball
 ├── CHANGELOG.md / README.md / CLAUDE.md / LICENSE
@@ -947,6 +948,8 @@ services:
 
 - **Entrypoint** (`docker/entrypoint.sh`, installed as `qkb` on `PATH`): started as root, it makes `/config` and `/data` owned by `PUID:PGID` and re-executes itself as that user with `setpriv`; with `user:` set it skips that. Then, when starting the server with no config file and no `QKB_VAULT_PATH`, it runs `qkb init`, which writes a starter `/config/config.yaml` listing each folder under `/vaults` (or the single vault at `/vault`). A failure to write it is logged and the server starts on defaults. Because the entrypoint is `qkb`, `docker exec <container> qkb ingest` runs as the same user.
 - **Models**: `provider: llama` runs in the container on the CPU (CUDA builds are dropped, no Vulkan drivers). For a GPU the container embeds through Ollama: on the host (`host.docker.internal`; the only way to reach the Apple GPU, since Docker Desktop's VM has no Metal), as the compose file's `ollama` profile service with an NVIDIA GPU, or on another machine. Reranking and query expansion are in-process only, so CPU in a container.
+
+- **Obsidian Sync** (optional, ADR-026): the same image started with the command `obsidian-sync` runs `docker/obsidian-sync.mjs`, which installs Obsidian's `obsidian-headless` client from npm into its `/data` volume and runs `ob sync --continuous` for each vault set up with `ob sync-setup`. It writes `./vaults`; qkb mounts that folder read-only and indexes changes on its normal watch pass. The two services share nothing but the folder.
 
 No cron job is needed: the server re-indexes every `watch.interval` seconds (default 300). A one-off `docker exec qkb qkb ingest` also works while it serves (the database runs in WAL mode).
 
