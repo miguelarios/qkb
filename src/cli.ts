@@ -5,12 +5,13 @@ import { Command, CommanderError } from "commander";
 import { registerFieldsCommands } from "./cli/fields.js";
 import { registerGetCommand } from "./cli/get.js";
 import { registerIngestCommands } from "./cli/ingest.js";
+import { registerInitCommand } from "./cli/init.js";
 import { registerMcpCommand } from "./cli/mcp.js";
 import { registerSearchCommands } from "./cli/search.js";
 import { registerStatusCommand } from "./cli/status.js";
 import { readVersion } from "./version.js";
 
-/** Builds the full `qkb` command tree: `ingest`, `embed`, `search`,
+/** Builds the full `qkb` command tree: `init`, `ingest`, `embed`, `search`,
  * `vsearch`, `query`, `get`, `fields`, `status`,
  * `mcp` — ports the command surface of `legacy/python/src/qkb/cli.py`.
  * Individual command implementations live in `./cli/*.ts`; this function
@@ -47,6 +48,7 @@ export function createProgram(): Command {
     },
   });
 
+  registerInitCommand(program);
   registerIngestCommands(program);
   registerSearchCommands(program);
   registerGetCommand(program);

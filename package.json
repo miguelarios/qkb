@@ -34,7 +34,8 @@
   "author": "Miguel Rios",
   "homepage": "https://github.com/miguelarios/qkb#readme",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/node": "^2.1.2",
+    "@modelcontextprotocol/server": "^2.4.0",
     "better-sqlite3": "^12.11.1",
     "cli-progress": "^3.12.0",
     "commander": "^14.0.2",
@@ -47,6 +48,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.5",
+    "@modelcontextprotocol/client": "^2.4.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/cli-progress": "^3.11.6",
     "@types/js-yaml": "^3.12.10",

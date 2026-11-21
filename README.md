@@ -26,7 +26,9 @@ message naming both Node versions and the `npm rebuild` command that fixes
 it. If npm warns that install scripts for `better-sqlite3` were skipped
 (npm's `allow-scripts` policy), the same fallback applies.
 
-**2. Point qkb at your vault** — create `~/.config/qkb/config.yaml`:
+**2. Point qkb at your vault** — create `~/.config/qkb/config.yaml`
+(`qkb init --vault ~/Documents/MyVault` writes a commented starter file there
+if none exists):
 
 ```yaml
 vault:
@@ -294,12 +296,20 @@ qkb mcp --http --host 0.0.0.0           # listen on all interfaces (containers, 
 claude mcp add --transport http qkb http://127.0.0.1:8181/mcp
 ```
 
-The HTTP server is stateless (`POST /mcp`, JSON responses) and also serves
+The HTTP server is stateless (`POST /mcp`) and also serves
 `GET /health`. It binds to loopback by default. Requests from a browser page
 on another origin are refused unless that origin is listed in
 `mcp.allowed_origins` / `QKB_ALLOWED_ORIGINS` (protection against DNS
 rebinding). There is no authentication: on a shared network, keep it behind
 your firewall or a reverse proxy that adds auth.
+
+Both transports speak MCP protocol revision **2026-07-28**, which has no
+`initialize` handshake and no session: each request carries the client's
+protocol version and capabilities, so any number of clients share one server
+with nothing to track per client. Clients still on a 2025 revision
+(2025-11-25 and earlier) are served from the same endpoint; over HTTP they
+get no `Mcp-Session-Id` either. A 2026-07-28 response is a JSON body; a
+2025-era one is a single-message `text/event-stream`.
 
 ## Keeping the index fresh
 
@@ -447,27 +457,73 @@ qkb ingest && qkb embed
 
 ## Running as a service (Docker)
 
-The `Dockerfile` builds an image that serves HTTP MCP on port 8181 and
-re-indexes on a timer (`qkb mcp --http --watch`). Mount the vault read-only
-at `/vault` and a volume at `/data` (index and model cache). A config file,
-if you need `vaults` or `frontmatter.fields`, goes at
-`/config/config.yaml` (an older mount at `/config/config.toml` is still read,
-with a deprecation warning).
+The image `ghcr.io/miguelarios/qkb` serves HTTP MCP on port 8181 and
+re-indexes on a timer (`qkb mcp --http --watch`), for `linux/amd64` and
+`linux/arm64` (Apple Silicon runs the arm64 image).
 
 ```bash
-docker build -t qkb .
-docker run -d -p 8181:8181 \
-  -v /srv/vault:/vault:ro -v qkb-data:/data \
-  -e QKB_VAULT_PATH=/vault -e QKB_VAULT_NAME=Notes \
-  -e QKB_EMBEDDING_PROVIDER=ollama -e QKB_EMBEDDING_MODEL=embeddinggemma \
-  -e QKB_OLLAMA_HOST=http://gpu-host.example.com:11434 \
-  qkb
+curl -fsSLo compose.yaml https://raw.githubusercontent.com/miguelarios/qkb/main/docker-compose.example.yml
+# edit compose.yaml: one `/path/to/Vault:/vaults/Vault:ro` line per vault
+docker compose up -d
+claude mcp add --transport http qkb http://127.0.0.1:8181/mcp
 ```
 
-`docker-compose.example.yml` shows the same setup next to a vault that
-another container keeps in sync. The image embeds through Ollama by default.
-It leaves out node-llama-cpp's CUDA builds, so `provider: llama` inside
-the container runs on the CPU.
+| mount | what it holds |
+|---|---|
+| `/config` | `config.yaml`, the same file as `~/.config/qkb/config.yaml` |
+| `/data` | the index and downloaded models (a named volume) |
+| `/vaults/<Name>` | one vault per folder, read-only; qkb never writes to a vault |
+
+**Config.** On first start, with no `/config/config.yaml`, qkb writes a
+starter one listing every folder under `/vaults` as a vault named after it
+(use the Obsidian vault name, so `obsidian://` links open). Edit it and
+`docker compose restart qkb`; it is never overwritten. To bring your own,
+put `config.yaml` in `./config` before the first start. Paths in it are
+paths inside the container (`/vaults/Notes`), not on the host.
+`QKB_SEED_CONFIG=0` turns the starter file off. The `QKB_*` environment
+variables still override the file, and a single vault mounted at `/vault`
+with `QKB_VAULT_PATH=/vault` keeps working.
+
+**User.** The container starts as root only to make `/config` and `/data`
+writable, then runs qkb as `PUID:PGID` (default `1000:1000`). Set them to a
+user that can read the vaults (`PUID=0` runs as root). Setting `user:` in
+compose skips that step; the mounted directories must then already be
+writable by that user. With `cap_drop: [ALL]`, either set `user:` or add back
+`CHOWN`, `SETUID` and `SETGID`. Groups added with `group_add` are not kept:
+use `PGID`.
+
+**Commands.** `docker compose exec qkb qkb status` (or `ingest`, `embed
+--full`, `query …`) runs the CLI against the same index while the server
+serves.
+
+### Where the models run
+
+Everything qkb supports outside a container works inside one; what changes
+is which hardware the model can use.
+
+| setup | `config.yaml` | model runs on |
+|---|---|---|
+| In the container *(default)* | `embedding.provider: llama` | the container's CPU. The GGUF model is downloaded to `/data/models` on first start. Works the same on macOS and Linux, with nothing else to run. |
+| Ollama on the same machine | `provider: ollama`, `ollama_host: http://host.docker.internal:11434` | whatever Ollama uses: the Apple GPU (Metal) on a Mac, an NVIDIA/AMD GPU on Linux. On Linux, uncomment `extra_hosts` in the compose file. |
+| Ollama in the stack | `provider: ollama`, `ollama_host: http://ollama:11434` | an NVIDIA GPU passed to the `ollama` service (`docker compose --profile ollama up -d`, Linux with the NVIDIA Container Toolkit). |
+| Ollama or an OpenAI-compatible server elsewhere | `provider: ollama` / `openai` with its URL | that machine. |
+
+- **macOS.** Docker Desktop runs containers in a Linux VM with no access to
+  the Apple GPU, so nothing in a container is Metal-accelerated. Use the
+  default CPU model, or run Ollama as a normal Mac app and point qkb at it.
+  For in-process Metal, run qkb itself on the Mac instead
+  (`npm i -g @miguelarios/qkb`, then `qkb mcp --http --watch`): same HTTP
+  endpoint, no container.
+- **Linux GPU.** The image does not use a GPU for `provider: llama`:
+  node-llama-cpp's CUDA builds need the CUDA runtime libraries and are left
+  out (about 530 MB), and the image carries no Vulkan drivers. Embed through
+  Ollama to use a GPU.
+- **Reranking and query expansion** (`rerank.enabled`, `expansion.enabled`)
+  only run in-process, so in a container they run on the CPU. They work,
+  but each adds a model load and seconds per search.
+
+To build the image yourself: `docker build -t qkb .` and replace `image:`
+with `build: .`.
 
 ## Homebrew
 
@@ -519,7 +575,12 @@ sees the version change on `main`, runs the checks, publishes to npm
 (trusted publishing, with provenance), waits until npm serves the version,
 then creates the `vX.Y.Z` tag and a GitHub Release whose notes are that
 CHANGELOG section. No local tag push needed. Pushing a matching `v*` tag
-by hand still works as a fallback.
+by hand still works as a fallback. The same run then builds the container
+image from that tag and pushes `ghcr.io/miguelarios/qkb:X.Y.Z`, `:X.Y` and
+`:latest` (`.github/workflows/docker-publish.yml`; run that workflow by hand
+to push an `:edge` image from a branch, or with a version to rebuild that
+release's image). A new package on ghcr.io starts private: make it public
+once under the package's settings.
 
 After a release, bump `Formula/qkb.rb` to the new tarball and checksum (see the
 comment at the top of that file).

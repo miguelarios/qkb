@@ -41,8 +41,23 @@ jobs:
           node --input-type=module -e "const { connect } = await import('./dist/db/schema.js');
           const db = connect(':memory:', 8); console.log(db.prepare('select vec_version() v').get()); db.close();"
   docker:
-    # Build-only: proves the service image still builds. Nothing is pushed.
+    # Build-only: proves the service image still builds, seeds a config on
+    # first start and answers /health. Nothing is pushed (release.yml does).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t qkb:ci .
+      - name: Start it and wait for the first index pass
+        run: |
+          mkdir -p vaults/Notes
+          printf -- '---\nid: f47ac10b-58cc-4372-a567-0e02b2c3d401\n---\nHello.\n' > vaults/Notes/a.md
+          docker run -d --name qkb -p 8181:8181 \
+            -e QKB_EMBEDDING_PROVIDER=fake -e QKB_EMBEDDING_DIM=8 \
+            -v "$PWD/config:/config" -v "$PWD/vaults:/vaults:ro" qkb:ci
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8181/health | grep -q '"documents":1'; then break; fi
+            sleep 1
+          done
+          docker logs qkb
+          curl -fsS http://127.0.0.1:8181/health | grep -q '"documents":1'
+          grep -q 'path: /vaults/Notes' config/config.yaml

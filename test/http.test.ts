@@ -1,8 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type Config, loadConfig } from "../src/config.js";
 import { connect } from "../src/db/schema.js";
@@ -84,6 +83,56 @@ describe("MCP over Streamable HTTP", () => {
     await client.close();
   });
 
+  it("serves protocol revision 2026-07-28 without a handshake or session", async () => {
+    const client = new Client(
+      { name: "http-test-client", version: "0.1.0" },
+      { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+    );
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${http.url}/mcp`)));
+    expect(client.getProtocolEra()).toBe("modern");
+    expect(client.getNegotiatedProtocolVersion()).toBe("2026-07-28");
+    const out = await call(client, "search", { query: "traefik" });
+    expect(out.result[0].document_id).toBe(ID1);
+    await client.close();
+  });
+
+  it("answers a 2025-era initialize statelessly, with no session id", async () => {
+    const res = await fetch(`${http.url}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-11-25",
+          capabilities: {},
+          clientInfo: { name: "raw", version: "0" },
+        },
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("mcp-session-id")).toBeNull();
+    // The stateless fallback answers as a one-message SSE stream.
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+    expect(await res.text()).toContain('"protocolVersion":"2025-11-25"');
+  });
+
+  it("refuses a request body over 1 MiB", async () => {
+    const res = await fetch(`${http.url}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "x", pad: "a".repeat(1024 * 1024) }),
+    });
+    expect(res.status).toBe(413);
+  });
+
   it("serves several independent clients from one process", async () => {
     const [a, b] = await Promise.all([connectClient(http.url), connectClient(http.url)]);
     const [ra, rb] = await Promise.all([
@@ -122,7 +171,10 @@ describe("MCP over Streamable HTTP", () => {
   it("answers malformed JSON with a JSON-RPC parse error", async () => {
     const res = await fetch(`${http.url}/mcp`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
       body: "{not json",
     });
     expect(res.status).toBe(400);

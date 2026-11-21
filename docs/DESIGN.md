@@ -106,7 +106,7 @@ qkb started in Python (`qkb-search` on PyPI, last copy under `legacy/python/` at
 | `smol-toml` | Parse a legacy `config.toml` (deprecated fallback) |
 | `commander` | CLI framework |
 | `cli-progress` | Progress bars for `ingest` / `embed` |
-| `@modelcontextprotocol/sdk` | MCP server (stdio and Streamable HTTP transports) |
+| `@modelcontextprotocol/server` + `@modelcontextprotocol/node` | MCP server, TypeScript SDK v2 (stdio and Streamable HTTP; protocol revision 2026-07-28, and 2025 revisions) |
 | `zod` | MCP tool input schemas |
 
 Dev tooling: TypeScript (`tsc`), `vitest` (tests), `biome` (lint + format), `tsx` (scripts). The HTTP transport uses Node's built-in `node:http`; there is no web framework.
@@ -690,7 +690,7 @@ qkb mcp --http --host 0.0.0.0           # all interfaces (containers, LAN)
 
 ### 9.3 HTTP Transport
 
-`qkb mcp --http` (`src/server/http.ts`) is the only HTTP surface; there is no separate REST API. It is stateless: every `POST /mcp` gets a fresh MCP server and transport over one shared context (connection, provider, lock), with plain JSON responses rather than SSE. `GET /health` serves container probes. It binds to loopback by default (`mcp.host`/`mcp.port`, `QKB_MCP_HOST`/`QKB_MCP_PORT`). Requests carrying a browser `Origin` are refused unless it is loopback or listed in `mcp.allowed_origins` / `QKB_ALLOWED_ORIGINS` (DNS-rebinding guard). There is no authentication; on a shared network put it behind a firewall or an authenticating reverse proxy.
+`qkb mcp --http` (`src/server/http.ts`) is the only HTTP surface; there is no separate REST API. It is stateless: every `POST /mcp` gets a fresh MCP server over one shared context (connection, provider, lock), with no streaming. The SDK's `createMcpHandler` serves protocol revision 2026-07-28 (no handshake, no session; plain JSON responses) and falls back to stateless serving for clients on a 2025 revision, answered as a single-message `text/event-stream` (ADR-024); stdio goes through `serveStdio`, which picks the revision from the client's opening message. `GET /health` serves container probes. It binds to loopback by default (`mcp.host`/`mcp.port`, `QKB_MCP_HOST`/`QKB_MCP_PORT`). Requests carrying a browser `Origin` are refused unless it is loopback or listed in `mcp.allowed_origins` / `QKB_ALLOWED_ORIGINS` (DNS-rebinding guard). There is no authentication; on a shared network put it behind a firewall or an authenticating reverse proxy.
 
 ```
 POST /mcp       # MCP JSON-RPC (Streamable HTTP, stateless)
@@ -706,13 +706,15 @@ qkb/
 ├── package.json                # npm package @miguelarios/qkb, bin `qkb` -> dist/cli.js
 ├── tsconfig.json / tsconfig.build.json / biome.json / vitest.config.ts
 ├── Dockerfile                  # HTTP MCP service image (`qkb mcp --http --watch`)
+├── docker/entrypoint.sh        # image entrypoint: PUID/PGID, starter config
 ├── docker-compose.example.yml
 ├── Formula/qkb.rb              # Homebrew formula wrapping the npm tarball
 ├── CHANGELOG.md / README.md / CLAUDE.md / LICENSE
 ├── .github/
 │   └── workflows/
-│       ├── ci.yml              # tests + biome + tsc + build (Node 20/22), docker build
-│       ├── release.yml         # release on merge: npm trusted publishing, tag, GitHub Release
+│       ├── ci.yml              # tests + biome + tsc + build (Node 20/22), docker build + smoke run
+│       ├── release.yml         # release on merge: npm trusted publishing, tag, GitHub Release, image
+│       ├── docker-publish.yml  # multi-arch image to ghcr.io (called by release.yml, or by hand for :edge)
 │       ├── gitleaks.yml        # secret scan
 │       └── claude-code-review.yml
 ├── docs/
@@ -880,7 +882,7 @@ expansion:                            # tier 4, optional (ADR-020)
 
 - **npm package `@miguelarios/qkb`** (scoped; `qkb` on npm is unrelated), **bin `qkb`** → `dist/cli.js`. ESM, `engines.node >= 20`; `tsc -p tsconfig.build.json` builds `dist/`, which is all that ships (plus README).
 - Version single-sourced in `package.json`; `CHANGELOG.md` has a `## X.Y.Z (YYYY-MM-DD)` section per release.
-- Install paths: `npm install -g @miguelarios/qkb`, `npx @miguelarios/qkb`, Homebrew (`Formula/qkb.rb`, `depends_on "node"`, installs the published npm tarball), or the container image built from `Dockerfile` (§13).
+- Install paths: `npm install -g @miguelarios/qkb`, `npx @miguelarios/qkb`, Homebrew (`Formula/qkb.rb`, `depends_on "node"`, installs the published npm tarball), or the container image `ghcr.io/miguelarios/qkb` built from `Dockerfile` (§13).
 - The original Python package (`qkb-search` on PyPI, last `v0.3.0`) is superseded and gets no further releases.
 
 ### CI workflow (`.github/workflows/ci.yml`)
@@ -888,7 +890,7 @@ expansion:                            # tier 4, optional (ADR-020)
 On every push to `main` and every pull request:
 
 - **vitest** (`npm test`), **biome** (lint + format), **tsc --noEmit** (types), `npm run build`, on Node {20, 22}
-- `docker build` of the service image (build only, nothing pushed)
+- `docker build` of the service image, then a run of it that must seed a config and index a one-note vault (nothing pushed)
 
 Unit tests never require a model or network: they use the `fake` provider. Tests that need a real model live in `test/integration/` and run only with `npm run test:integration`. This keeps CI fast and forces the provider abstraction to stay honest. `gitleaks.yml` scans for secrets.
 
@@ -899,6 +901,8 @@ Release on merge. A release is a PR titled `chore(release): X.Y.Z` that bumps `p
 1. Runs the checks and builds (`npm ci`, test, tsc, biome, build, `npm pack`).
 2. Publishes to npm via **trusted publishing** (OIDC) with provenance — no npm token is stored in the repo. Skipped if that version is already on npm, so re-runs are safe.
 3. Waits until npm serves the version, then creates the `vX.Y.Z` tag and a GitHub Release whose notes are the CHANGELOG section.
+
+4. Builds the container image from that tag for `linux/amd64` and `linux/arm64` and pushes `ghcr.io/miguelarios/qkb:X.Y.Z`, `:X.Y` and `:latest` (`docker-publish.yml`, authenticated with the workflow's own token).
 
 A hand-pushed `v*` tag matching `package.json` still publishes as a fallback. After a release, `Formula/qkb.rb` is bumped to the new tarball and checksum.
 
@@ -921,29 +925,30 @@ qkb query "traefik certificate renewal"
 qkb mcp  # stdio for Claude Code / Claude Desktop
 ```
 
-### Docker (home server / NAS)
+### Docker (home server / NAS, or a Mac)
 
-The `Dockerfile` image runs `qkb mcp --http --watch`: Streamable HTTP MCP on port 8181 plus a timed re-index, with a `/health` healthcheck. It drops node-llama-cpp's CUDA builds and is meant to embed through Ollama (`provider: llama` still works on the CPU). `docker-compose.example.yml` is the reference setup:
+The image (`ghcr.io/miguelarios/qkb`, amd64 + arm64) runs `qkb mcp --http --watch`: Streamable HTTP MCP on port 8181 plus a timed re-index, with a `/health` healthcheck. `docker-compose.example.yml` is the reference setup (ADR-025):
 
 ```yaml
 services:
   qkb:
-    build: .
+    image: ghcr.io/miguelarios/qkb:latest
     restart: unless-stopped
     ports:
       - "8181:8181"                  # http://<host>:8181/mcp
-    volumes:
-      - /path/to/obsidian-vault:/vault:ro
-      - qkb-data:/data               # index + model cache
-      # - ./qkb-config.yaml:/config/config.yaml:ro   # vaults, frontmatter.fields
     environment:
-      - QKB_VAULT_PATH=/vault
-      - QKB_EMBEDDING_PROVIDER=ollama
-      - QKB_EMBEDDING_MODEL=embeddinggemma
-      - QKB_OLLAMA_HOST=http://gpu-host.example.com:11434
+      PUID: "1000"                   # the user qkb runs as
+      PGID: "1000"
+    volumes:
+      - ./config:/config             # config.yaml (a starter is written on first start)
+      - qkb-data:/data               # index + model cache
+      - /path/to/Notes:/vaults/Notes:ro
 ```
 
-No cron job is needed: the server re-indexes every `watch.interval` seconds (default 300). A one-off `docker exec qkb node /app/dist/cli.js ingest` also works while it serves (the database runs in WAL mode).
+- **Entrypoint** (`docker/entrypoint.sh`, installed as `qkb` on `PATH`): started as root, it makes `/config` and `/data` owned by `PUID:PGID` and re-executes itself as that user with `setpriv`; with `user:` set it skips that. Then, when starting the server with no config file and no `QKB_VAULT_PATH`, it runs `qkb init`, which writes a starter `/config/config.yaml` listing each folder under `/vaults` (or the single vault at `/vault`). A failure to write it is logged and the server starts on defaults. Because the entrypoint is `qkb`, `docker exec <container> qkb ingest` runs as the same user.
+- **Models**: `provider: llama` runs in the container on the CPU (CUDA builds are dropped, no Vulkan drivers). For a GPU the container embeds through Ollama: on the host (`host.docker.internal`; the only way to reach the Apple GPU, since Docker Desktop's VM has no Metal), as the compose file's `ollama` profile service with an NVIDIA GPU, or on another machine. Reranking and query expansion are in-process only, so CPU in a container.
+
+No cron job is needed: the server re-indexes every `watch.interval` seconds (default 300). A one-off `docker exec qkb qkb ingest` also works while it serves (the database runs in WAL mode).
 
 ---
 
@@ -968,7 +973,7 @@ Both subsystems with tiers 1-3, CLI, MCP stdio server, packaging, and CI/CD. Bui
 - Watch mode (`qkb mcp --watch`, `qkb watch`) and WAL-mode SQLite for a long-running server (0.5)
 - Multiple vaults in one index (`vaults`, `--vault`, ADR-015) (0.5)
 - Declared extra frontmatter properties (`frontmatter.fields`, `--field`, ADR-016) (0.5)
-- Container image (`Dockerfile`) and compose example (0.5); Homebrew formula; release on merge to npm
+- Container image (`Dockerfile`) and compose example (0.5), published to ghcr.io with a seeded config; Homebrew formula; release on merge to npm
 - Every note with an `id` indexed; `context`/`source` become ordinary properties (ADR-017) (0.6)
 - Title, aliases and headings as ranking signals (ADR-018); related notes from wikilinks, backlinks and declared sibling fields (ADR-019/021) (0.6)
 - Optional local reranking with position-aware blending and optional query expansion, via node-llama-cpp (ADR-020) (0.6)
