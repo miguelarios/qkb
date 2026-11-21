@@ -7,7 +7,9 @@
  * provider, lock), so there is no session table to leak and any number of
  * clients can connect — while the embedding model is still loaded only once
  * per process. Every qkb tool returns one result and sends no progress, so
- * 2026-07-28 responses are plain JSON bodies, not SSE streams.
+ * 2026-07-28 responses are plain JSON bodies. The 2025-era fallback answers
+ * with a one-message SSE stream (`text/event-stream`), which those clients
+ * must accept anyway.
  *
  * Also serves `GET /health` for container probes.
  *
@@ -126,11 +128,13 @@ export async function startHttpServer(
     server,
     url: `http://${hostForUrl}:${addr.port}`,
     close: async () => {
-      await mcp.close();
-      await new Promise<void>((resolve, reject) => {
+      // Stop accepting first, so no request reaches a closed handler.
+      const stopped = new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
-        server.closeAllConnections();
       });
+      await mcp.close();
+      server.closeAllConnections();
+      await stopped;
     },
   };
 }

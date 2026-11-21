@@ -116,6 +116,8 @@ describe("MCP over Streamable HTTP", () => {
     });
     expect(res.status).toBe(200);
     expect(res.headers.get("mcp-session-id")).toBeNull();
+    // The stateless fallback answers as a one-message SSE stream.
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
     expect(await res.text()).toContain('"protocolVersion":"2025-11-25"');
   });
 

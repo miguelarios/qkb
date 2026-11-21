@@ -4,7 +4,7 @@
  * entrypoint, which seeds `/config/config.yaml` on first start so there is a
  * file to edit. It never replaces an existing config unless `--force`. */
 import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import type { Command } from "commander";
 // Default import: js-yaml v3 is CJS — see the note in src/ingest/parser.ts.
 import yaml from "js-yaml";
@@ -16,12 +16,17 @@ export interface StarterVault {
   path: string;
 }
 
-/** `Name=/path`, or a bare `/path` named after its last segment. */
+/** `Name=/path`, or a bare `/path` named after its last segment. The text
+ * before `=` is a name only when it has no path separator, so a path that
+ * itself contains `=` stays a path. A relative path is made absolute: the
+ * config is read later from some other working directory. */
 export function parseVaultArg(arg: string): StarterVault {
   const eq = arg.indexOf("=");
-  const name = eq > 0 ? arg.slice(0, eq).trim() : "";
-  const path = (eq > 0 ? arg.slice(eq + 1) : arg).trim();
-  if (!path) failUsage(`--vault needs a path, got "${arg}"`);
+  const named = eq > 0 && !/[\\/]/.test(arg.slice(0, eq));
+  const name = named ? arg.slice(0, eq).trim() : "";
+  const raw = (named ? arg.slice(eq + 1) : arg).trim();
+  if (!raw) failUsage(`--vault needs a path, got "${arg}"`);
+  const path = raw.startsWith("~/") ? raw : resolve(raw);
   return { name: name || basename(path) || "Notes", path };
 }
 
@@ -120,9 +125,18 @@ interface InitOpts {
 
 function runInit(opts: InitOpts): void {
   const path = resolveConfigPath();
-  if (existsSync(path) && !opts.force) {
-    if (!opts.quiet) console.log(`Config already exists: ${path} (use --force to replace it)`);
-    return;
+  if (existsSync(path)) {
+    if (!opts.force) {
+      if (!opts.quiet) console.log(`Config already exists: ${path} (use --force to replace it)`);
+      return;
+    }
+    // resolveConfigPath falls back to a legacy config.toml; YAML written
+    // into it would not parse, and the old settings would be gone.
+    if (extname(path).toLowerCase() === ".toml") {
+      failUsage(
+        `${path} is a legacy TOML config; move it aside first, then run \`qkb init\` again`,
+      );
+    }
   }
   const vaults = [
     ...(opts.vaultsDir ? discoverVaults(opts.vaultsDir) : []),
@@ -134,6 +148,9 @@ function runInit(opts: InitOpts): void {
       failUsage(`two vaults are named "${v.name}" — name one of them with --vault Name=/path`);
     }
     names.add(v.name);
+  }
+  if (opts.vaultsDir && vaults.length === 0) {
+    failUsage(`no vault folders found under ${opts.vaultsDir}`);
   }
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, starterConfig(vaults));

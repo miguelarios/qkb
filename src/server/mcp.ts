@@ -408,6 +408,9 @@ export async function runServer(opts: ServeOptions = {}): Promise<void> {
       if (closed) return;
       closed = true;
       await watcher?.stop();
+      // Let a tool call that is mid-flight finish with the connection and
+      // provider before they are closed under it.
+      await ctx.withLock(() => undefined);
       ctx.close();
     }
   }
@@ -446,5 +449,6 @@ export async function runHttpServer(opts: HttpServeOptions = {}): Promise<void> 
   });
   await http.close();
   await watcher?.stop();
+  await ctx.withLock(() => undefined); // let an in-flight tool call finish
   ctx.close();
 }

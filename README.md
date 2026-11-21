@@ -296,7 +296,7 @@ qkb mcp --http --host 0.0.0.0           # listen on all interfaces (containers, 
 claude mcp add --transport http qkb http://127.0.0.1:8181/mcp
 ```
 
-The HTTP server is stateless (`POST /mcp`, JSON responses) and also serves
+The HTTP server is stateless (`POST /mcp`) and also serves
 `GET /health`. It binds to loopback by default. Requests from a browser page
 on another origin are refused unless that origin is listed in
 `mcp.allowed_origins` / `QKB_ALLOWED_ORIGINS` (protection against DNS
@@ -308,7 +308,8 @@ Both transports speak MCP protocol revision **2026-07-28**, which has no
 protocol version and capabilities, so any number of clients share one server
 with nothing to track per client. Clients still on a 2025 revision
 (2025-11-25 and earlier) are served from the same endpoint; over HTTP they
-get no `Mcp-Session-Id` either.
+get no `Mcp-Session-Id` either. A 2026-07-28 response is a JSON body; a
+2025-era one is a single-message `text/event-stream`.
 
 ## Keeping the index fresh
 
@@ -485,8 +486,11 @@ with `QKB_VAULT_PATH=/vault` keeps working.
 
 **User.** The container starts as root only to make `/config` and `/data`
 writable, then runs qkb as `PUID:PGID` (default `1000:1000`). Set them to a
-user that can read the vaults. Setting `user:` in compose skips that step;
-the mounted directories must then already be writable by that user.
+user that can read the vaults (`PUID=0` runs as root). Setting `user:` in
+compose skips that step; the mounted directories must then already be
+writable by that user. With `cap_drop: [ALL]`, either set `user:` or add back
+`CHOWN`, `SETUID` and `SETGID`. Groups added with `group_add` are not kept:
+use `PGID`.
 
 **Commands.** `docker compose exec qkb qkb status` (or `ingest`, `embed
 --full`, `query …`) runs the CLI against the same index while the server
@@ -574,7 +578,9 @@ CHANGELOG section. No local tag push needed. Pushing a matching `v*` tag
 by hand still works as a fallback. The same run then builds the container
 image from that tag and pushes `ghcr.io/miguelarios/qkb:X.Y.Z`, `:X.Y` and
 `:latest` (`.github/workflows/docker-publish.yml`; run that workflow by hand
-to push an `:edge` image from a branch).
+to push an `:edge` image from a branch, or with a version to rebuild that
+release's image). A new package on ghcr.io starts private: make it public
+once under the package's settings.
 
 After a release, bump `Formula/qkb.rb` to the new tarball and checksum (see the
 comment at the top of that file).

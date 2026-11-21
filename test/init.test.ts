@@ -60,6 +60,13 @@ describe("qkb init", () => {
       path: "/srv/work notes",
     });
     expect(parseVaultArg("/srv/Personal")).toEqual({ name: "Personal", path: "/srv/Personal" });
+    // A path containing `=` is still a path, and a relative one is made absolute.
+    expect(parseVaultArg("/srv/a=b/notes")).toEqual({ name: "notes", path: "/srv/a=b/notes" });
+    expect(parseVaultArg("rel/Notes")).toEqual({
+      name: "Notes",
+      path: join(process.cwd(), "rel/Notes"),
+    });
+    expect(parseVaultArg("~/Notes")).toEqual({ name: "Notes", path: "~/Notes" });
   });
 
   it("lists the subdirectories of a vaults directory, skipping files and dot-directories", () => {
@@ -94,11 +101,26 @@ describe("qkb init", () => {
     expect(configuredVaults(loadConfig(path, {}))[0]?.name).toBe("Other");
   });
 
-  it("leaves a legacy config.toml beside the YAML path alone", () => {
-    writeFileSync(join(tmp, "config.toml"), '[vault]\nname = "Old"\n');
+  it("leaves a legacy config.toml beside the YAML path alone, even with --force", () => {
+    const toml = '[vault]\nname = "Old"\n';
+    writeFileSync(join(tmp, "config.toml"), toml);
     const r = init(["--quiet"], join(tmp, "config.yaml"));
     expect(r.status).toBe(0);
     expect(() => readFileSync(join(tmp, "config.yaml"))).toThrow();
+
+    const forced = init(["--force"], join(tmp, "config.yaml"));
+    expect(forced.status).toBe(2);
+    expect(forced.stderr).toContain("legacy TOML config");
+    expect(readFileSync(join(tmp, "config.toml"), "utf-8")).toBe(toml);
+  });
+
+  it("refuses a vaults directory with no vault folders instead of writing a placeholder", () => {
+    writeFileSync(join(tmp, "stray.md"), "x");
+    const path = join(tmp, "out", "config.yaml");
+    const r = init(["--vaults-dir", tmp], path);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("no vault folders found");
+    expect(() => readFileSync(path)).toThrow();
   });
 
   it("refuses two vaults with the same name", () => {

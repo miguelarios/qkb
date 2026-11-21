@@ -3,8 +3,13 @@
 #
 # - Called by release.yml after a release: builds the vX.Y.Z tag and pushes
 #   `X.Y.Z`, `X.Y` and `latest`.
-# - Run by hand (Actions → "Publish image (GHCR)" → Run workflow): builds the
-#   chosen branch and pushes `edge`, to try an image before releasing.
+# - Run by hand (Actions → "Publish image (GHCR)" → Run workflow): with no
+#   version it builds the chosen branch and pushes `edge`, to try an image
+#   before releasing; with a version it rebuilds that release's image (use
+#   this if the image job of a release failed).
+#
+# A prerelease version (X.Y.Z-rc.1) gets only its own tag: `X.Y` and `latest`
+# stay on the last full release.
 #
 # Uses the workflow's own GITHUB_TOKEN; there is no registry secret.
 name: Publish image (GHCR)
@@ -16,6 +21,11 @@ on:
         required: true
         type: string
   workflow_dispatch:
+    inputs:
+      version:
+        description: Released version to rebuild (X.Y.Z). Empty builds this branch as `edge`.
+        required: false
+        type: string
 permissions:
   contents: read
 jobs:
@@ -35,10 +45,12 @@ jobs:
         run: |
           set -euo pipefail
           IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
-          if [ -n "$VERSION" ]; then
-            TAGS="$IMAGE:$VERSION,$IMAGE:${VERSION%.*},$IMAGE:latest"
-          else
+          if [ -z "$VERSION" ]; then
             TAGS="$IMAGE:edge"
+          elif [ "${VERSION#*-}" != "$VERSION" ]; then
+            TAGS="$IMAGE:$VERSION"
+          else
+            TAGS="$IMAGE:$VERSION,$IMAGE:${VERSION%.*},$IMAGE:latest"
           fi
           echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@v3

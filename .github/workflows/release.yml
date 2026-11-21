@@ -176,6 +176,9 @@ jobs:
 
   # The container image for the same version, built from the tag the job
   # above just pushed: ghcr.io/miguelarios/qkb:X.Y.Z, :X.Y and :latest.
+  # If this job fails, the npm release above has still happened. Use "Re-run
+  # failed jobs", or run "Publish image (GHCR)" by hand with the version:
+  # "Re-run all jobs" finds the tag already pushed and skips the image.
   image:
     needs: release
     if: needs.release.outputs.release == 'true'
